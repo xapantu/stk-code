@@ -38,8 +38,6 @@ extern bool GLContextDebugBit;
 #ifdef __FreeBSD__
 #include <sys/joystick.h>
 #else
-#include <EGL/egl.h>
-#include <EGL/eglext.h>
 
 // linux/joystick.h includes linux/input.h, which #defines values for various KEY_FOO keys.
 // These override the irr::KEY_FOO equivalents, which stops key handling from working.
@@ -55,9 +53,6 @@ extern bool GLContextDebugBit;
 
 #define XRANDR_ROTATION_LEFT    (1 << 1)
 #define XRANDR_ROTATION_RIGHT   (1 << 3)
-
-EGLDisplay egl_display;
-EGLSurface egl_surface;
 
 namespace irr
 {
@@ -87,10 +82,16 @@ CIrrDeviceLinux::CIrrDeviceLinux(const SIrrlichtCreationParameters& param)
 	: CIrrDeviceStub(param),
 #ifdef _IRR_COMPILE_WITH_X11_
 	display(0), visual(0), screennr(0), window(0), StdHints(0), SoftwareImage(0),
-#ifdef _IRR_COMPILE_WITH_OPENGL_
+#ifdef COMPILE_WITH_GLX
 	glxWin(0),
-	Context(0),
+	glxContext(0),
 #endif
+#ifdef COMPILE_WITH_EGL
+	eglDisplay(0),
+	eglContext(0),
+	eglSurface(0),
+#endif
+	
 #endif
 	Width(param.WindowSize.Width), Height(param.WindowSize.Height),
 	WindowHasFocus(false), WindowMinimized(false),
@@ -174,8 +175,8 @@ CIrrDeviceLinux::~CIrrDeviceLinux()
 
 	if (display)
 	{
-		#ifdef _IRR_COMPILE_WITH_OPENGL_
-		if (Context)
+		#ifdef COMPILE_WITH_GLX
+		if (glxContext)
 		{
 			if (glxWin)
 			{
@@ -187,11 +188,11 @@ CIrrDeviceLinux::~CIrrDeviceLinux()
 				if (!glXMakeCurrent(display, None, NULL))
 					os::Printer::log("Could not release glx context.", ELL_WARNING);
 			}
-			glXDestroyContext(display, Context);
+			glXDestroyContext(display, glxContext);
 			if (glxWin)
 				glXDestroyWindow(display, glxWin);
 		}
-		#endif // #ifdef _IRR_COMPILE_WITH_OPENGL_
+		#endif // #ifdef COMPILE_WITH_GLX
 
 		if (SoftwareImage)
 			XDestroyImage(SoftwareImage);
@@ -609,10 +610,10 @@ bool CIrrDeviceLinux::createWindow()
 	screennr = DefaultScreen(display);
 
 	changeResolution();
-#undef _IRR_COMPILE_WITH_OPENGL_
-	egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+
+	eglDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
 	
-	if(!eglInitialize(egl_display, NULL, NULL))
+	if(!eglInitialize(eglDisplay, NULL, NULL))
 	{
 		printf("EGLInit error %d\n", eglGetError());
 	}
@@ -628,18 +629,17 @@ bool CIrrDeviceLinux::createWindow()
 	};
 	EGLConfig conf;
 	int size;
-	if (!eglChooseConfig(egl_display, attrib, 0, 0, &size))
+	if (!eglChooseConfig(eglDisplay, attrib, 0, 0, &size))
 	{
 		printf("EGL Config count error %x\n", eglGetError());
 	}
 	printf("size is %d\n", size);
-	if (!eglChooseConfig(egl_display, attrib, &conf, 1, &size))
+	if (!eglChooseConfig(eglDisplay, attrib, &conf, 1, &size))
 	{
 		printf("EGL Config error %x\n", eglGetError());
 	}
 
-#ifdef _IRR_COMPILE_WITH_OPENGL_
-
+#ifdef COMPILE_WITH_GLX
 	GLXFBConfig glxFBConfig;
 	int major, minor;
 	bool isAvailableGLX=false;
@@ -863,7 +863,7 @@ bool CIrrDeviceLinux::createWindow()
 	// don't use the XVisual with OpenGL, because it ignores all requested
 	// properties of the CreationParams
 	else if (!visual)
-#endif // _IRR_COMPILE_WITH_OPENGL_
+#endif // COMPILE_WITH_GLX
 
 	// create visual with standard X methods
 	{
@@ -936,8 +936,9 @@ bool CIrrDeviceLinux::createWindow()
 		Atom wmDelete;
 		wmDelete = XInternAtom(display, wmDeleteWindow, True);
 		XSetWMProtocols(display, window, &wmDelete, 1);
-		egl_surface = eglCreateWindowSurface(egl_display, conf, window, NULL);
-		if (egl_surface == EGL_NO_SURFACE )
+#ifdef COMPILE_WITH_EGL
+		eglSurface = eglCreateWindowSurface(eglDisplay, conf, window, NULL);
+		if (eglSurface == EGL_NO_SURFACE )
 		{
 			printf("EGL NO SURFACE %x\n", eglGetError());
 		}
@@ -951,15 +952,16 @@ bool CIrrDeviceLinux::createWindow()
 			EGL_CONTEXT_MINOR_VERSION_KHR, 3,
 			EGL_NONE
 		};
-		EGLContext context = eglCreateContext(egl_display, conf, EGL_NO_CONTEXT, egl_context_attrib);
-		if (context == EGL_NO_CONTEXT)
+		eglContext = eglCreateContext(eglDisplay, conf, EGL_NO_CONTEXT, egl_context_attrib);
+		if (eglContext == EGL_NO_CONTEXT)
 		{
 									printf("EGL Context %x\n", eglGetError());
 		}
-		if (!eglMakeCurrent(egl_display, egl_surface, egl_surface, context))
+		if (!eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext))
 		{
 						printf("EGL Make current %x\n", eglGetError());
 		}
+#endif
 		if (CreationParams.Fullscreen)
 		{
 			if (netWM)
@@ -1043,10 +1045,10 @@ bool CIrrDeviceLinux::createWindow()
 	// Currently broken in X, see Bug ID 2795321
 	// XkbSetDetectableAutoRepeat(display, True, &AutorepeatSupport);
 
-#ifdef _IRR_COMPILE_WITH_OPENGL_
+#ifdef COMPILE_WITH_GLX
 
 	// connect glx context to window
-	Context=0;
+	glxContext=0;
 	if (isAvailableGLX && CreationParams.DriverType==video::EDT_OPENGL)
 	{
 	if (UseGLXWindow)
@@ -1054,13 +1056,13 @@ bool CIrrDeviceLinux::createWindow()
 		glxWin=glXCreateWindow(display,glxFBConfig,window,NULL);
 		if (glxWin)
 		{
-			Context = getMeAGLContext(display, glxFBConfig);
-			if (Context)
+			glxContext = getMeAGLContext(display, glxFBConfig);
+			if (glxContext)
 			{
-				if (!glXMakeContextCurrent(display, glxWin, glxWin, Context))
+				if (!glXMakeContextCurrent(display, glxWin, glxWin, glxContext))
 				{
 					os::Printer::log("Could not make context current.", ELL_WARNING);
-					glXDestroyContext(display, Context);
+					glXDestroyContext(display, glxContext);
 				}
 			}
 			else
@@ -1075,13 +1077,13 @@ bool CIrrDeviceLinux::createWindow()
 	}
 	else
 	{
-		Context = glXCreateContext(display, visual, NULL, True);
-		if (Context)
+		glxContext = glXCreateContext(display, visual, NULL, True);
+		if (glxContext)
 		{
-			if (!glXMakeCurrent(display, window, Context))
+			if (!glXMakeCurrent(display, window, glxContext))
 			{
 				os::Printer::log("Could not make context current.", ELL_WARNING);
-				glXDestroyContext(display, Context);
+				glXDestroyContext(display, glxContext);
 			}
 		}
 		else
@@ -1090,7 +1092,7 @@ bool CIrrDeviceLinux::createWindow()
 		}
 	}
 	}
-#endif // _IRR_COMPILE_WITH_OPENGL_
+#endif // COMPILE_WITH_GLX
 
 	Window tmp;
 	u32 borderWidth;
@@ -1131,6 +1133,7 @@ bool CIrrDeviceLinux::createWindow()
 //! create the driver
 void CIrrDeviceLinux::createDriver()
 {
+	bool tmp = false;
 	switch(CreationParams.DriverType)
 	{
 #ifdef _IRR_COMPILE_WITH_X11_
@@ -1152,12 +1155,14 @@ void CIrrDeviceLinux::createDriver()
 		break;
 
 	case video::EDT_OPENGL:
-//		#ifdef _IRR_COMPILE_WITH_OPENGL_
-//		if (Context)
+#ifdef COMPILE_WITH_GLX
+		tmp |= (glxContext != 0);
+#endif
+#ifdef COMPILE_WITH_EGL
+		tmp |= (eglContext != 0);
+#endif
+		if (tmp)
 			VideoDriver = video::createOpenGLDriver(CreationParams, FileSystem, this);
-//		#else
-//		os::Printer::log("No OpenGL support compiled in.", ELL_ERROR);
-//		#endif
 		break;
 
 	case video::EDT_DIRECT3D8:

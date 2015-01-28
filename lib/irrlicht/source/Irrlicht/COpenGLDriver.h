@@ -580,11 +580,15 @@ namespace video
 			CIrrDeviceWin32 *Win32Device;
 		#endif
 		#endif
-		#ifdef _IRR_COMPILE_WITH_X11_DEVICE_
+#ifdef _IRR_COMPILE_WITH_X11_
+			CIrrDeviceLinux *X11Device;
 			GLXDrawable Drawable;
 			Display* X11Display;
-			CIrrDeviceLinux *X11Device;
-		#endif
+#endif
+#ifdef COMPILE_WITH_EGL
+			EGLSurface eglSurface;
+			EGLDisplay eglDisplay;
+#endif
 		#ifdef _IRR_COMPILE_WITH_OSX_DEVICE_
 			CIrrDeviceMacOSX *OSXDevice;
 		#endif

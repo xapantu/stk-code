@@ -10,9 +10,6 @@ extern bool GLContextDebugBit;
 // needed here also because of the create methods' parameters
 #include "CNullDriver.h"
 
-extern EGLDisplay egl_display;
-extern EGLSurface egl_surface;
-
 #ifdef _IRR_COMPILE_WITH_OPENGL_
 
 #include "COpenGLMaterialRenderer.h"
@@ -28,6 +25,8 @@ extern EGLSurface egl_surface;
 #ifdef _IRR_COMPILE_WITH_OSX_DEVICE_
 #include "MacOSX/CIrrDeviceMacOSX.h"
 #endif
+
+#include "CIrrDeviceLinux.h"
 
 namespace irr
 {
@@ -666,6 +665,10 @@ bool COpenGLDriver::initDriver(CIrrDeviceLinux* device)
 	ExposedData.OpenGLLinux.X11Window = (unsigned long)Params.WindowId;
 	Drawable = glXGetCurrentDrawable();
 	X11Display = (Display*)ExposedData.OpenGLLinux.X11Display;
+#ifdef COMPILE_WITH_EGL
+	eglSurface = device->eglSurface;
+	eglDisplay = device->eglDisplay;
+#endif
 
 	genericDriverInit();
 
@@ -913,7 +916,7 @@ bool COpenGLDriver::endScene()
 #ifdef _IRR_COMPILE_WITH_X11_DEVICE_
 	if (DeviceType == EIDT_X11)
 	{
-		eglSwapBuffers(egl_display, egl_surface);
+		eglSwapBuffers(eglDisplay, eglSurface);
 		return true;
 	}
 #endif

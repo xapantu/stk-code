@@ -27,6 +27,11 @@
 #endif
 #endif
 
+#ifdef COMPILE_WITH_EGL
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#endif
+
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/cursorfont.h>
@@ -400,10 +405,17 @@ namespace irr
 		int crtc_x;
 		int crtc_y;
 		#endif
-		#ifdef _IRR_COMPILE_WITH_OPENGL_
+#ifdef COMPILE_WITH_GLX
 		GLXWindow glxWin;
-		GLXContext Context;
-		#endif
+		GLXContext glxContext;
+#endif
+#ifdef COMPILE_WITH_EGL
+	public:
+		EGLDisplay eglDisplay;
+		EGLContext eglContext;
+		EGLSurface eglSurface;
+	private:
+#endif
 #endif
 		u32 Width, Height;
 		bool WindowHasFocus;

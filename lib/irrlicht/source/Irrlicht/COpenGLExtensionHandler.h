@@ -69,6 +69,11 @@
 	#endif
 #endif
 
+#ifdef COMPILE_WITH_EGL
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#endif
+
 #ifndef GL_ARB_shader_objects
 /* GL types for program/shader text and shader object handles */
 typedef char GLcharARB;
