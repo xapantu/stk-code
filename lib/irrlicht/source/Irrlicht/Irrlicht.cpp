@@ -106,6 +106,7 @@ namespace irr
 
 		if (dev && !dev->getVideoDriver() && params.DriverType != video::EDT_NULL)
 		{
+			printf("oops\n");
 			dev->closeDevice(); // destroy window
 			dev->run(); // consume quit message
 			dev->drop();

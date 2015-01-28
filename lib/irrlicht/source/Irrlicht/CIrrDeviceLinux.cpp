@@ -38,6 +38,7 @@ extern bool GLContextDebugBit;
 #ifdef __FreeBSD__
 #include <sys/joystick.h>
 #else
+#include <EGL/egl.h>
 
 // linux/joystick.h includes linux/input.h, which #defines values for various KEY_FOO keys.
 // These override the irr::KEY_FOO equivalents, which stops key handling from working.
@@ -604,6 +605,34 @@ bool CIrrDeviceLinux::createWindow()
 	screennr = DefaultScreen(display);
 
 	changeResolution();
+#undef _IRR_COMPILE_WITH_OPENGL_
+	EGLDisplay egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+	
+	if(!eglInitialize(egl_display, NULL, NULL))
+	{
+		printf("EGLInit error %d\n", eglGetError());
+	}
+	
+	int attrib[] = {
+		EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+		EGL_RED_SIZE, 4,
+		EGL_GREEN_SIZE, 4,
+		EGL_BLUE_SIZE, 4,
+		EGL_ALPHA_SIZE, CreationParams.WithAlphaChannel?1:0,
+		EGL_DEPTH_SIZE, CreationParams.ZBufferBits, //10,11
+		EGL_NONE
+	};
+	EGLConfig conf;
+	int size;
+	if (!eglChooseConfig(egl_display, attrib, 0, 0, &size))
+	{
+		printf("EGL Config count error %x\n", eglGetError());
+	}
+	printf("size is %d\n", size);
+	if (!eglChooseConfig(egl_display, attrib, &conf, 1, &size))
+	{
+		printf("EGL Config error %x\n", eglGetError());
+	}
 
 #ifdef _IRR_COMPILE_WITH_OPENGL_
 
@@ -903,7 +932,29 @@ bool CIrrDeviceLinux::createWindow()
 		Atom wmDelete;
 		wmDelete = XInternAtom(display, wmDeleteWindow, True);
 		XSetWMProtocols(display, window, &wmDelete, 1);
-
+		EGLSurface surface = eglCreateWindowSurface(egl_display, conf, window, NULL);
+		if ( surface == EGL_NO_SURFACE )
+		{
+			printf("EGL NO SURFACE %x\n", eglGetError());
+		}
+		if (!eglBindAPI(EGL_OPENGL_API))
+		{	
+			printf("EGL bind api %x\n", eglGetError());
+		}
+		int egl_context_attrib[] = 
+		{
+			EGL_CONTEXT_CLIENT_VERSION, 3,
+			EGL_NONE
+		};
+		EGLContext context = eglCreateContext(egl_display, conf, EGL_NO_CONTEXT, egl_context_attrib);
+		if (context == EGL_NO_CONTEXT)
+		{
+									printf("EGL Context %x\n", eglGetError());
+		}
+		if (!eglMakeCurrent(egl_display, surface, surface, context))
+		{
+						printf("EGL Make current %x\n", eglGetError());
+		}
 		if (CreationParams.Fullscreen)
 		{
 			if (netWM)
@@ -1096,12 +1147,12 @@ void CIrrDeviceLinux::createDriver()
 		break;
 
 	case video::EDT_OPENGL:
-		#ifdef _IRR_COMPILE_WITH_OPENGL_
-		if (Context)
+//		#ifdef _IRR_COMPILE_WITH_OPENGL_
+//		if (Context)
 			VideoDriver = video::createOpenGLDriver(CreationParams, FileSystem, this);
-		#else
-		os::Printer::log("No OpenGL support compiled in.", ELL_ERROR);
-		#endif
+//		#else
+//		os::Printer::log("No OpenGL support compiled in.", ELL_ERROR);
+//		#endif
 		break;
 
 	case video::EDT_DIRECT3D8:
