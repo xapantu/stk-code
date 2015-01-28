@@ -10,6 +10,9 @@ extern bool GLContextDebugBit;
 // needed here also because of the create methods' parameters
 #include "CNullDriver.h"
 
+extern EGLDisplay egl_display;
+extern EGLSurface egl_surface;
+
 #ifdef _IRR_COMPILE_WITH_OPENGL_
 
 #include "COpenGLMaterialRenderer.h"
@@ -910,7 +913,7 @@ bool COpenGLDriver::endScene()
 #ifdef _IRR_COMPILE_WITH_X11_DEVICE_
 	if (DeviceType == EIDT_X11)
 	{
-//		eglSwapBuffers(X11Display, Drawable);
+		eglSwapBuffers(egl_display, egl_surface);
 		return true;
 	}
 #endif

@@ -56,6 +56,9 @@ extern bool GLContextDebugBit;
 #define XRANDR_ROTATION_LEFT    (1 << 1)
 #define XRANDR_ROTATION_RIGHT   (1 << 3)
 
+EGLDisplay egl_display;
+EGLSurface egl_surface;
+
 namespace irr
 {
 	namespace video
@@ -607,7 +610,7 @@ bool CIrrDeviceLinux::createWindow()
 
 	changeResolution();
 #undef _IRR_COMPILE_WITH_OPENGL_
-	EGLDisplay egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+	egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
 	
 	if(!eglInitialize(egl_display, NULL, NULL))
 	{
@@ -933,8 +936,8 @@ bool CIrrDeviceLinux::createWindow()
 		Atom wmDelete;
 		wmDelete = XInternAtom(display, wmDeleteWindow, True);
 		XSetWMProtocols(display, window, &wmDelete, 1);
-		EGLSurface surface = eglCreateWindowSurface(egl_display, conf, window, NULL);
-		if ( surface == EGL_NO_SURFACE )
+		egl_surface = eglCreateWindowSurface(egl_display, conf, window, NULL);
+		if (egl_surface == EGL_NO_SURFACE )
 		{
 			printf("EGL NO SURFACE %x\n", eglGetError());
 		}
@@ -953,7 +956,7 @@ bool CIrrDeviceLinux::createWindow()
 		{
 									printf("EGL Context %x\n", eglGetError());
 		}
-		if (!eglMakeCurrent(egl_display, surface, surface, context))
+		if (!eglMakeCurrent(egl_display, egl_surface, egl_surface, context))
 		{
 						printf("EGL Make current %x\n", eglGetError());
 		}
