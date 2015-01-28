@@ -39,6 +39,7 @@ extern bool GLContextDebugBit;
 #include <sys/joystick.h>
 #else
 #include <EGL/egl.h>
+#include <EGL/eglext.h>
 
 // linux/joystick.h includes linux/input.h, which #defines values for various KEY_FOO keys.
 // These override the irr::KEY_FOO equivalents, which stops key handling from working.
@@ -943,7 +944,8 @@ bool CIrrDeviceLinux::createWindow()
 		}
 		int egl_context_attrib[] = 
 		{
-			EGL_CONTEXT_CLIENT_VERSION, 3,
+			EGL_CONTEXT_MAJOR_VERSION_KHR, 3,
+			EGL_CONTEXT_MINOR_VERSION_KHR, 3,
 			EGL_NONE
 		};
 		EGLContext context = eglCreateContext(egl_display, conf, EGL_NO_CONTEXT, egl_context_attrib);
