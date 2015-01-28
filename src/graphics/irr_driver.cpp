@@ -529,7 +529,7 @@ void IrrDriver::initDevice()
     // Only change video driver settings if we are showing graphics
     if (!ProfileWorld::isNoGraphics())
     {
-#if defined(__linux__) && !defined(ANDROID)
+/*#if defined(__linux__) && !defined(ANDROID)
         // Set class hints on Linux, used by Window Managers.
         const video::SExposedVideoData& videoData = m_video_driver
                                                 ->getExposedVideoData();
@@ -540,7 +540,7 @@ void IrrDriver::initDevice()
                            videoData.OpenGLLinux.X11Window,
                            classhint);
         XFree(classhint);
-#endif
+#endif*/
         m_device->setWindowCaption(L"SuperTuxKart");
         m_device->getVideoDriver()
             ->setTextureCreationFlag(video::ETCF_CREATE_MIP_MAPS, true);
