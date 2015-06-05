@@ -5,7 +5,7 @@
     
     <velocity  x="0.0"
                y="0.0"
-               z="-0.003"         />
+               z="-0.03"         />
     
     <material  file="skid-particle2.png"  />
     

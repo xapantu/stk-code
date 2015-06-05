@@ -37,7 +37,7 @@
 /** Transform feedback shader that simulates the particles on GPU.
 */
 class PointEmitterShader : public Shader
-                           < PointEmitterShader, core::matrix4, int, int, float >
+                           < PointEmitterShader, int, int, float >
 {
 public:
     PointEmitterShader()
@@ -45,7 +45,7 @@ public:
         const char *varyings[] = { "new_particle_position", "new_lifetime",
                                    "new_particle_velocity",  "new_size"     };
         loadTFBProgram("pointemitter.vert", varyings, 4);
-        assignUniforms("sourcematrix", "dt", "level", "size_increase_factor");
+        assignUniforms("dt", "level", "size_increase_factor");
     }   // PointEmitterShader
 
 };   // PointEmitterShader
@@ -55,7 +55,7 @@ public:
 /** A Shader to render particles.
 */
 class SimpleParticleRender : public TextureShader<SimpleParticleRender, 2,
-                                                video::SColorf, video::SColorf>
+                                                core::matrix4, video::SColorf, video::SColorf>
 {
 public:
     SimpleParticleRender()
@@ -65,7 +65,7 @@ public:
                     GL_FRAGMENT_SHADER, "utils/getPosFromUVDepth.frag",
                     GL_FRAGMENT_SHADER, "particle.frag");
 
-        assignUniforms("color_from", "color_to");
+        assignUniforms("source_matrix", "color_from", "color_to");
         assignSamplerNames(0, "tex",  ST_TRILINEAR_ANISOTROPIC_FILTERED,
                            1, "dtex", ST_NEAREST_FILTERED);
     }   // SimpleParticleRender
@@ -482,7 +482,7 @@ void ParticleSystemProxy::simulate()
     else
     {
         PointEmitterShader::getInstance()->use();
-        PointEmitterShader::getInstance()->setUniforms(matrix, timediff, active_count, size_increase_factor);
+        PointEmitterShader::getInstance()->setUniforms(timediff, active_count, size_increase_factor);
     }
 
     glBindVertexArray(current_simulation_vao);
@@ -497,7 +497,9 @@ void ParticleSystemProxy::simulate()
 #ifdef DEBUG_PARTICLES
     // This code maps the data from the particles (initial data, current data
     // and output of transform feedback shader) into memory. Useful for debugging.
-    if (std::string(getName()) == std::string("particles(C:/Users/jhenrich/supertuxkart/stk-assets/textures/skid-particle1.png)"))
+    
+    //if (std::string(getName()) == std::string("particles(C:/Users/jhenrich/supertuxkart/stk-assets/textures/skid-particle1.png)"))
+    if (std::string(getName()) == std::string("particles(C:/Users/jhenrich/supertuxkart/stk-assets/textures/nitro-particle.png)"))
     {
         glBindVertexArray(current_simulation_vao);
         glBindBuffer(GL_ARRAY_BUFFER, initial_values_buffer);
@@ -515,7 +517,7 @@ void ParticleSystemProxy::simulate()
     std::swap(tfb_buffers[0], tfb_buffers[1]);
     std::swap(current_rendering_vao, non_current_rendering_vao);
     std::swap(current_simulation_vao, non_current_simulation_vao);
-}
+}   // simulate
 
 void ParticleSystemProxy::drawFlip()
 {
@@ -541,7 +543,8 @@ void ParticleSystemProxy::drawNotFlip()
     video::SColorf ColorFrom = video::SColorf(getColorFrom()[0], getColorFrom()[1], getColorFrom()[2]);
     video::SColorf ColorTo = video::SColorf(getColorTo()[0], getColorTo()[1], getColorTo()[2]);
 
-    SimpleParticleRender::getInstance()->setUniforms(ColorFrom, ColorTo);
+    SimpleParticleRender::getInstance()->setUniforms(getAbsoluteTransformation(),
+                                                     ColorFrom, ColorTo);
 
     glBindVertexArray(current_rendering_vao);
     glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, m_count);

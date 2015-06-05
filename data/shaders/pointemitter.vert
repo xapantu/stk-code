@@ -1,5 +1,4 @@
 uniform int dt;
-uniform mat4 sourcematrix;
 uniform int level;
 uniform float size_increase_factor;
 
@@ -38,10 +37,8 @@ void main(void)
     if (gl_VertexID < level)
     {
       float dt_from_last_frame = fract(updated_lifetime) * lifetime_initial;
-      vec4 updated_initialposition = sourcematrix * vec4(particle_position_initial, 1.0);
-      vec4 updated_initial_velocity = sourcematrix * vec4(particle_position_initial + particle_velocity_initial, 1.0) - updated_initialposition;
-      new_particle_position = updated_initialposition.xyz + updated_initial_velocity.xyz * float(dt_from_last_frame);
-      new_particle_velocity = updated_initial_velocity.xyz;
+      new_particle_position = particle_position_initial + particle_velocity_initial * float(dt_from_last_frame);
+      new_particle_velocity = particle_velocity_initial;
       new_lifetime = fract(updated_lifetime);
       new_size = mix(size_initial, size_initial * size_increase_factor, fract(updated_lifetime));
     }

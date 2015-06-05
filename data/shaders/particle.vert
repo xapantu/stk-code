@@ -1,5 +1,6 @@
 uniform vec3 color_from;
 uniform vec3 color_to;
+uniform mat4 source_matrix;
 
 #if __VERSION__ >= 330
 layout(location=0) in vec3 Position;
@@ -26,7 +27,7 @@ void main(void)
     tc = Texcoord;
     lf = lifetime;
     pc = color_from + (color_to - color_from) * lifetime;
-    vec3 newposition = Position;
+    vec3 newposition = (source_matrix*vec4(Position, 1.0f)).xyz;
 
     vec4 viewpos = ViewMatrix * vec4(newposition, 1.0);
     viewpos += size * vec4(quadcorner, 0., 0.);
