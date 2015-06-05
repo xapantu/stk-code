@@ -2536,13 +2536,21 @@ void Kart::updateGraphics(float dt, const Vec3& offset_xyz,
     // Upate particle effects (creation rate, and emitter size
     // depending on speed)
     // --------------------------------------------------------
+#undef ALWAYS_SHOW_NITRO_FOR_DEBUGGING
+#ifdef ALWAYS_SHOW_NITRO_FOR_DEBUGGING
+    if (1)
+#else
     if ( (m_controls.m_nitro || m_min_nitro_time > 0.0f) &&
          isOnGround() &&  m_collected_energy > 0            )
+#endif
     {
         // fabs(speed) is important, otherwise the negative number will
         // become a huge unsigned number in the particle scene node!
         float f = fabsf(getSpeed())/(m_kart_properties->getMaxSpeed() *
                   m_difficulty->getMaxSpeed());
+#ifdef ALWAYS_SHOW_NITRO_FOR_DEBUGGING
+        f = 1.0f;
+#endif
         // The speed of the kart can be higher (due to powerups) than
         // the normal maximum speed of the kart.
         if(f>1.0f) f = 1.0f;
@@ -2560,6 +2568,7 @@ void Kart::updateGraphics(float dt, const Vec3& offset_xyz,
         m_kart_gfx->setCreationRateAbsolute(KartGFX::KGFX_NITROSMOKE2, 0);
         m_nitro_light->setVisible(false);
     }
+
     m_kart_gfx->resizeBox(KartGFX::KGFX_NITRO1, getSpeed(), dt);
     m_kart_gfx->resizeBox(KartGFX::KGFX_NITRO2, getSpeed(), dt);
     m_kart_gfx->resizeBox(KartGFX::KGFX_NITROSMOKE1, getSpeed(), dt);
