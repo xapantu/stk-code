@@ -1,11 +1,11 @@
 <?xml version="1.0"?>
 <particles emitter="box" box_x="0.35" box_y="0.2" box_z="0.2">
 
-    <spreading angle="30"         />
+    <spreading angle="10"         />
     
     <velocity  x="0.0"
                y="0.001"
-               z="-0.003"         />
+               z="-0.03"         />
     
     <material  file="zipper-particle.png"  />
     
