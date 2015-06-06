@@ -47,7 +47,12 @@ public:
         loadTFBProgram("pointemitter.vert", varyings, 4);
         assignUniforms("dt", "level", "m_size_increase_factor");
     }   // PointEmitterShader
-
+    // ------------------------------------------------------------------------
+    void render(int timediff, int active_count, float size_increase_factor)
+    {
+        use();
+        setUniforms(timediff, active_count, size_increase_factor);
+    }   // render
 };   // PointEmitterShader
 
 // ============================================================================
@@ -69,6 +74,29 @@ public:
         assignSamplerNames(0, "tex",  ST_TRILINEAR_ANISOTROPIC_FILTERED,
                            1, "dtex", ST_NEAREST_FILTERED);
     }   // SimpleParticleRender
+    // ------------------------------------------------------------------------
+    void render(bool alpha_additive,GLuint texture, const float *color_from, 
+                const float *color_to, const core::matrix4 &transform,
+                GLuint rendering_vao, int count)
+    {
+        if (alpha_additive)
+            glBlendFunc(GL_ONE, GL_ONE);
+        else
+            glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        use();
+
+        setTextureUnits(texture, irr_driver->getDepthStencilTexture());
+        video::SColorf s_color_from = video::SColorf(color_from[0],
+                                                     color_from[1],
+                                                     color_from[2]);
+        video::SColorf s_color_to = video::SColorf(color_to[0], color_to[1],
+                                                   color_to[2]);
+
+        setUniforms(transform, s_color_from, s_color_to);
+
+        glBindVertexArray(rendering_vao);
+        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, count);
+    }   // render
 
 };   // SimpleParticleRender
 
@@ -568,9 +596,8 @@ void ParticleSystemProxy::simulate()
     }
     else
     {
-        PointEmitterShader::getInstance()->use();
-        PointEmitterShader::getInstance()
-            ->setUniforms(timediff, active_count, m_size_increase_factor);
+        PointEmitterShader::getInstance()->render(timediff, active_count,
+                                                  m_size_increase_factor);
     }
 
     glBindVertexArray(m_current_simulation_vao);
@@ -637,24 +664,11 @@ void ParticleSystemProxy::drawFlip()
 // ----------------------------------------------------------------------------
 void ParticleSystemProxy::drawNotFlip()
 {
-    if (m_alpha_additive)
-        glBlendFunc(GL_ONE, GL_ONE);
-    else
-        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-    SimpleParticleRender::getInstance()->use();
-
-    SimpleParticleRender::getInstance()
-        ->setTextureUnits(m_texture, irr_driver->getDepthStencilTexture());
-    video::SColorf ColorFrom = video::SColorf(getColorFrom()[0],
-                                              getColorFrom()[1],
-                                              getColorFrom()[2]);
-    video::SColorf ColorTo = video::SColorf(getColorTo()[0],
-                                            getColorTo()[1],
-                                            getColorTo()[2]);
-
-    SimpleParticleRender::getInstance()->setUniforms(getAbsoluteTransformation(),
-                                                     ColorFrom, ColorTo);
-
+    SimpleParticleRender::getInstance()->render(m_alpha_additive, m_texture,
+                                                getColorFrom(), getColorTo(),
+                                                getAbsoluteTransformation(),
+                                                m_current_rendering_vao, m_count
+        );
     glBindVertexArray(m_current_rendering_vao);
     glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, m_count);
 }   // drawNotFlip
