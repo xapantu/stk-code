@@ -51,11 +51,11 @@ public:
 };   // PointEmitterShader
 
 // ============================================================================
-
 /** A Shader to render particles.
 */
 class SimpleParticleRender : public TextureShader<SimpleParticleRender, 2,
-                                                core::matrix4, video::SColorf, video::SColorf>
+                                                  core::matrix4, video::SColorf,
+                                                  video::SColorf >
 {
 public:
     SimpleParticleRender()
@@ -86,7 +86,7 @@ public:
         assignUniforms();
         assignSamplerNames(0, "tex",  ST_TRILINEAR_ANISOTROPIC_FILTERED,
                            1, "dtex", ST_NEAREST_FILTERED);
-    }
+    }   // FlipParticleRender
 
 };   // FlipParticleShader
 
@@ -110,80 +110,87 @@ public:
         assignTextureUnit(m_TU_heightmap, "heightmap");
     }   // HeightmapSimulationShader
 
-
 };   // class HeightmapSimulationShader
 
 // ============================================================================
-
+/** Static function to create a particle proxy.
+ */
 scene::IParticleSystemSceneNode *ParticleSystemProxy::addParticleNode(
-    bool withDefaultEmitter, bool randomize_initial_y, ISceneNode* parent, s32 id,
-    const core::vector3df& position,
-    const core::vector3df& rotation,
+    bool withDefaultEmitter, bool randomize_initial_y, ISceneNode* parent, 
+    s32 id, const core::vector3df& position, const core::vector3df& rotation,
     const core::vector3df& scale)
 {
     if (!parent)
         parent = irr_driver->getSceneManager()->getRootSceneNode();
 
-    IParticleSystemSceneNode* node = new ParticleSystemProxy(withDefaultEmitter,
-        parent, irr_driver->getSceneManager(), id, position, rotation, scale, randomize_initial_y);
+    IParticleSystemSceneNode* node = 
+        new ParticleSystemProxy(withDefaultEmitter, parent,
+                                irr_driver->getSceneManager(), id, position,
+                                rotation, scale, randomize_initial_y);
     node->drop();
 
     return node;
 }
-
+// ============================================================================
 ParticleSystemProxy::ParticleSystemProxy(bool createDefaultEmitter,
-    ISceneNode* parent, scene::ISceneManager* mgr, s32 id,
-    const core::vector3df& position,
-    const core::vector3df& rotation,
-    const core::vector3df& scale,
-    bool randomize_initial_y) : CParticleSystemSceneNode(createDefaultEmitter, parent, mgr, id, position, rotation, scale), m_alpha_additive(false), m_first_execution(true)
+                                         ISceneNode* parent,
+                                         scene::ISceneManager* mgr, s32 id,
+                                         const core::vector3df& position,
+                                         const core::vector3df& rotation,
+                                         const core::vector3df& scale,
+                                         bool randomize_initial_y)
+                   : CParticleSystemSceneNode(createDefaultEmitter, parent,
+                                              mgr, id, position, rotation, scale),
+                     m_alpha_additive(false),
+                     m_first_execution(true)
 {
     if (randomize_initial_y)
         m_randomize_initial_y = randomize_initial_y;
 
     m_randomize_initial_y = randomize_initial_y;
     size_increase_factor = 0.;
-    ParticleParams = NULL;
-    InitialValues = NULL;
+    m_particle_params = NULL;
+    m_initial_values = NULL;
 
     m_color_from[0] = m_color_from[1] = m_color_from[2] = 1.0;
     m_color_to[0] = m_color_to[1] = m_color_to[2] = 1.0;
     
     // We set these later but avoid coverity report them
-    heighmapbuffer = 0;
-    heightmaptexture = 0;
-    has_height_map = false;
-    flip = false;
-    track_x = 0;
-    track_z = 0;
-    track_x_len = 0;
-    track_z_len = 0;
-    texture = 0;
-}
+    m_height_map_buffer = 0;
+    m_height_map_texture = 0;
+    m_has_height_map = false;
+    m_flip = false;
+    m_track_x = 0;
+    m_track_z = 0;
+    m_track_x_len = 0;
+    m_track_z_len = 0;
+    m_texture = 0;
+}   // ParticleSystemProxy
 
+// ----------------------------------------------------------------------------
 ParticleSystemProxy::~ParticleSystemProxy()
 {
-    if (InitialValues)
-        free(InitialValues);
-    if (ParticleParams)
-        free(ParticleParams);
+    if (m_initial_values)
+        free(m_initial_values);
+    if (m_particle_params)
+        free(m_particle_params);
     if (!m_first_execution)
         cleanGL();
-    if (heighmapbuffer)
-        glDeleteBuffers(1, &heighmapbuffer);
-    if (heightmaptexture)
-        glDeleteTextures(1, &heightmaptexture);
-}
+    if (m_height_map_buffer)
+        glDeleteBuffers(1, &m_height_map_buffer);
+    if (m_height_map_texture)
+        glDeleteTextures(1, &m_height_map_texture);
+}   // ~ParticleSystemProxy
 
-void ParticleSystemProxy::setFlip()
-{
-    flip = true;
-}
-
+// ----------------------------------------------------------------------------
 void ParticleSystemProxy::setHeightmap(const std::vector<std::vector<float> > &hm,
-    float f1, float f2, float f3, float f4)
+                                       float track_x, float track_z, 
+                                       float track_x_len, float track_z_len)
 {
-    track_x = f1, track_z = f2, track_x_len = f3, track_z_len = f4;
+    m_track_x     = track_x;
+    m_track_z     = track_z;
+    m_track_x_len = track_x_len;
+    m_track_z_len = track_z_len;
 
     unsigned width  = (unsigned)hm.size();
     unsigned height = (unsigned)hm[0].size();
@@ -195,104 +202,129 @@ void ParticleSystemProxy::setHeightmap(const std::vector<std::vector<float> > &h
             hm_array[i * height + j] = hm[i][j];
         }
     }
-    has_height_map = true;
-    glGenBuffers(1, &heighmapbuffer);
-    glBindBuffer(GL_TEXTURE_BUFFER, heighmapbuffer);
-    glBufferData(GL_TEXTURE_BUFFER, width * height * sizeof(float), hm_array, GL_STREAM_COPY);
-    glGenTextures(1, &heightmaptexture);
-    glBindTexture(GL_TEXTURE_BUFFER, heightmaptexture);
-    glTexBuffer(GL_TEXTURE_BUFFER, GL_R32F, heighmapbuffer);
+    m_has_height_map = true;
+    glGenBuffers(1, &m_height_map_buffer);
+    glBindBuffer(GL_TEXTURE_BUFFER, m_height_map_buffer);
+    glBufferData(GL_TEXTURE_BUFFER, width * height * sizeof(float), hm_array,
+                 GL_STREAM_COPY);
+    glGenTextures(1, &m_height_map_texture);
+    glBindTexture(GL_TEXTURE_BUFFER, m_height_map_texture);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R32F, m_height_map_buffer);
     glBindBuffer(GL_TEXTURE_BUFFER, 0);
 
     delete[] hm_array;
-}
+}   // setHeightmap
 
-static
-void generateLifetimeSizeDirection(scene::IParticleEmitter *emitter, float &lifetime, float &size, float &dirX, float &dirY, float &dirZ)
+// ----------------------------------------------------------------------------
+/** Generates the random initial data for a single particle.
+ *  param emitter The emitter for this particle.
+ *  \param particle Pointer to the particle data to be initialised.
+ */
+void ParticleSystemProxy::generateLifetimeSizeDirection
+                                  (scene::IParticleEmitter *emitter,
+                                   ParticleData *particle)
 {
-    float sizeMin = emitter->getMinStartSize().Height;
-    float sizeMax = emitter->getMaxStartSize().Height;
-    float lifetime_range = float(emitter->getMaxLifeTime() - emitter->getMinLifeTime());
+    float size_min = emitter->getMinStartSize().Height;
+    float size_max = emitter->getMaxStartSize().Height;
+    float lifetime_range = float(  emitter->getMaxLifeTime()
+                                 - emitter->getMinLifeTime());
 
-    lifetime = os::Randomizer::frand() * lifetime_range;
-    lifetime += emitter->getMinLifeTime();
+    particle->m_lifetime = os::Randomizer::frand() * lifetime_range
+                         + emitter->getMinLifeTime();
+    particle->m_size = os::Randomizer::frand();
+    particle->m_size *= (size_max - size_min);
+    particle->m_size += size_min;
 
-    size = os::Randomizer::frand();
-    size *= (sizeMax - sizeMin);
-    size += sizeMin;
+    core::vector3df dir = emitter->getDirection();
+    dir.rotateXYBy(os::Randomizer::frand() * emitter->getMaxAngleDegrees());
+    dir.rotateYZBy(os::Randomizer::frand() * emitter->getMaxAngleDegrees());
+    dir.rotateXZBy(os::Randomizer::frand() * emitter->getMaxAngleDegrees());
 
-    core::vector3df particledir = emitter->getDirection();
-    particledir.rotateXYBy(os::Randomizer::frand() * emitter->getMaxAngleDegrees());
-    particledir.rotateYZBy(os::Randomizer::frand() * emitter->getMaxAngleDegrees());
-    particledir.rotateXZBy(os::Randomizer::frand() * emitter->getMaxAngleDegrees());
+    particle->m_direction_x = dir.X;
+    particle->m_direction_y = dir.Y;
+    particle->m_direction_z = dir.Z;
+}   // generateLifetimeSizeDirection
 
-    dirX = particledir.X;
-    dirY = particledir.Y;
-    dirZ = particledir.Z;
-}
-
-void ParticleSystemProxy::generateParticlesFromPointEmitter(scene::IParticlePointEmitter *emitter)
+// ----------------------------------------------------------------------------
+void ParticleSystemProxy::generateParticlesFromPointEmitter
+                          (scene::IParticlePointEmitter *emitter)
 {
-    ParticleData* ParticleParamsTmp = (ParticleData *) realloc(ParticleParams, sizeof(ParticleData) * m_count);
-    ParticleData* InitialValuesTmp = (ParticleData *)realloc(InitialValues, sizeof(ParticleData)* m_count);
+    ParticleData* particle_params_tmp =
+        (ParticleData *) realloc(m_particle_params,
+                                 sizeof(ParticleData) * m_count);
+    ParticleData* initial_values_tmp = 
+        (ParticleData *)realloc(m_initial_values,
+                                sizeof(ParticleData)* m_count);
 
-    if (ParticleParamsTmp != NULL)     // In case memory allocation succeeded
+    if (particle_params_tmp)     // In case memory allocation succeeded
     {
-        ParticleParams = ParticleParamsTmp;
+        m_particle_params = particle_params_tmp;
     }
     else
     {
-        Log::error("GPUParticles", "Not enough memory for %d from point particles.", m_count);
+        Log::error("GPUParticles", 
+                   "Not enough memory for %d from point particles.", m_count);
         m_count = m_previous_count;
     }
-    if (InitialValuesTmp != NULL)
+    if (initial_values_tmp)
     {
-        InitialValues = InitialValuesTmp;
+        m_initial_values = initial_values_tmp;
     }
     else
     {
-        Log::fatal("GPUParticles", "Not enough memory for %d from point particles.", m_count);
+        Log::fatal("GPUParticles",
+                   "Not enough memory for %d from point particles.", m_count);
         m_count = m_previous_count;
     }
 
     for (unsigned i = 0; i < m_count; i++)
     {
-        ParticleParams[i].PositionX = 0;
-        ParticleParams[i].PositionY = 0;
-        ParticleParams[i].PositionZ = 0;
+        m_particle_params[i].m_position_x = 0;
+        m_particle_params[i].m_position_y = 0;
+        m_particle_params[i].m_position_z = 0;
         // Initial lifetime is >1
-        InitialValues[i].Lifetime = 2.;
+        m_initial_values[i].m_lifetime = 2.;
 
-        memcpy(&(InitialValues[i].PositionX), &(ParticleParams[i].PositionX), 3 * sizeof(float));
+        memcpy(&(m_initial_values[i].m_position_x),
+               &(m_particle_params[i].m_position_x),
+               3 * sizeof(float));
 
-        generateLifetimeSizeDirection(emitter, ParticleParams[i].Lifetime, ParticleParams[i].Size,
-            ParticleParams[i].DirectionX, ParticleParams[i].DirectionY, ParticleParams[i].DirectionZ);
+        generateLifetimeSizeDirection(emitter, &(m_particle_params[i]));
 
-        memcpy(&(InitialValues[i].DirectionX), &(ParticleParams[i].DirectionX), 4 * sizeof(float));
+        memcpy(&(m_initial_values[i].m_direction_x),
+               &(m_particle_params[i].m_direction_x), 4 * sizeof(float));
     }
-}
+}   // generateParticlesFromPointEmitter
 
-void ParticleSystemProxy::generateParticlesFromBoxEmitter(scene::IParticleBoxEmitter *emitter)
+// ----------------------------------------------------------------------------
+void ParticleSystemProxy::generateParticlesFromBoxEmitter
+                                          (scene::IParticleBoxEmitter *emitter)
 {
-    ParticleData* ParticleParamsTmp = (ParticleData *) realloc(ParticleParams, sizeof(ParticleData) * m_count);
-    ParticleData* InitialValuesTmp = (ParticleData *)realloc(InitialValues, sizeof(ParticleData)* m_count);
+    ParticleData* particle_params_tmp =
+        (ParticleData *) realloc(m_particle_params, 
+                                 sizeof(ParticleData) * m_count);
+    ParticleData* initial_values_tmp =
+        (ParticleData *)realloc(m_initial_values,
+                                sizeof(ParticleData)* m_count);
 
-    if (ParticleParamsTmp != NULL)     // In case memory allocation succeeded
+    if (particle_params_tmp)     // In case memory allocation succeeded
     {
-        ParticleParams = ParticleParamsTmp;
+        m_particle_params = particle_params_tmp;
     }
     else
     {
-        Log::error("GPUParticles", "Not enough memory for %d from box particles.", m_count);
+        Log::error("GPUParticles",
+                   "Not enough memory for %d from box particles.", m_count);
         m_count = m_previous_count;
     }
-    if (InitialValuesTmp != NULL)
+    if (initial_values_tmp)
     {
-        InitialValues = InitialValuesTmp;
+        m_initial_values = initial_values_tmp;
     }
     else
     {
-        Log::error("GPUParticles", "Not enough memory for %d from box particles.", m_count);
+        Log::error("GPUParticles",
+                   "Not enough memory for %d from box particles.", m_count);
         m_count = m_previous_count;
     }
 
@@ -300,33 +332,42 @@ void ParticleSystemProxy::generateParticlesFromBoxEmitter(scene::IParticleBoxEmi
 
     for (unsigned i = 0; i < m_count; i++)
     {
-        ParticleParams[i].PositionX = emitter->getBox().MinEdge.X + os::Randomizer::frand() * extent.X;
-        ParticleParams[i].PositionY = emitter->getBox().MinEdge.Y + os::Randomizer::frand() * extent.Y;
-        ParticleParams[i].PositionZ = emitter->getBox().MinEdge.Z + os::Randomizer::frand() * extent.Z;
+        m_particle_params[i].m_position_x = 
+            emitter->getBox().MinEdge.X + os::Randomizer::frand() * extent.X;
+        m_particle_params[i].m_position_y =
+            emitter->getBox().MinEdge.Y + os::Randomizer::frand() * extent.Y;
+        m_particle_params[i].m_position_z =
+            emitter->getBox().MinEdge.Z + os::Randomizer::frand() * extent.Z;
         // Initial lifetime is random
-        InitialValues[i].Lifetime = os::Randomizer::frand();
+        m_initial_values[i].m_lifetime = os::Randomizer::frand();
         if (!m_randomize_initial_y)
-            InitialValues[i].Lifetime += 1.;
+            m_initial_values[i].m_lifetime += 1.;
 
-        memcpy(&(InitialValues[i].PositionX), &(ParticleParams[i].PositionX), 3 * sizeof(float));
-        generateLifetimeSizeDirection(emitter, ParticleParams[i].Lifetime, ParticleParams[i].Size,
-            ParticleParams[i].DirectionX, ParticleParams[i].DirectionY, ParticleParams[i].DirectionZ);
-        memcpy(&(InitialValues[i].DirectionX), &(ParticleParams[i].DirectionX), 4 * sizeof(float));
+        memcpy(&(m_initial_values[i].m_position_x),
+               &(m_particle_params[i].m_position_x), 3 * sizeof(float));
+        generateLifetimeSizeDirection(emitter, &(m_particle_params[i]));
+        memcpy(&(m_initial_values[i].m_direction_x),
+               &(m_particle_params[i].m_direction_x), 4 * sizeof(float));
 
         if (m_randomize_initial_y)
-            InitialValues[i].PositionY = os::Randomizer::frand()*50.0f; // -100.0f;
+            m_initial_values[i].m_position_y = os::Randomizer::frand()*50.0f;
     }
-}
+}   // generateParticlesFromBoxEmitter
 
-void ParticleSystemProxy::generateParticlesFromSphereEmitter(scene::IParticleSphereEmitter *emitter)
+// ----------------------------------------------------------------------------
+void ParticleSystemProxy::generateParticlesFromSphereEmitter
+                                       (scene::IParticleSphereEmitter *emitter)
 {
-    ParticleData* ParticleParamsTmp = (ParticleData *) realloc(ParticleParams, sizeof(ParticleData) * m_count);
-    ParticleData* InitialValuesTmp = (ParticleData *)realloc(InitialValues, sizeof(ParticleData)* m_count);
+    ParticleData* particle_params_tmp =
+        (ParticleData *) realloc(m_particle_params,
+                                 sizeof(ParticleData) * m_count);
+    ParticleData* initial_values_tmp =
+        (ParticleData *)realloc(m_initial_values, sizeof(ParticleData)* m_count);
 
-    if(ParticleParamsTmp != NULL)     // In case memory allocation succeeded
-        ParticleParams = ParticleParamsTmp;
-    if(InitialValuesTmp != NULL)
-        InitialValues = InitialValuesTmp;
+    if(particle_params_tmp != NULL)     // In case memory allocation succeeded
+        m_particle_params = particle_params_tmp;
+    if(initial_values_tmp != NULL)
+        m_initial_values = initial_values_tmp;
 
     for (unsigned i = 0; i < m_count; i++) {
         // Random distance from center
@@ -338,19 +379,24 @@ void ParticleSystemProxy::generateParticlesFromSphereEmitter(scene::IParticleSph
         pos.rotateYZBy(os::Randomizer::frand() * 360.f, emitter->getCenter());
         pos.rotateXZBy(os::Randomizer::frand() * 360.f, emitter->getCenter());
 
-        ParticleParams[i].PositionX = pos.X;
-        ParticleParams[i].PositionY = pos.Y;
-        ParticleParams[i].PositionZ = pos.Z;
+        m_particle_params[i].m_position_x = pos.X;
+        m_particle_params[i].m_position_y = pos.Y;
+        m_particle_params[i].m_position_z = pos.Z;
         // Initial lifetime is > 1
-        InitialValues[i].Lifetime = 2.;
+        m_initial_values[i].m_lifetime = 2.;
 
-        memcpy(&(InitialValues[i].PositionX), &(ParticleParams[i].PositionX), 3 * sizeof(float));
-        generateLifetimeSizeDirection(emitter, ParticleParams[i].Lifetime, ParticleParams[i].Size,
-            ParticleParams[i].DirectionX, ParticleParams[i].DirectionY, ParticleParams[i].DirectionZ);
-        memcpy(&(InitialValues[i].DirectionX), &(ParticleParams[i].DirectionX), 4 * sizeof(float));
+        memcpy(&(m_initial_values[i].m_position_x),
+               &(m_particle_params[i].m_position_x), 3 * sizeof(float));
+        generateLifetimeSizeDirection(emitter, &(m_particle_params[i]));
+        memcpy(&(m_initial_values[i].m_direction_x),
+               &(m_particle_params[i].m_direction_x), 4 * sizeof(float));
     }
-}
+}   // generateParticlesFromSphereEmitter
 
+// ----------------------------------------------------------------------------
+/** Returns if the specified particle type can be done on HPU.
+ *  \param type Type to check.
+ */
 static bool isGPUParticleType(scene::E_PARTICLE_EMITTER_TYPE type)
 {
     switch (type)
@@ -362,8 +408,9 @@ static bool isGPUParticleType(scene::E_PARTICLE_EMITTER_TYPE type)
     default:
         return false;
     }
-}
+}   // isGPUParticleType
 
+// ----------------------------------------------------------------------------
 void ParticleSystemProxy::setEmitter(scene::IParticleEmitter* emitter)
 {
     CParticleSystemSceneNode::setEmitter(emitter);
@@ -371,22 +418,25 @@ void ParticleSystemProxy::setEmitter(scene::IParticleEmitter* emitter)
         return;
     if (!m_first_execution)
         cleanGL();
-    has_height_map = false;
-    flip = false;
+    m_has_height_map = false;
+    m_flip = false;
     m_first_execution = true;
 
     m_previous_count = m_count;   // save to handle out of memory errors
-    m_count = emitter->getMaxParticlesPerSecond() * emitter->getMaxLifeTime() / 1000;
+    m_count = emitter->getMaxParticlesPerSecond() * emitter->getMaxLifeTime()
+                                                  / 1000;
     switch (emitter->getType())
     {
     case scene::EPET_POINT:
         generateParticlesFromPointEmitter(emitter);
         break;
     case scene::EPET_BOX:
-        generateParticlesFromBoxEmitter(static_cast<scene::IParticleBoxEmitter *>(emitter));
+        generateParticlesFromBoxEmitter(
+                           static_cast<scene::IParticleBoxEmitter *>(emitter));
         break;
     case scene::EPET_SPHERE:
-        generateParticlesFromSphereEmitter(static_cast<scene::IParticleSphereEmitter *>(emitter));
+        generateParticlesFromSphereEmitter(
+                        static_cast<scene::IParticleSphereEmitter *>(emitter));
         break;
     default:
         assert(0 && "Wrong particle type");
@@ -394,99 +444,130 @@ void ParticleSystemProxy::setEmitter(scene::IParticleEmitter* emitter)
 
     video::ITexture *tex = getMaterial(0).getTexture(0);
     compressTexture(tex, true, true);
-    texture = getTextureGLuint(getMaterial(0).getTexture(0));
+    m_texture = getTextureGLuint(getMaterial(0).getTexture(0));
 }
 
+// ----------------------------------------------------------------------------
 void ParticleSystemProxy::cleanGL()
 {
-    if (flip)
-        glDeleteBuffers(1, &quaternionsbuffer);
-    glDeleteBuffers(2, tfb_buffers);
-    glDeleteBuffers(1, &initial_values_buffer);
-    glDeleteVertexArrays(1, &current_rendering_vao);
-    glDeleteVertexArrays(1, &non_current_rendering_vao);
-    glDeleteVertexArrays(1, &current_simulation_vao);
-    glDeleteVertexArrays(1, &non_current_simulation_vao);
-}
+    if (m_flip)
+        glDeleteBuffers(1, &m_quaternions_buffer);
+    glDeleteBuffers(2, m_tfb_buffers);
+    glDeleteBuffers(1, &m_initial_values_buffer);
+    glDeleteVertexArrays(1, &m_current_rendering_vao);
+    glDeleteVertexArrays(1, &m_non_current_rendering_vao);
+    glDeleteVertexArrays(1, &m_current_simulation_vao);
+    glDeleteVertexArrays(1, &m_non_current_simulation_vao);
+}   // cleanGL
 
-void ParticleSystemProxy::CommonRenderingVAO(GLuint PositionBuffer)
+// ----------------------------------------------------------------------------
+void ParticleSystemProxy::setCommonRenderingVAO(GLuint position_buffer)
 {
     glBindBuffer(GL_ARRAY_BUFFER, SharedGPUObjects::getParticleQuadVBO());
     glEnableVertexAttribArray(4);
     glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), 0);
     glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (GLvoid *)(2 * sizeof(float)));
+    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                          (GLvoid *)(2 * sizeof(float)));
 
-    glBindBuffer(GL_ARRAY_BUFFER, PositionBuffer);
+    glBindBuffer(GL_ARRAY_BUFFER, position_buffer);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(ParticleData), 0);
     glVertexAttribDivisorARB(0, 1);
     glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, sizeof(ParticleData), (GLvoid *)(3 * sizeof(float)));
+    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, sizeof(ParticleData),
+                          (GLvoid *)(3 * sizeof(float)));
     glVertexAttribDivisorARB(1, 1);
     glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(ParticleData), (GLvoid *)(7 * sizeof(float)));
+    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(ParticleData),
+                          (GLvoid *)(7 * sizeof(float)));
     glVertexAttribDivisorARB(2, 1);
-}
+}   // setCommonRenderingVAO
 
-void ParticleSystemProxy::AppendQuaternionRenderingVAO(GLuint QuaternionBuffer)
+// ----------------------------------------------------------------------------
+void ParticleSystemProxy::appendQuaternionRenderingVAO(GLuint quaternion_buffer)
 {
-    glBindBuffer(GL_ARRAY_BUFFER, QuaternionBuffer);
+    glBindBuffer(GL_ARRAY_BUFFER, quaternion_buffer);
     glEnableVertexAttribArray(5);
 
     glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, 4 * sizeof(float), 0);
     glVertexAttribDivisorARB(5, 1);
 
     glEnableVertexAttribArray(6);
-    glVertexAttribPointer(6, 1, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (GLvoid *)(3 * sizeof(float)));
+    glVertexAttribPointer(6, 1, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                          (GLvoid *)(3 * sizeof(float)));
     glVertexAttribDivisorARB(6, 1);
-}
+}   // appendQuaternionRenderingVAO
 
-void ParticleSystemProxy::CommonSimulationVAO(GLuint position_vbo, GLuint initialValues_vbo)
+// ----------------------------------------------------------------------------
+void ParticleSystemProxy::setCommonSimulationVAO(GLuint position_vbo,
+                                                GLuint initialValues_vbo)
 {
     glBindBuffer(GL_ARRAY_BUFFER, position_vbo);
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(ParticleSystemProxy::ParticleData), (GLvoid*)0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 
+                          sizeof(ParticleSystemProxy::ParticleData),
+                          (GLvoid*)0);
     glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, sizeof(ParticleSystemProxy::ParticleData), (GLvoid*)(3 * sizeof(float)));
+    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE,
+                          sizeof(ParticleSystemProxy::ParticleData),
+                          (GLvoid*)(3 * sizeof(float)));
     glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(ParticleSystemProxy::ParticleData), (GLvoid*)(4 * sizeof(float)));
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE,
+                          sizeof(ParticleSystemProxy::ParticleData),
+                          (GLvoid*)(4 * sizeof(float)));
     glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(ParticleSystemProxy::ParticleData), (GLvoid*)(7 * sizeof(float)));
+    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE,
+                          sizeof(ParticleSystemProxy::ParticleData),
+                          (GLvoid*)(7 * sizeof(float)));
 
     glBindBuffer(GL_ARRAY_BUFFER, initialValues_vbo);
     glEnableVertexAttribArray(4);
-    glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, sizeof(ParticleSystemProxy::ParticleData), (GLvoid*)0);
+    glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE,
+                          sizeof(ParticleSystemProxy::ParticleData),
+                          (GLvoid*)0);
     glEnableVertexAttribArray(5);
-    glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, sizeof(ParticleSystemProxy::ParticleData), (GLvoid*)(3 * sizeof(float)));
+    glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE,
+                          sizeof(ParticleSystemProxy::ParticleData),
+                          (GLvoid*)(3 * sizeof(float)));
     glEnableVertexAttribArray(6);
-    glVertexAttribPointer(6, 3, GL_FLOAT, GL_FALSE, sizeof(ParticleSystemProxy::ParticleData), (GLvoid*)(4 * sizeof(float)));
+    glVertexAttribPointer(6, 3, GL_FLOAT, GL_FALSE,
+                          sizeof(ParticleSystemProxy::ParticleData),
+                          (GLvoid*)(4 * sizeof(float)));
     glEnableVertexAttribArray(7);
-    glVertexAttribPointer(7, 1, GL_FLOAT, GL_FALSE, sizeof(ParticleSystemProxy::ParticleData), (GLvoid*)(7 * sizeof(float)));
-}
+    glVertexAttribPointer(7, 1, GL_FLOAT, GL_FALSE,
+                          sizeof(ParticleSystemProxy::ParticleData),
+                          (GLvoid*)(7 * sizeof(float)));
+}   // setCommonSimulationVAO
 
+// ----------------------------------------------------------------------------
 void ParticleSystemProxy::simulate()
 {
     int timediff = int(GUIEngine::getLatestDt() * 1000.f);
-    int active_count = getEmitter()->getMaxLifeTime() * getEmitter()->getMaxParticlesPerSecond() / 1000;
+    int active_count = getEmitter()->getMaxLifeTime() 
+                     * getEmitter()->getMaxParticlesPerSecond() / 1000;
     core::matrix4 matrix = getAbsoluteTransformation();
 
     glEnable(GL_RASTERIZER_DISCARD);
-    if (has_height_map)
+    if (m_has_height_map)
     {
         HeightmapSimulationShader::getInstance()->use();
-        glActiveTexture(GL_TEXTURE0 + HeightmapSimulationShader::getInstance()->m_TU_heightmap);
-        glBindTexture(GL_TEXTURE_BUFFER, heightmaptexture);
-        HeightmapSimulationShader::getInstance()->setUniforms(matrix, timediff, active_count, size_increase_factor, track_x, track_x_len, track_z, track_z_len);
+        glActiveTexture(GL_TEXTURE0 + HeightmapSimulationShader::getInstance()
+                                      ->m_TU_heightmap);
+        glBindTexture(GL_TEXTURE_BUFFER, m_height_map_texture);
+        HeightmapSimulationShader::getInstance()
+            ->setUniforms(matrix, timediff, active_count, size_increase_factor,
+                          m_track_x, m_track_x_len, m_track_z, m_track_z_len);
     }
     else
     {
         PointEmitterShader::getInstance()->use();
-        PointEmitterShader::getInstance()->setUniforms(timediff, active_count, size_increase_factor);
+        PointEmitterShader::getInstance()
+            ->setUniforms(timediff, active_count, size_increase_factor);
     }
 
-    glBindVertexArray(current_simulation_vao);
-    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, tfb_buffers[1]);
+    glBindVertexArray(m_current_simulation_vao);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, m_tfb_buffers[1]);
 
     glBeginTransformFeedback(GL_POINTS);
     glDrawArrays(GL_POINTS, 0, m_count);
@@ -494,43 +575,59 @@ void ParticleSystemProxy::simulate()
     glBindVertexArray(0);
 
     glDisable(GL_RASTERIZER_DISCARD);
+#define DEBUG_PARTICLES
 #ifdef DEBUG_PARTICLES
     // This code maps the data from the particles (initial data, current data
     // and output of transform feedback shader) into memory. Useful for debugging.
     
-    //if (std::string(getName()) == std::string("particles(C:/Users/jhenrich/supertuxkart/stk-assets/textures/skid-particle1.png)"))
-    if (std::string(getName()) == std::string("particles(C:/Users/jhenrich/supertuxkart/stk-assets/textures/nitro-particle.png)"))
+    //if (std::string(getName()) == std::string("particles(C:/Users/jhenrich/"
+    //                 "supertuxkart/stk-assets/textures/skid-particle1.png)"))
+    if (std::string(getName()) ==
+        std::string("particles(C:/Users/jhenrich/supertuxkart/stk-assets/"
+                    "textures/nitro-particle.png)"))
     {
-        glBindVertexArray(current_simulation_vao);
-        glBindBuffer(GL_ARRAY_BUFFER, initial_values_buffer);
-        ParticleData *p_initial = (ParticleData*)glMapBufferRange(GL_ARRAY_BUFFER, 0, m_count*sizeof(ParticleData), GL_MAP_READ_BIT);
+        glBindVertexArray(m_current_simulation_vao);
+        glBindBuffer(GL_ARRAY_BUFFER, m_initial_values_buffer);
+        ParticleData *p_initial =
+            (ParticleData*)glMapBufferRange(GL_ARRAY_BUFFER, 0,
+                                            m_count*sizeof(ParticleData),
+                                            GL_MAP_READ_BIT);
         glUnmapBuffer(GL_ARRAY_BUFFER);
-        glBindBuffer(GL_ARRAY_BUFFER, tfb_buffers[0]);
-        ParticleData *p_prev = (ParticleData*)glMapBufferRange(GL_ARRAY_BUFFER, 0, m_count*sizeof(ParticleData), GL_MAP_READ_BIT);
+        glBindBuffer(GL_ARRAY_BUFFER, m_tfb_buffers[0]);
+        ParticleData *p_prev =
+            (ParticleData*)glMapBufferRange(GL_ARRAY_BUFFER, 0,
+                                            m_count*sizeof(ParticleData),
+                                            GL_MAP_READ_BIT);
         glUnmapBuffer(GL_ARRAY_BUFFER);
-        glBindBuffer(GL_ARRAY_BUFFER, tfb_buffers[1]);
-        ParticleData *p_new = (ParticleData*)glMapBufferRange(GL_ARRAY_BUFFER, 0, m_count*sizeof(ParticleData), GL_MAP_READ_BIT);
+        glBindBuffer(GL_ARRAY_BUFFER, m_tfb_buffers[1]);
+        ParticleData *p_new =
+            (ParticleData*)glMapBufferRange(GL_ARRAY_BUFFER, 0,
+                                            m_count*sizeof(ParticleData),
+                                            GL_MAP_READ_BIT);
         glUnmapBuffer(GL_ARRAY_BUFFER);
     }
 #endif
 
-    std::swap(tfb_buffers[0], tfb_buffers[1]);
-    std::swap(current_rendering_vao, non_current_rendering_vao);
-    std::swap(current_simulation_vao, non_current_simulation_vao);
+    std::swap(m_tfb_buffers[0], m_tfb_buffers[1]);
+    std::swap(m_current_rendering_vao, m_non_current_rendering_vao);
+    std::swap(m_current_simulation_vao, m_non_current_simulation_vao);
 }   // simulate
 
+// ----------------------------------------------------------------------------
 void ParticleSystemProxy::drawFlip()
 {
     glBlendFunc(GL_ONE, GL_ONE);
     FlipParticleRender::getInstance()->use();
 
-    FlipParticleRender::getInstance()->setTextureUnits(texture, irr_driver->getDepthStencilTexture());
+    FlipParticleRender::getInstance()
+        ->setTextureUnits(m_texture, irr_driver->getDepthStencilTexture());
     FlipParticleRender::getInstance()->setUniforms();
 
-    glBindVertexArray(current_rendering_vao);
+    glBindVertexArray(m_current_rendering_vao);
     glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, m_count);
-}
+}   // drawFlip
 
+// ----------------------------------------------------------------------------
 void ParticleSystemProxy::drawNotFlip()
 {
     if (m_alpha_additive)
@@ -539,51 +636,61 @@ void ParticleSystemProxy::drawNotFlip()
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     SimpleParticleRender::getInstance()->use();
 
-    SimpleParticleRender::getInstance()->setTextureUnits(texture, irr_driver->getDepthStencilTexture());
-    video::SColorf ColorFrom = video::SColorf(getColorFrom()[0], getColorFrom()[1], getColorFrom()[2]);
-    video::SColorf ColorTo = video::SColorf(getColorTo()[0], getColorTo()[1], getColorTo()[2]);
+    SimpleParticleRender::getInstance()
+        ->setTextureUnits(m_texture, irr_driver->getDepthStencilTexture());
+    video::SColorf ColorFrom = video::SColorf(getColorFrom()[0],
+                                              getColorFrom()[1],
+                                              getColorFrom()[2]);
+    video::SColorf ColorTo = video::SColorf(getColorTo()[0],
+                                            getColorTo()[1],
+                                            getColorTo()[2]);
 
     SimpleParticleRender::getInstance()->setUniforms(getAbsoluteTransformation(),
                                                      ColorFrom, ColorTo);
 
-    glBindVertexArray(current_rendering_vao);
+    glBindVertexArray(m_current_rendering_vao);
     glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, m_count);
-}
+}   // drawNotFlip
 
+// ----------------------------------------------------------------------------
 void ParticleSystemProxy::draw()
 {
-    if (flip)
+    if (m_flip)
         drawFlip();
     else
         drawNotFlip();
-}
+}   // draw
 
+// ----------------------------------------------------------------------------
 void ParticleSystemProxy::generateVAOs()
 {
     glBindVertexArray(0);
-    glGenBuffers(1, &initial_values_buffer);
-    glBindBuffer(GL_ARRAY_BUFFER, initial_values_buffer);
-    glBufferData(GL_ARRAY_BUFFER, m_count * sizeof(ParticleData), ParticleParams, GL_STREAM_COPY);
-    glGenBuffers(2, tfb_buffers);
-    glBindBuffer(GL_ARRAY_BUFFER, tfb_buffers[0]);
-    glBufferData(GL_ARRAY_BUFFER, m_count * sizeof(ParticleData), InitialValues, GL_STREAM_COPY);
-    glBindBuffer(GL_ARRAY_BUFFER, tfb_buffers[1]);
-    glBufferData(GL_ARRAY_BUFFER, m_count * sizeof(ParticleData), 0, GL_STREAM_COPY);
+    glGenBuffers(1, &m_initial_values_buffer);
+    glBindBuffer(GL_ARRAY_BUFFER, m_initial_values_buffer);
+    glBufferData(GL_ARRAY_BUFFER, m_count * sizeof(ParticleData),
+                  m_particle_params, GL_STREAM_COPY);
+    glGenBuffers(2, m_tfb_buffers);
+    glBindBuffer(GL_ARRAY_BUFFER, m_tfb_buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, m_count * sizeof(ParticleData),
+                 m_initial_values, GL_STREAM_COPY);
+    glBindBuffer(GL_ARRAY_BUFFER, m_tfb_buffers[1]);
+    glBufferData(GL_ARRAY_BUFFER, m_count * sizeof(ParticleData), 0,
+                 GL_STREAM_COPY);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    glGenVertexArrays(1, &current_rendering_vao);
-    glGenVertexArrays(1, &non_current_rendering_vao);
-    glGenVertexArrays(1, &current_simulation_vao);
-    glGenVertexArrays(1, &non_current_simulation_vao);
+    glGenVertexArrays(1, &m_current_rendering_vao);
+    glGenVertexArrays(1, &m_non_current_rendering_vao);
+    glGenVertexArrays(1, &m_current_simulation_vao);
+    glGenVertexArrays(1, &m_non_current_simulation_vao);
 
-    glBindVertexArray(current_simulation_vao);
-    CommonSimulationVAO(tfb_buffers[0], initial_values_buffer);
-    glBindVertexArray(non_current_simulation_vao);
-    CommonSimulationVAO(tfb_buffers[1], initial_values_buffer);
+    glBindVertexArray(m_current_simulation_vao);
+    setCommonSimulationVAO(m_tfb_buffers[0], m_initial_values_buffer);
+    glBindVertexArray(m_non_current_simulation_vao);
+    setCommonSimulationVAO(m_tfb_buffers[1], m_initial_values_buffer);
 
 
     glBindVertexArray(0);
-    if (flip)
+    if (m_flip)
     {
         float *quaternions = new float[4 * m_count];
         for (unsigned i = 0; i < m_count; i++)
@@ -593,27 +700,32 @@ void ParticleSystemProxy::generateVAOs()
             quaternions[4 * i] = rotationdir.X;
             quaternions[4 * i + 1] = rotationdir.Y;
             quaternions[4 * i + 2] = rotationdir.Z;
-            quaternions[4 * i + 3] = 3.14f * 3.f * (2.f * os::Randomizer::frand() - 1.f); // 3 half rotation during lifetime at max
+             // 3 half rotation during lifetime at max
+            quaternions[4 * i + 3] = 3.14f * 3.f 
+                                   * (2.f * os::Randomizer::frand() - 1.f);
         }
-        glGenBuffers(1, &quaternionsbuffer);
-        glBindBuffer(GL_ARRAY_BUFFER, quaternionsbuffer);
-        glBufferData(GL_ARRAY_BUFFER, 4 * m_count * sizeof(float), quaternions, GL_STREAM_COPY);
+        glGenBuffers(1, &m_quaternions_buffer);
+        glBindBuffer(GL_ARRAY_BUFFER, m_quaternions_buffer);
+        glBufferData(GL_ARRAY_BUFFER, 4 * m_count * sizeof(float),
+                     quaternions, GL_STREAM_COPY);
         delete[] quaternions;
     }
 
-    glBindVertexArray(current_rendering_vao);
-    CommonRenderingVAO(tfb_buffers[0]);
-    if (flip)
-        AppendQuaternionRenderingVAO(quaternionsbuffer);
+    glBindVertexArray(m_current_rendering_vao);
+    setCommonRenderingVAO(m_tfb_buffers[0]);
+    if (m_flip)
+        appendQuaternionRenderingVAO(m_quaternions_buffer);
 
-    glBindVertexArray(non_current_rendering_vao);
-    CommonRenderingVAO(tfb_buffers[1]);
-    if (flip)
-        AppendQuaternionRenderingVAO(quaternionsbuffer);
+    glBindVertexArray(m_non_current_rendering_vao);
+    setCommonRenderingVAO(m_tfb_buffers[1]);
+    if (m_flip)
+        appendQuaternionRenderingVAO(m_quaternions_buffer);
     glBindVertexArray(0);
-}
+}   // generateVAOs
 
-void ParticleSystemProxy::render() {
+// ----------------------------------------------------------------------------
+void ParticleSystemProxy::render()
+{
     if (!getEmitter() || !isGPUParticleType(getEmitter()->getType()))
     {
         CParticleSystemSceneNode::render();
@@ -624,4 +736,4 @@ void ParticleSystemProxy::render() {
     m_first_execution = false;
     simulate();
     draw();
-}
+}   // render
