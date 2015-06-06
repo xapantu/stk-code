@@ -115,6 +115,17 @@ public:
         assignSamplerNames(0, "tex",  ST_TRILINEAR_ANISOTROPIC_FILTERED,
                            1, "dtex", ST_NEAREST_FILTERED);
     }   // FlipParticleRender
+    // ------------------------------------------------------------------------
+    void render(GLuint texture, GLuint rendering_vao, int count)
+    {
+        glBlendFunc(GL_ONE, GL_ONE);
+        use();
+        setTextureUnits(texture, irr_driver->getDepthStencilTexture());
+        setUniforms();
+
+        glBindVertexArray(rendering_vao);
+        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, count);
+    }   // render
 
 };   // FlipParticleShader
 
@@ -648,38 +659,22 @@ void ParticleSystemProxy::simulate()
 }   // simulate
 
 // ----------------------------------------------------------------------------
-void ParticleSystemProxy::drawFlip()
-{
-    glBlendFunc(GL_ONE, GL_ONE);
-    FlipParticleRender::getInstance()->use();
-
-    FlipParticleRender::getInstance()
-        ->setTextureUnits(m_texture, irr_driver->getDepthStencilTexture());
-    FlipParticleRender::getInstance()->setUniforms();
-
-    glBindVertexArray(m_current_rendering_vao);
-    glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, m_count);
-}   // drawFlip
-
-// ----------------------------------------------------------------------------
-void ParticleSystemProxy::drawNotFlip()
-{
-    SimpleParticleRender::getInstance()->render(m_alpha_additive, m_texture,
-                                                getColorFrom(), getColorTo(),
-                                                getAbsoluteTransformation(),
-                                                m_current_rendering_vao, m_count
-        );
-    glBindVertexArray(m_current_rendering_vao);
-    glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, m_count);
-}   // drawNotFlip
-
-// ----------------------------------------------------------------------------
 void ParticleSystemProxy::draw()
 {
     if (m_flip)
-        drawFlip();
+    {
+        FlipParticleRender::getInstance()->render(m_texture,
+                                                  m_current_rendering_vao,
+                                                  m_count);
+    }
     else
-        drawNotFlip();
+    {
+        SimpleParticleRender::getInstance()->render(m_alpha_additive,m_texture,
+                                                    getColorFrom(),getColorTo(),
+                                                    getAbsoluteTransformation(),
+                                                    m_current_rendering_vao,
+                                                    m_count);
+    }
 }   // draw
 
 // ----------------------------------------------------------------------------

@@ -71,8 +71,6 @@ protected:
     void generateVAOs();
     void cleanGL();
 
-    void drawFlip();
-    void drawNotFlip();
     virtual void simulate();
     virtual void draw();
 
