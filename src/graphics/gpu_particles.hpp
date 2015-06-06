@@ -48,7 +48,7 @@ protected:
     bool m_alpha_additive;
     bool m_has_height_map;
     bool m_flip;
-    float size_increase_factor;
+    float m_size_increase_factor;
     float m_track_x, m_track_z;
     float m_track_x_len, m_track_z_len;
     float m_color_from[3];
@@ -124,7 +124,7 @@ public:
     // ------------------------------------------------------------------------
     void setAlphaAdditive(bool val) { m_alpha_additive = val; }
     // ------------------------------------------------------------------------
-    void setIncreaseFactor(float val) { size_increase_factor = val; }
+    void setIncreaseFactor(float val) { m_size_increase_factor = val; }
     // ------------------------------------------------------------------------
     void setColorFrom(float r, float g, float b)
     {

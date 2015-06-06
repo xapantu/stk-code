@@ -45,7 +45,7 @@ public:
         const char *varyings[] = { "new_particle_position", "new_lifetime",
                                    "new_particle_velocity",  "new_size"     };
         loadTFBProgram("pointemitter.vert", varyings, 4);
-        assignUniforms("dt", "level", "size_increase_factor");
+        assignUniforms("dt", "level", "m_size_increase_factor");
     }   // PointEmitterShader
 
 };   // PointEmitterShader
@@ -96,20 +96,30 @@ class HeightmapSimulationShader : public Shader <HeightmapSimulationShader,
                                                  core::matrix4, int, int,
                                                  float,float,float,float,float>
 {
+private:
+    GLuint m_heightmap_texture_unit;
 public:
-    GLuint m_TU_heightmap;
-
     HeightmapSimulationShader()
     {
         const char *varyings[] = {"new_particle_position", "new_lifetime",
                                   "new_particle_velocity", "new_size"      };
         loadTFBProgram("particlesimheightmap.vert", varyings, 4);
-        assignUniforms("sourcematrix", "dt", "level", "size_increase_factor",
+        assignUniforms("sourcematrix", "dt", "level", "m_size_increase_factor",
                        "track_x", "track_x_len", "track_z", "track_z_len");
-        m_TU_heightmap = 2;
-        assignTextureUnit(m_TU_heightmap, "heightmap");
-    }   // HeightmapSimulationShader
-
+        m_heightmap_texture_unit = 2;
+        assignTextureUnit(m_heightmap_texture_unit, "heightmap");
+    }   // heightmapsimulationShader
+    // ------------------------------------------------------------------------
+    void render(const core::matrix4 &matrix, int timediff, int active_count,
+                float m_size_increase_factor, float track_x, float track_x_len, 
+                float track_z, float track_z_len, GLuint heightmap_texture)
+    {
+        use();
+        glActiveTexture(GL_TEXTURE0 + m_heightmap_texture_unit);
+        glBindTexture(GL_TEXTURE_BUFFER, heightmap_texture);
+        setUniforms(matrix, timediff, active_count, m_size_increase_factor,
+                    track_x, track_x_len, track_z, track_z_len);
+    }   // render
 };   // class HeightmapSimulationShader
 
 // ============================================================================
@@ -148,7 +158,7 @@ ParticleSystemProxy::ParticleSystemProxy(bool createDefaultEmitter,
         m_randomize_initial_y = randomize_initial_y;
 
     m_randomize_initial_y = randomize_initial_y;
-    size_increase_factor = 0.;
+    m_size_increase_factor = 0.;
     m_particle_params = NULL;
     m_initial_values = NULL;
 
@@ -551,19 +561,16 @@ void ParticleSystemProxy::simulate()
     glEnable(GL_RASTERIZER_DISCARD);
     if (m_has_height_map)
     {
-        HeightmapSimulationShader::getInstance()->use();
-        glActiveTexture(GL_TEXTURE0 + HeightmapSimulationShader::getInstance()
-                                      ->m_TU_heightmap);
-        glBindTexture(GL_TEXTURE_BUFFER, m_height_map_texture);
         HeightmapSimulationShader::getInstance()
-            ->setUniforms(matrix, timediff, active_count, size_increase_factor,
-                          m_track_x, m_track_x_len, m_track_z, m_track_z_len);
+            ->render(matrix, timediff, active_count, m_size_increase_factor,
+                     m_track_x, m_track_x_len, m_track_z, m_track_z_len,
+                     m_height_map_texture);
     }
     else
     {
         PointEmitterShader::getInstance()->use();
         PointEmitterShader::getInstance()
-            ->setUniforms(timediff, active_count, size_increase_factor);
+            ->setUniforms(timediff, active_count, m_size_increase_factor);
     }
 
     glBindVertexArray(m_current_simulation_vao);
