@@ -125,6 +125,11 @@ public:
                  const Material **material, btVector3 *normal,
                  bool interpolate_normal) const;
 
+    TrackObject* getParentLibrary()
+    {
+        return m_parent_library;
+    }
+
     // ------------------------------------------------------------------------
     /** To finish object constructions. Called after the track model
      *  is ready. */
@@ -202,7 +207,7 @@ public:
       */
     PhysicalObject* getPhysics() { return m_physical_object; }
     /** Hide or show the object */
-    void setEnable(bool mode);
+    void setEnabled(bool mode);
     /* @} */
     /* @} */
     /* @} */

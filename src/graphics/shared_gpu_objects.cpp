@@ -196,3 +196,13 @@ void SharedGPUObjects::init()
 
     m_has_been_initialised = true;
 }   // SharedGPUObjects
+
+// ----------------------------------------------------------------------------
+/** A simple reset function. Atm it actually only resets the
+ *  m_has_been_initialised flag (all opengl data gets reset anyway when this
+ *  function is called).
+ */
+void SharedGPUObjects::reset()
+{
+    m_has_been_initialised = false;
+}   // reset
