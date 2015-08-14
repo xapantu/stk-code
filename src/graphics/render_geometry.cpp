@@ -1233,7 +1233,8 @@ void renderMeshes2ndPass( const std::vector<uint64_t> &Prefilled_Handle,
         GLMesh &mesh = *(STK::tuple_get<0>(meshes.at(i)));
         if (!CVS->isARBBaseInstanceUsable())
             glBindVertexArray(mesh.vao);
-
+        if (!mesh.mb->getMaterial().BackfaceCulling)
+            glDisable(GL_CULL_FACE);
         if (mesh.VAOType != T::VertexType)
         {
 #ifdef DEBUG
@@ -1255,6 +1256,9 @@ void renderMeshes2ndPass( const std::vector<uint64_t> &Prefilled_Handle,
                           Prefilled_Tex[1], Prefilled_Tex[2]);
         custom_unroll_args<List...>::template 
             exec(T::SecondPassShader::getInstance(), meshes.at(i));
+        if (!mesh.mb->getMaterial().BackfaceCulling)
+            glEnable(GL_CULL_FACE);
+
     }
 }   // renderMeshes2ndPass
 
