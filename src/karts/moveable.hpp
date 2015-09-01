@@ -79,6 +79,9 @@ public:
     const btQuaternion
                   getRotation()   const        {return m_transform.getRotation();  }
 
+    Vec3 m_previous_velocity;
+    const Vec3& getPreviousVelocity() const { return m_previous_velocity;  }
+
     /** Enter flying mode */
     virtual void flyUp();
     virtual void flyDown();

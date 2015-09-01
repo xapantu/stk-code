@@ -22,6 +22,7 @@
 #include "animations/three_d_animation.hpp"
 #include "config/player_manager.hpp"
 #include "config/player_profile.hpp"
+#include "config/user_config.hpp"
 #include "karts/abstract_kart.hpp"
 #include "graphics/irr_driver.hpp"
 #include "graphics/stars.hpp"
@@ -394,73 +395,91 @@ void Physics::KartKartCollision(AbstractKart *kart_a,
         right_kart = kart_b;
     }
 
+    // The two karts will push each other away. To increase this effect,
+    // add an impulse based on the speed (i.e. if a kart is actively trying
+    // to push the other kart away, it will have a higher impulse) and weight
+    // of the karts
+
+    // 1. Check if a kart is more 'actively' trying to push another kart
+    // -----------------------------------------------------------------
+    // by checking its local sidewards velocity. Keep track of this in
+    // a speed based factor: it indicates how much more the right kart
+    // pushes the left kart. 
+    float f_speed = 1.0f;
+
+    // Project the speed of the karts onto a line connecting the two karts
+    // to see which kart is more actively trying to ram the other kart
+    Vec3 line = right_kart->getXYZ() - left_kart->getXYZ();
+
+    // The speed factor depends on the ratio of the speeds projected on
+    // 'line'.  Projection of vector v on u is ( (v.u) = dot product):
+    // (v.u)/len(u)^2 * u 
+    // Then the length of that is:
+    // (v.u)/len(u)^2 * len(u) = (v.u)/len(u)
+    // Since we only use the ratio, the division by
+    // len(u) is not necessary.
+    Vec3 v1 = left_kart->getPreviousVelocity();
+    Vec3 v2 = left_kart->getVelocity();
+    float fv1 = fabsf(line.dot(v1));
+    float fv2 = fabsf(line.dot(v2));
+    Vec3 w1 = right_kart->getPreviousVelocity();
+    Vec3 w2 = right_kart->getVelocity();
+    float fw1 = fabsf(line.dot(w1));
+    float fw2 = fabsf(line.dot(w2));
+
+    float left_speed_factor  = fabsf( line.dot(left_kart ->getVelocity() ) );
+    float right_speed_factor = fabsf( line.dot(right_kart->getVelocity() ) );
+    left_speed_factor = fabsf(left_kart->getVelocityLC().getX());
+    right_speed_factor = fabsf(right_kart->getVelocityLC().getX());
+    if (UserConfigParams::m_physics_debug)
+    {
+        Log::verbose("push", "line %f %f %f left speed %f %f %f f %f right speed %f %f %f factor %f",
+            line.getX(), line.getY(), line.getZ(),
+            left_kart->getVelocity().getX(), left_kart->getVelocity().getY(), left_kart->getVelocity().getZ(),
+            left_speed_factor,
+            right_kart->getVelocity().getX(), right_kart->getVelocity().getY(), right_kart->getVelocity().getZ(),
+            right_speed_factor);
+
+    }
+
+    // Cap of the speed factor, to avoid pushing karts too much
+    const float MAX_SPEED_FACTOR = 3.0f;
+    if (left_speed_factor > 0)
+    {
+        f_speed = right_speed_factor / left_speed_factor;
+        btClamp(f_speed, 1 / MAX_SPEED_FACTOR, MAX_SPEED_FACTOR);
+    }
+    else
+        f_speed = MAX_SPEED_FACTOR;
+
+
+    // 2. Compute a scaling factor dependent on the weight of the karts
+    // -----------------------------------------------------------------
+
     // Add a scaling factor depending on the mass (avoid div by zero).
     // The value of f_right is applied to the right kart, and f_left
     // to the left kart. f_left = 1 / f_right
-    float f_right =  right_kart->getKartProperties()->getMass() > 0
-                     ? left_kart->getKartProperties()->getMass()
-                       / right_kart->getKartProperties()->getMass()
-                     : 1.5f;
-    // Add a scaling factor depending on speed (avoid div by 0)
-    f_right *= right_kart->getSpeed() > 0
-               ? left_kart->getSpeed()
-                  / right_kart->getSpeed()
-               : 1.5f;
-    // Cap f_right to [0.8,1.25], which results in f_left being
-    // capped in the same interval
-    if(f_right > 1.25f)
-        f_right = 1.25f;
-    else if(f_right< 0.8f)
-        f_right = 0.8f;
-    float f_left = 1/f_right;
+    float f_weight = right_kart->getKartProperties()->getMass()
+                   / left_kart->getKartProperties()->getMass();
+    const float MAX_WEIGHT_FACTOR = 2.0f;
 
-    // Check if a kart is more 'actively' trying to push another kart
-    // by checking its local sidewards velocity
-    float vel_left  = left_kart->getVelocityLC().getX();
-    float vel_right = right_kart->getVelocityLC().getX();
+    btClamp(f_weight, 1 / MAX_WEIGHT_FACTOR, MAX_WEIGHT_FACTOR);
 
-    // Use the difference in speed to determine which kart gets a
-    // ramming bonus. Normally vel_right and vel_left will have
-    // a different sign: right kart will be driving to the left,
-    // and left kart to the right (both pushing at each other).
-    // By using the sum we get the intended effect: if both karts
-    // are pushing with the same speed, vel_diff is 0, if the right
-    // kart is driving faster vel_diff will be < 0. If both velocities
-    // have the same sign, one kart is trying to steer away from the
-    // other, in which case it gets an even bigger push.
-    float vel_diff = vel_right + vel_left;
 
-    // More driving towards left --> left kart gets bigger impulse
-    if(vel_diff<0)
-    {
-        // Avoid too large impulse for karts that are driving
-        // slow (and division by zero)
-        if(fabsf(vel_left)>2.0f)
-            f_left *= 1.0f - vel_diff/fabsf(vel_left);
-        if(f_left > 2.0f)
-            f_left = 2.0f;
-    }
-    else
-    {
-        // Avoid too large impulse for karts that are driving
-        // slow (and division by zero)
-        if(fabsf(vel_right)>2.0f)
-            f_right *= 1.0f + vel_diff/fabsf(vel_right);
-        if(f_right > 2.0f)
-            f_right = 2.0f;
-    }
+    float f = f_weight * f_speed;
 
-    // Increase the effect somewhat by squaring the factors
-    f_left  = f_left  * f_left;
-    f_right = f_right * f_right;
+    if (f < 0.5)
+        f = 0;
+    else if (f>2)
+        f = 6;
 
     // First push one kart to the left (if there is not already
     // an impulse happening - one collision might cause more
     // than one impulse otherwise)
-    if(right_kart->getVehicle()->getCentralImpulseTime()<=0)
+    if(right_kart->getVehicle()->getCentralImpulseTime()<=0 && f>0)
     {
         const KartProperties *kp = left_kart->getKartProperties();
-        Vec3 impulse(kp->getCollisionImpulse()*f_right, 0, 0);
+        Vec3 impulse(kp->getCollisionImpulse()/f, 0, 0);
         impulse = right_kart->getTrans().getBasis() * impulse;
         right_kart->getVehicle()
                  ->setTimedCentralImpulse(kp->getCollisionImpulseTime(),
@@ -473,7 +492,7 @@ void Physics::KartKartCollision(AbstractKart *kart_a,
     if(left_kart->getVehicle()->getCentralImpulseTime()<=0)
     {
         const KartProperties *kp = right_kart->getKartProperties();
-        Vec3 impulse = Vec3(-kp->getCollisionImpulse()*f_left, 0, 0);
+        Vec3 impulse = Vec3(-kp->getCollisionImpulse()*f, 0, 0);
         impulse = left_kart->getTrans().getBasis() * impulse;
         left_kart->getVehicle()
                   ->setTimedCentralImpulse(kp->getCollisionImpulseTime(),
@@ -588,11 +607,13 @@ btScalar Physics::solveGroup(btCollisionObject** bodies, int numBodies,
                 m_all_collisions.push_back(
                     upB, contact_manifold->getContactPoint(0).m_localPointB,
                     upA, contact_manifold->getContactPoint(0).m_localPointA);
-            else if(upB->is(UserPointer::UP_KART))
+            else if (upB->is(UserPointer::UP_KART))
+            {
                 // 2.2 kart hits kart
                 m_all_collisions.push_back(
                     upA, contact_manifold->getContactPoint(0).m_localPointA,
                     upB, contact_manifold->getContactPoint(0).m_localPointB);
+            }
             else if(upB->is(UserPointer::UP_PHYSICAL_OBJECT))
                 // 2.3 kart hits physical object
                 m_all_collisions.push_back(

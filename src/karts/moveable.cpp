@@ -130,6 +130,7 @@ void Moveable::update(float dt)
         m_motion_state->getWorldTransform(m_transform);
     m_velocityLC  = getVelocity()*m_transform.getBasis();
     Vec3 forw_vec = m_transform.getBasis().getColumn(0);
+    m_previous_velocity = m_body->getLinearVelocity();
     m_heading     = -atan2f(forw_vec.getZ(), forw_vec.getX());
 
     // The pitch in hpr is in between -pi and pi. But for the camera it
