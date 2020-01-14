@@ -23,6 +23,7 @@
 #include "guiengine/screen.hpp"
 #include "karts/kart_model.hpp"
 #include "states_screens/grand_prix_cutscene.hpp"
+#include <utility>
 
 namespace irr { namespace scene { class ISceneNode; class ICameraSceneNode; class ILightSceneNode; class IMeshSceneNode; } }
 namespace GUIEngine { class LabelWidget; }
@@ -60,6 +61,11 @@ class GrandPrixWin :
     float m_kart_x[3], m_kart_y[3], m_kart_z[3];
     float m_kart_rotation[3];
 
+    float m_podium_x[3], m_podium_y[3], m_podium_z[3];
+
+    /** Used to display a different message if a player is 1st */
+    bool m_player_won;
+
 public:
     // implement callbacks from parent class GUIEngine::Screen
     void init() OVERRIDE;
@@ -69,7 +75,8 @@ public:
     MusicInformation* getInGameMenuMusic() const OVERRIDE;
 
     /** \pre must be called after pushing the screen, but before onUpdate had the chance to be invoked */
-    void setKarts(const std::string idents[3]);
+    void setKarts(const std::pair<std::string, float> karts[3]);
+    void setPlayerWon(bool some_player_won) { m_player_won = some_player_won; }
 };
 
 #endif

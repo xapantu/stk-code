@@ -19,7 +19,7 @@
 #ifndef HEADER_MUSICOGG_HPP
 #define HEADER_MUSICOGG_HPP
 
-#if HAVE_OGGVORBIS
+#ifdef ENABLE_SOUND
 
 #include <string>
 
@@ -34,11 +34,14 @@
 #endif
 
 #ifdef __APPLE__
+#  define OPENAL_DEPRECATED
 #  include <OpenAL/al.h>
 #else
 #  include <AL/al.h>
 #endif
 #include "audio/music.hpp"
+
+#include <atomic>
 
 /**
   * \brief ogg files based implementation of the Music interface
@@ -47,7 +50,7 @@
 class MusicOggStream : public Music
 {
 public:
-    MusicOggStream();
+    MusicOggStream(float loop_start);
     virtual ~MusicOggStream();
 
     virtual void update();
@@ -71,13 +74,14 @@ private:
     bool release();
     bool streamIntoBuffer(ALuint buffer);
 
+    float           m_loop_start;
     std::string     m_fileName;
     FILE*           m_oggFile;
     OggVorbis_File  m_oggStream;
     vorbis_info*    m_vorbisInfo;
     bool            m_error;
 
-    bool            m_playing;
+    std::atomic_bool m_playing;
 
     ALuint m_soundBuffers[2];
     ALuint m_soundSource;

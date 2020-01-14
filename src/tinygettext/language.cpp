@@ -15,6 +15,8 @@
 //  along with this program; if not, write to the Free Software
 //  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
+#ifndef SERVER_ONLY
+
 #include "language.hpp"
 
 #include "utils/string_utils.hpp"
@@ -164,6 +166,7 @@ static const LanguageSpec languages[] = {
   { "iu", 0,    0, "Inuktitut"                   },
   { "ja", 0,    0, "Japanese"                    },
   { "ja", "JP", 0, "Japanese (Japan)"            },
+  { "jbo",0,    0, "Lojban"                      },
   { "ka", 0,    0, "Georgian"                    },
   { "kk", 0,    0, "Kazakh"                      },
   { "kl", 0,    0, "Kalaallisut"                 },
@@ -172,6 +175,7 @@ static const LanguageSpec languages[] = {
   { "kn", 0,    0, "Kannada"                     },
   { "ko", 0,    0, "Korean"                      },
   { "ko", "KR", 0, "Korean (Korea)"              },
+  { "krl",0,    0, "Karelian"                    },
   { "ku", 0,    0, "Kurdish"                     },
   { "kw", 0,    0, "Cornish"                     },
   { "ky", 0,    0, "Kirghiz"                     },
@@ -187,6 +191,7 @@ static const LanguageSpec languages[] = {
   { "mk", "MK", 0, "Macedonian (Macedonia)"      },
   { "ml", 0,    0, "Malayalam"                   },
   { "mn", 0,    0, "Mongolian"                   },
+  { "mn", "MN", 0, "Mongolian (Mongolia)"        },
   { "mr", 0,    0, "Marathi"                     },
   { "ms", 0,    0, "Malay"                       },
   { "ms", "MY", 0, "Malay (Malaysia)"            },
@@ -213,6 +218,7 @@ static const LanguageSpec languages[] = {
   { "pa", 0,    0, "Punjabi"                     },
   { "pl", 0,    0, "Polish"                      },
   { "pl", "PL", 0, "Polish (Poland)"             },
+  { "pms",0,    0, "Piedmontese"                 },
   { "ps", 0,    0, "Pashto"                      },
   { "pt", 0,    0, "Portuguese"                  },
   { "pt", "BR", 0, "Portuguese (Brazil)"         },
@@ -225,6 +231,8 @@ static const LanguageSpec languages[] = {
   { "ru", "RU", 0, "Russian (Russia"             },
   { "rw", 0,    0, "Kinyarwanda"                 },
   { "sa", 0,    0, "Sanskrit"                    },
+  { "sc", 0,    0, "Sardinian"                   },
+  { "sco",0,    0, "Scots"                       },
   { "sd", 0,    0, "Sindhi"                      },
   { "se", 0,    0, "Sami"                        },
   { "se", "NO", 0, "Sami (Norway)"               },
@@ -573,3 +581,5 @@ Language::operator!=(const Language& rhs)
 } // namespace tinygettext
 
 /* EOF */
+
+#endif

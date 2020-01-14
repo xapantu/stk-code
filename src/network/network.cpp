@@ -20,23 +20,32 @@
 
 #include "config/user_config.hpp"
 #include "io/file_manager.hpp"
+#include "network/event.hpp"
+#include "network/network_config.hpp"
 #include "network/network_string.hpp"
 #include "network/transport_address.hpp"
+#include "utils/file_utils.hpp"
+#include "utils/log.hpp"
 #include "utils/time.hpp"
 
 #include <string.h>
 #if defined(WIN32)
 #  include "ws2tcpip.h"
+#  include <iphlpapi.h>
 #  define inet_ntop InetNtop
 #else
 #  include <arpa/inet.h>
 #  include <errno.h>
+#  include <ifaddrs.h>
 #  include <sys/socket.h>
 #endif
+
+
 #include <pthread.h>
 #include <signal.h>
 
 Synchronised<FILE*>Network::m_log_file = NULL;
+bool Network::m_connection_debug = false;
 
 // ============================================================================
 /** Constructor that just initialises this object (esp. opening the packet
@@ -45,17 +54,28 @@ Synchronised<FILE*>Network::m_log_file = NULL;
  *  \param channel_limit : The maximum number of channels per peer.
  *  \param max_incoming_bandwidth : The maximum incoming bandwidth.
  *  \param max_outgoing_bandwidth : The maximum outgoing bandwidth.
+ *  \param change_port_if_bound : Use another port if the prefered port is
+ *                                already bound to a socket.
  */
 Network::Network(int peer_count, int channel_limit,
                  uint32_t max_incoming_bandwidth,
                  uint32_t max_outgoing_bandwidth,
-                 ENetAddress* address)
+                 ENetAddress* address, bool change_port_if_bound)
 {
     m_host = enet_host_create(address, peer_count, channel_limit, 0, 0);
-    if (!m_host)
+    if (m_host)
+        return;
+    if (change_port_if_bound)
     {
-        Log::fatal("Network", "An error occurred while trying to create an "
-                   "ENet client host.");
+        Log::warn("Network", "%d port is in used, use another port",
+            address->port);
+        ENetAddress new_addr;
+        new_addr.host = address->host;
+        // Any port
+        new_addr.port = 0;
+        m_host = enet_host_create(&new_addr, peer_count, channel_limit, 0, 0);
+        if (!m_host)
+            Log::fatal("Network", "Failed to create socket with any port.");
     }
 }   // Network
 
@@ -75,17 +95,16 @@ Network::~Network()
 ENetPeer *Network::connectTo(const TransportAddress &address)
 {
     const ENetAddress enet_address = address.toEnetAddress();
-    return enet_host_connect(m_host, &enet_address, 2, 0);
+    return enet_host_connect(m_host, &enet_address, EVENT_CHANNEL_COUNT, 0);
 }   // connectTo
 
 // ----------------------------------------------------------------------------
 /** \brief Sends a packet whithout ENet adding its headers.
  *  This function is used in particular to achieve the STUN protocol.
  *  \param data : Data to send.
- *  \param length : Length of the sent data.
  *  \param dst : Destination of the packet.
  */
-void Network::sendRawPacket(uint8_t* data, int length,
+void Network::sendRawPacket(const BareNetworkString &buffer,
                             const TransportAddress& dst)
 {
     struct sockaddr_in to;
@@ -96,11 +115,14 @@ void Network::sendRawPacket(uint8_t* data, int length,
     to.sin_port = htons(dst.getPort());
     to.sin_addr.s_addr = htonl(dst.getIP());
 
-    sendto(m_host->socket, (char*)data, length, 0,(sockaddr*)&to, to_len);
-    Log::verbose("Network", "Raw packet sent to %s",
-                 dst.toString().c_str());
-    Network::logPacket(NetworkString(std::string((char*)(data), length)),
-                       false);
+    sendto(m_host->socket, buffer.getData(), buffer.size(), 0,
+           (sockaddr*)&to, to_len);
+    if (m_connection_debug)
+    {
+        Log::verbose("Network", "Raw packet sent to %s",
+            dst.toString().c_str());
+    }
+    Network::logPacket(buffer, false);
 }   // sendRawPacket
 
 // ----------------------------------------------------------------------------
@@ -146,13 +168,13 @@ int Network::receiveRawPacket(char *buffer, int buf_len,
     if(len<0)
         return -1;
 
-    Network::logPacket(NetworkString(std::string(buffer, len)), true);
+    Network::logPacket(BareNetworkString(buffer, len), true);
     sender->setIP(ntohl((uint32_t)(addr.sin_addr.s_addr)) );
     sender->setPort( ntohs(addr.sin_port) );
-    if (addr.sin_family == AF_INET)
+    if (addr.sin_family == AF_INET && m_connection_debug)
     {
-        Log::info("Network", "IPv4 Address of the sender was %s",
-                  sender->toString().c_str());
+        Log::verbose("Network", "IPv4 Address of the sender was %s",
+            sender->toString().c_str());
     }
     return len;
 }   // receiveRawPacket
@@ -161,11 +183,12 @@ int Network::receiveRawPacket(char *buffer, int buf_len,
 /** \brief Broadcasts a packet to all peers.
  *  \param data : Data to send.
  */
-void Network::broadcastPacket(const NetworkString& data, bool reliable)
+void Network::broadcastPacket(NetworkString *data, bool reliable)
 {
-    ENetPacket* packet = enet_packet_create(data.getBytes(), data.size() + 1,
-                                      reliable ? ENET_PACKET_FLAG_RELIABLE
-                                               : ENET_PACKET_FLAG_UNSEQUENCED);
+    ENetPacket* packet = enet_packet_create(data->getData(), data->size() + 1,
+        (reliable ? ENET_PACKET_FLAG_RELIABLE :
+        (ENET_PACKET_FLAG_UNSEQUENCED | ENET_PACKET_FLAG_UNRELIABLE_FRAGMENT))
+        );
     enet_host_broadcast(m_host, 0, packet);
 }   // broadcastPacket
 
@@ -173,14 +196,14 @@ void Network::broadcastPacket(const NetworkString& data, bool reliable)
 void Network::openLog()
 {
     m_log_file.setAtomic(NULL);
-    if (UserConfigParams::m_packets_log_filename.toString() != "")
+    if (UserConfigParams::m_log_packets)
     {
         std::string s = file_manager
-            ->getUserConfigFile(UserConfigParams::m_packets_log_filename);
-        m_log_file.setAtomic(fopen(s.c_str(), "w+"));
+            ->getUserConfigFile(FileManager::getStdoutName()+".packet");
+        m_log_file.setAtomic(FileUtils::fopenU8Path(s, "w+"));
+        if (!m_log_file.getData())
+            Log::warn("STKHost", "Network packets won't be logged: no file.");
     }
-    if (!m_log_file.getData())
-        Log::warn("STKHost", "Network packets won't be logged: no file.");
 }   // openLog
 
 // ----------------------------------------------------------------------------
@@ -189,7 +212,7 @@ void Network::openLog()
  *  \param incoming : True if the packet comes from a peer.
  *  False if it's sent to a peer.
  */
-void Network::logPacket(const NetworkString &ns, bool incoming)
+void Network::logPacket(const BareNetworkString &ns, bool incoming)
 {
     if (m_log_file.getData() == NULL) // read only access, no need to lock
         return;
@@ -199,12 +222,10 @@ void Network::logPacket(const NetworkString &ns, bool incoming)
     m_log_file.lock();
     fprintf(m_log_file.getData(), "[%d\t]  %s  ",
             (int)(StkTime::getRealTime()), arrow);
-
-    for (int i = 0; i < ns.size(); i++)
-    {
-        fprintf(m_log_file.getData(), "%d.", ns[i]);
-    }
-    fprintf(m_log_file.getData(), "\n");
+    // Indentation for all lines after the first, so that the dump
+    // is nicely aligned.
+    std::string indent("                ");
+    fprintf(m_log_file.getData(), "%s", ns.getLogMessage(indent).c_str());
     m_log_file.unlock();
 }   // logPacket
 // ----------------------------------------------------------------------------

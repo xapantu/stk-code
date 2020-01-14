@@ -30,6 +30,8 @@
 
 #include "enet/enet.h"
 
+#include <memory>
+
 class STKPeer;
 
 /*!
@@ -42,6 +44,20 @@ enum EVENT_TYPE
     EVENT_TYPE_DISCONNECTED,//!< A peer is disconnected
     EVENT_TYPE_MESSAGE      //!< A message between server and client protocols
 };
+
+/*!
+ * \enum EVENT_CHANNEL
+ * \brief Represents a list of channels stk used.
+ */
+enum EVENT_CHANNEL : uint8_t
+{
+    EVENT_CHANNEL_NORMAL = 0,   //!< Normal channel (encrypted if supported)
+    EVENT_CHANNEL_UNENCRYPTED = 1,//!< Unencrypted channel
+    EVENT_CHANNEL_DATA_TRANSFER = 2,//!< Data transfer channel (like game replay)
+    EVENT_CHANNEL_COUNT = 3
+};
+
+enum PeerDisconnectInfo : unsigned int;
 
 /*!
  * \class Event
@@ -57,40 +73,55 @@ class Event
 {
 private:
     LEAK_CHECK()
-    /** Copy of the data passed by the event. */
-    NetworkString m_data;
 
-    /** A pointer on the ENetPacket to be deleted. */
-    ENetPacket* m_packet;
+    /** Copy of the data passed by the event. */
+    NetworkString *m_data;
 
     /**  Type of the event. */
     EVENT_TYPE m_type;
 
     /** Pointer to the peer that triggered that event. */
-    STKPeer* m_peer;
+    std::shared_ptr<STKPeer> m_peer;
+
+    /** Arrivial time of the event, for timeouts. */
+    uint64_t m_arrival_time;
+
+    /** For disconnection event, a bit more info is provided. */
+    PeerDisconnectInfo m_pdi;
 
 public:
-         Event(ENetEvent* event);
+         Event(ENetEvent* event, std::shared_ptr<STKPeer> peer);
         ~Event();
-    void removeFront(int size);
 
     // ------------------------------------------------------------------------
     /** Returns the type of this event. */
     EVENT_TYPE getType() const { return m_type; }
-
+    // ------------------------------------------------------------------------
+    /** Returns the peer of this event (shared pointer). */
+    std::shared_ptr<STKPeer> getPeerSP() const { return m_peer; }
     // ------------------------------------------------------------------------
     /** Returns the peer of this event. */
-    STKPeer* getPeer() const { return m_peer;  }
+    STKPeer* getPeer() const { return m_peer.get(); }
     // ------------------------------------------------------------------------
     /** \brief Get a const reference to the received data.
      *  This is empty for events like connection or disconnections. 
      */
-    const NetworkString& data() const { return m_data; }
+    const NetworkString& data() const { return *m_data; }
     // ------------------------------------------------------------------------
     /** \brief Get a non-const reference to the received data.
      *  A copy of the message data. This is empty for events like
      *  connection or disconnections. */
-    NetworkString& data() { return m_data; }
+    NetworkString& data() { return *m_data; }
+    // ------------------------------------------------------------------------
+    /** Determines if this event should be delivered synchronous or not.
+     *  Only messages can be delivered synchronous. */
+    bool isSynchronous() const { return m_type==EVENT_TYPE_MESSAGE &&
+                                        m_data->isSynchronous();     }
+    // ------------------------------------------------------------------------
+    /** Returns the arrival time of this event. */
+    uint64_t getArrivalTime() const { return m_arrival_time; }
+    // ------------------------------------------------------------------------
+    PeerDisconnectInfo getPeerDisconnectInfo() const { return m_pdi; }
     // ------------------------------------------------------------------------
 
 };   // class Event

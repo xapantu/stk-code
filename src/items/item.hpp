@@ -20,10 +20,21 @@
 #ifndef HEADER_ITEM_HPP
 #define HEADER_ITEM_HPP
 
-/**
-  * \defgroup items
-  * Defines the various collectibles and weapons of STK.
-  */
+/** \defgroup items
+ *  Defines the various collectibles and weapons of STK.
+ */
+
+#include "utils/cpp2011.hpp"
+#include "utils/leak_check.hpp"
+#include "utils/log.hpp"
+#include "utils/no_copy.hpp"
+#include "utils/vec3.hpp"
+
+#include <line3d.h>
+
+class BareNetworkString;
+class AbstractKart;
+class LODNode;
 
 namespace irr
 {
@@ -31,40 +42,22 @@ namespace irr
 }
 using namespace irr;
 
-#include "utils/leak_check.hpp"
-#include "utils/no_copy.hpp"
-#include "utils/vec3.hpp"
-
-#include <line2d.h>
-
-class AbstractKart;
-class LODNode;
-class Item;
-
-// -----------------------------------------------------------------------------
-
-/**
- * \ingroup items
- * \brief Listener class to go with Items of type ITEM_TRIGGER
+// ============================================================================
+/** \ingroup items
+ *  Contains the state information of an item, i.e. all non-visual information
+ *  only, which also can change (e.g. position and AI information is constant
+ *  and therefore not stored here). This class is used as a base class for
+ *  item and for networking to save item states.
  */
-class TriggerItemListener
+class ItemState
 {
-public:
-    virtual ~TriggerItemListener() {}
-    virtual void onTriggerItemApproached() = 0;
-};
-
-/**
-  * \ingroup items
-  */
-class Item : public NoCopy
-{
+    LEAK_CHECK();
 public:
     /**
-      * The list of all items. Important for the switch item function:
-      * bubblegum must be the last item (since bubble gum can't be
-      * switched with any other item, since it's a different objecct).
-      */
+    * The list of all items. Important for the switch item function:
+    * bubblegum must be the last item (since bubble gum can't be
+    * switched with any other item, since it's a different objecct).
+    */
     enum ItemType
     {
         ITEM_FIRST,
@@ -77,181 +70,182 @@ public:
 
         /** For easter egg mode only. */
         ITEM_EASTER_EGG,
-        /** An invisible item that can be used to trigger some behavior when
-          * approaching a point
-          */
-        ITEM_TRIGGER,
-        ITEM_LAST = ITEM_TRIGGER,
+        ITEM_LAST = ITEM_EASTER_EGG,
         ITEM_COUNT,
         ITEM_NONE
     };
 
 private:
-    LEAK_CHECK();
-
     /** Item type. */
-    ItemType      m_type;
+    ItemType m_type;
 
     /** If the item is switched, this contains the original type.
-     *  It is ITEM_NONE if the item is not switched. */
-    ItemType      m_original_type;
+    *  It is ITEM_NONE if the item is not switched. */
+    ItemType m_original_type;
 
-    /** Stores the original rotation of an item. This is used in
-     *  case of a switch to restore the rotation of a bubble gum
-     *  (bubble gums don't rotate, but it will be replaced with
-     *  a nitro which rotates, and so overwrites the original
-     *  rotation). */
-    Vec3 m_original_hpr;
+    /** Time till a collected item reappears. When this value is <=0 this
+     *  means that the item is availabe to be collected. When the value is
+     *  > 0 it means that the item is not available. */
+    int m_ticks_till_return;
 
-    /** True if item was collected & is not displayed. */
-    bool          m_collected;
-
-    /** Time till a collected item reappears. */
-    float         m_time_till_return;
-
-    /** Scene node of this item. */
-    LODNode *m_node;
-
-    /** Stores the original mesh in order to reset it. */
-    scene::IMesh *m_original_mesh;
-    scene::IMesh *m_original_lowmesh;
-
-    /** The original position - saves calls to m_node->getPosition()
-     * and then converting this value to a Vec3. */
-    Vec3          m_xyz;
-
-    /** Index in item_manager field. */
-    unsigned int  m_item_id;
-
-    /** Set to false if item should not rotate. */
-    bool          m_rotate;
-
-    /** Optionally set this if this item was laid by a particular kart. in
-     *  this case the 'm_deactive_time' will also be set - see below. */
-    const AbstractKart   *m_event_handler;
-
-    /** Kart that emitted this item if any */
-    const AbstractKart   *m_emitter;
+    /** Index in item_manager field. This field can also take on a negative
+     *  value when used in the NetworkItemManager. */
+    int  m_item_id;
 
     /** Optionally if item was placed by a kart, a timer can be used to
-     *  temporarly deactivate collision so a kart is not hit by its own item */
-    float         m_deactive_time;
+    *  temporarly deactivate collision so a kart is not hit by its own item */
+    int m_deactive_ticks;
 
     /** Counts how often an item is used before it disappears. Used for
      *  bubble gum to make them disappear after a while. A value >0
      *  indicates that the item still exists, =0 that the item can be
-     *  deleted, and <0 that the item will never be deleted. */
-    int           m_disappear_counter;
+     *  deleted, and <0 that the item will never be deleted, i.e. it 
+     *  will always reappear after a while. */
+    int m_used_up_counter;
 
-    /** callback used if type == ITEM_TRIGGER */
-    TriggerItemListener* m_listener;
+    /** The position of this ItemState. */
+    Vec3 m_xyz;
 
-    /** square distance at which item is collected */
-    float         m_distance_2;
-
-    /** The graph node this item is on. */
-    int           m_graph_node;
-
-    /** Distance from the center of the quad this item is in. This value is
-     *  >0 if it is to the right of the center, and undefined if this quad
-     *  is not on any quad. */
-    float         m_distance_from_center;
-
-    /** The closest point to the left and right of this item at which it
-     *  would not be collected. Used by the AI to avoid items. */
-    Vec3          *m_avoidance_points[2];
-
-
-    void          initItem(ItemType type, const Vec3 &xyz);
-    void          setType(ItemType type);
-
-public:
-                  Item(ItemType type, const Vec3& xyz, const Vec3& normal,
-                       scene::IMesh* mesh, scene::IMesh* lowres_mesh);
-                  Item(const Vec3& xyz, float distance,
-                       TriggerItemListener* trigger);
-    virtual       ~Item ();
-    void          update  (float delta);
-    virtual void  collected(const AbstractKart *kart, float t=2.0f);
-    void          setParent(AbstractKart* parent);
-    void          reset();
-    void          switchTo(ItemType type, scene::IMesh *mesh, scene::IMesh *lowmesh);
-    void          switchBack();
-
-    const AbstractKart* getEmitter() const { return m_emitter; }
-
-
-    // ------------------------------------------------------------------------
-    /** Returns true if the Kart is close enough to hit this item, the item is
-     *  not deactivated anymore, and it wasn't placed by this kart (this is
-     *  e.g. used to avoid that a kart hits a bubble gum it just dropped).
-     *  \param kart Kart to test.
-     *  \param xyz Location of kart (avoiding to use kart->getXYZ() so that
-     *         kart.hpp does not need to be included here).
+    /** The original rotation of the item. While this is technically a visual
+     *  only value (atm, it could be used for collision detection), it is
+     *  required to make sure a client can display items with the right normal
+     *  (in case that a client would get a different (or no) normal from a
+     *  raycast).
      */
-    bool hitKart (const Vec3 &xyz, const AbstractKart *kart=NULL) const
-    {
-        return (m_event_handler!=kart || m_deactive_time <=0) &&
-               (xyz-m_xyz).length2()<m_distance_2;
-    }   // hitKart
+    btQuaternion m_original_rotation;
 
-private:
-    // ------------------------------------------------------------------------
-    /** Returns true if the Kart is close enough to hit this item, the item is
-     *  not deactivated anymore, and it wasn't placed by this kart (this is
-     *  e.g. used to avoid that a kart hits a bubble gum it just dropped).
-     *  This function only uses the 2d coordinates, and it used by the AI only.
-     *  \param kart Kart to test.
-     *  \param xyz Location of kart (avoiding to use kart->getXYZ() so that
-     *         kart.hpp does not need to be included here).
-     */
-    bool hitKart (const core::vector2df &xyz,
-                  const AbstractKart *kart=NULL) const
-    {
-        if(m_event_handler==kart && m_deactive_time >0) return false;
-        float d2 = (m_xyz.getX()-xyz.X)*(m_xyz.getX()-xyz.X)
-                 + (m_xyz.getZ()-xyz.Y)*(m_xyz.getZ()-xyz.Y);
-        return d2 < m_distance_2;
-    }   // hitKart
+    /** The 'owner' of the item, i.e. the kart that dropped this item.
+    *  Is NULL if the item is part of the track. */
+    const AbstractKart *m_previous_owner;
 
 protected:
+
+    friend class ItemManager;
+    friend class NetworkItemManager;
+    // ------------------------------------------------------------------------
+    virtual void setType(ItemType type) { m_type = type; }
     // ------------------------------------------------------------------------
     // Some convenient functions for the AI only
     friend class SkiddingAI;
+    friend class TestAI;
     /** Returns true if the specified line segment would come close enough
      *  to this item so that this item would be collected.
      *  \param line The line segment which is tested if it is close enough
      *         to this item so that this item would be collected.
      */
-    bool hitLine(const core::line2df &line,
-                  const AbstractKart *kart=NULL) const
+    bool hitLine(const core::line3df &line,
+                 const AbstractKart *kart = NULL) const
     {
-        if(m_event_handler==kart && m_deactive_time >0) return false;
-        core::vector2df p2d = m_xyz.toIrrVector2d();
-        core::vector2df closest = line.getClosestPoint(p2d);
+        if (getPreviousOwner() == kart && getDeactivatedTicks() > 0)
+            return false;
+
+        Vec3 closest = line.getClosestPoint(getXYZ().toIrrVector());
         return hitKart(closest, kart);
     }   // hitLine
 
 public:
     // ------------------------------------------------------------------------
-    /** Sets the index of this item in the item manager list. */
-    void          setItemId(unsigned int n)  { m_item_id = n; }
+         ItemState(ItemType type, const AbstractKart *owner=NULL, int id = -1);
     // ------------------------------------------------------------------------
-    /** Returns the index of this item in the item manager list. */
-    unsigned int  getItemId()    const { return m_item_id;  }
+         ItemState(const BareNetworkString& buffer);
     // ------------------------------------------------------------------------
-    /** Returns the type of this item. */
-    ItemType      getType()      const { return m_type;     }
+    void initItem(ItemType type, const Vec3& xyz, const Vec3& normal);
+    void update(int ticks);
+    void setDisappearCounter();
+    virtual void collected(const AbstractKart *kart);
     // ------------------------------------------------------------------------
-    /** Returns true if this item is currently collected. */
-    bool          wasCollected() const { return m_collected;}
+    virtual ~ItemState() {}
+         
+    // -----------------------------------------------------------------------
+    /** Dummy implementation, causing an abort if it should be called to
+     *  catch any errors early. */
+    virtual void updateGraphics(float dt)
+    {
+        Log::fatal("ItemState", "updateGraphics() called for ItemState.");
+    }   // updateGraphics
+
+    // -----------------------------------------------------------------------
+    virtual bool hitKart(const Vec3 &xyz,
+                         const AbstractKart *kart = NULL) const
+    {
+        Log::fatal("ItemState", "hitKart() called for ItemState.");
+        return false;
+    }   // hitKart
+
+    // -----------------------------------------------------------------------
+    virtual int getGraphNode() const 
+    {
+        Log::fatal("ItemState", "getGraphNode() called for ItemState.");
+        return 0;
+    }   // getGraphNode
+
+    // -----------------------------------------------------------------------
+    virtual const Vec3 *getAvoidancePoint(bool left) const
+    {
+        Log::fatal("ItemState", "getAvoidancePoint() called for ItemState.");
+        // Return doesn't matter, fatal aborts
+        return &m_xyz;
+    }   // getAvoidancePoint
+
+    // -----------------------------------------------------------------------
+    virtual float getDistanceFromCenter() const
+    {
+        Log::fatal("itemState",
+                   "getDistanceFromCentre() called for ItemState.");
+        return 0;
+    }   // getDistanceFromCentre
+
+    // -----------------------------------------------------------------------
+    /** Resets an item to its start state. */
+    virtual void reset()
+    {
+        m_deactive_ticks    = 0;
+        m_ticks_till_return = 0;
+        setDisappearCounter();
+        // If the item was switched:
+        if (m_original_type != ITEM_NONE)
+        {
+            setType(m_original_type);
+            m_original_type = ITEM_NONE;
+        }
+    }   // reset
+
+    // -----------------------------------------------------------------------
+    /** Switches an item to be of a different type. Used for the switch
+     *  powerup.
+     *  \param type New type for this item.
+     */
+    virtual void switchTo(ItemType type)
+    {
+        // triggers and easter eggs should not be switched
+        if (m_type == ITEM_EASTER_EGG) return;
+        m_original_type = m_type;
+        setType(type);
+        return;
+    }   // switchTo
+
     // ------------------------------------------------------------------------
-    /** Returns true if this item is used up and can be removed. */
-    bool          isUsedUp()     const {return m_disappear_counter==0; }
+    /** Returns true if this item was not actually switched (e.g. trigger etc)
+     */
+    virtual bool switchBack()
+    {
+        // If the item is not switched, do nothing. This can happen if a bubble
+        // gum is dropped while items are switched - when switching back, this
+        // bubble gum has no original type.
+        if (m_original_type == ITEM_NONE)
+            return true;
+        setType(m_original_type);
+        m_original_type = ITEM_NONE;
+        return false;
+    }   // switchBack
+
     // ------------------------------------------------------------------------
-    /** Returns true if this item can be used up, and therefore needs to
-     *  be removed when the game is reset. */
-    bool          canBeUsedUp()  const {return m_disappear_counter>-1; }
+    /** Returns if this item is negative, i.e. a banana or bubblegum. */
+    bool isNegativeItem() const
+    {
+        return m_type == ITEM_BANANA || m_type == ITEM_BUBBLEGUM ||
+               m_type == ITEM_BUBBLEGUM_NOLOK;
+    }
     // ------------------------------------------------------------------------
     /** Sets how long an item should be disabled. While item itself sets
      *  a default, this time is too short in case that a kart that has a bomb
@@ -261,31 +255,174 @@ public:
      *  details.
      *  \param f Time till the item can be used again.
      */
-    void          setDisableTime(float f) { m_time_till_return = f; }
+    void setTicksTillReturn(int t) { m_ticks_till_return = t; }
     // ------------------------------------------------------------------------
     /** Returns the time the item is disabled for. */
-    float         getDisableTime() const { return m_time_till_return; }
+    int getTicksTillReturn() const { return m_ticks_till_return; }
+    // ------------------------------------------------------------------------
+    /** Returns true if this item is currently collected. */
+    bool isAvailable() const { return m_ticks_till_return <= 0; }
+    // ------------------------------------------------------------------------
+    /** Returns the type of this item. */
+    ItemType getType() const { return m_type; }
+    // ------------------------------------------------------------------------
+    ItemType getGrahpicalType() const;
+    // ------------------------------------------------------------------------
+    /** Returns the original type of this item. */
+    ItemType getOriginalType() const { return m_original_type; }
+    // ------------------------------------------------------------------------
+    /** Sets the index of this item in the item manager list. */
+    void setItemId(unsigned int n) { m_item_id = n; }
+    // ------------------------------------------------------------------------
+    /** Returns the index of this item in the item manager list. */
+    unsigned int getItemId() const { return m_item_id; }
+    // ------------------------------------------------------------------------
+    /** Returns true if this item is used up and can be removed. */
+    bool isUsedUp() const { return m_used_up_counter == 0; }
+    // ------------------------------------------------------------------------
+    /** Returns true if this item can be used up, and therefore needs to
+     *  be removed when the game is reset. */
+    bool canBeUsedUp()  const { return m_used_up_counter>-1; }
+    // ------------------------------------------------------------------------
+    /** Returns the number of ticks during which the item is deactivated (i.e.
+     *  it was collected). */
+    int getDeactivatedTicks() const { return m_deactive_ticks; }
+    // ------------------------------------------------------------------------
+    /** Sets the number of ticks during which the item is deactivated (i.e.
+     *  it was collected). */
+    void setDeactivatedTicks(int ticks) { m_deactive_ticks = ticks; }
+    // ------------------------------------------------------------------------
+    /** Returns the kart that dropped this item (or NULL if the item was not
+     *  dropped by a kart. */
+    const AbstractKart *getPreviousOwner() const { return m_previous_owner; }
+    // ------------------------------------------------------------------------
+    void setXYZ(const Vec3& xyz) { m_xyz = xyz; }
     // ------------------------------------------------------------------------
     /** Returns the XYZ position of the item. */
-    const Vec3&   getXYZ() const { return m_xyz; }
+    const Vec3& getXYZ() const { return m_xyz; }
+    // ------------------------------------------------------------------------
+    /** Returns the normal of the ItemState. */
+    const Vec3 getNormal() const
+    {
+        return quatRotate(m_original_rotation, Vec3(0.0f, 1.0f, 0.0f));
+    }
+    // ------------------------------------------------------------------------
+    /** Returns the original rotation of the item. */
+    const btQuaternion& getOriginalRotation() const
+    {
+        return m_original_rotation;
+    }
+    // ------------------------------------------------------------------------
+    void saveCompleteState(BareNetworkString* buffer) const;
+};   // class ItemState
+
+// ============================================================================
+/**
+  * \ingroup items
+  */
+class Item : public ItemState, public NoCopy
+{
+
+private:
+    /** Scene node of this item. */
+    LODNode *m_node;
+
+    /** Graphical type of the mesh. */
+    ItemType m_graphical_type;
+
+    /** Stores if the item was available in the previously rendered frame. */
+    bool m_was_available_previously;
+
+    /** square distance at which item is collected */
+    float m_distance_2;
+
+    /** The graph node this item is on. */
+    int m_graph_node;
+
+    /** Distance from the center of the quad this item is in. This value is
+     *  >0 if it is to the right of the center, and undefined if this quad
+     *  is not on any quad. */
+    float m_distance_from_center;
+
+    /** The closest point to the left and right of this item at which it
+     *  would not be collected. Used by the AI to avoid items. */
+    Vec3 *m_avoidance_points[2];
+
+    void          initItem(ItemType type, const Vec3 &xyz, const Vec3 &normal);
+    void          setMesh(scene::IMesh* mesh, scene::IMesh* lowres_mesh);
+    void          handleNewMesh(ItemType type);
+
+public:
+                  Item(ItemType type, const Vec3& xyz, const Vec3& normal,
+                       scene::IMesh* mesh, scene::IMesh* lowres_mesh,
+                       const AbstractKart *owner);
+    virtual       ~Item ();
+    virtual void  updateGraphics(float dt) OVERRIDE;
+    virtual void  reset() OVERRIDE;
+
+    //-------------------------------------------------------------------------
+    /** Is called when the item is hit by a kart.  It sets the flag that the
+     *  item has been collected, and the time to return to the parameter.
+     *  \param kart The kart that collected the item.
+     */
+    virtual void collected(const AbstractKart *kart)  OVERRIDE
+    {
+        ItemState::collected(kart);
+    }   // isCollected
+    //-------------------------------------------------------------------------
+    /** Switch backs to the original item. Returns true if the item was not
+     *  actually switched (e.g. trigger, or bubblegum dropped during switch
+     *  time). The return value is not actually used, but necessary in order
+     *  to overwrite ItemState::switchBack()
+     */
+    virtual bool switchBack() OVERRIDE
+    {
+        if (ItemState::switchBack())
+            return true;
+        return false;
+    }   // switchBack
+    // ------------------------------------------------------------------------
+    /** Returns true if the Kart is close enough to hit this item, the item is
+     *  not deactivated anymore, and it wasn't placed by this kart (this is
+     *  e.g. used to avoid that a kart hits a bubble gum it just dropped).
+     *  \param kart Kart to test.
+     *  \param xyz Location of kart (avoiding to use kart->getXYZ() so that
+     *         kart.hpp does not need to be included here).
+     */
+    virtual bool hitKart(const Vec3 &xyz, const AbstractKart *kart=NULL) const
+        OVERRIDE
+    {
+        if (getPreviousOwner() == kart && getDeactivatedTicks() > 0)
+            return false;
+        Vec3 lc = quatRotate(getOriginalRotation(), xyz - getXYZ());
+        // Don't be too strict if the kart is a bit above the item
+        lc.setY(lc.getY() / 2.0f);
+        return lc.length2() < m_distance_2;
+    }   // hitKart
+    // ------------------------------------------------------------------------
+    bool rotating() const               { return getType() != ITEM_BUBBLEGUM; }
+
+public:
     // ------------------------------------------------------------------------
     /** Returns the index of the graph node this item is on. */
-    int           getGraphNode() const { return m_graph_node; }
+    virtual int getGraphNode() const OVERRIDE { return m_graph_node; }
     // ------------------------------------------------------------------------
     /** Returns the distance from center: negative means left of center,
      *  positive means right of center. */
-    float getDistanceFromCenter() const { return m_distance_from_center; }
+    virtual float getDistanceFromCenter() const OVERRIDE
+    {
+        return m_distance_from_center;
+    }   // getDistanceFromCenter
     // ------------------------------------------------------------------------
     /** Returns a point to the left or right of the item which will not trigger
      *  a collection of this item.
      *  \param left If true, return a point to the left, else a point to
      *         the right. */
-    const Vec3 *getAvoidancePoint(bool left) const
+    virtual const Vec3 *getAvoidancePoint(bool left) const OVERRIDE
     {
         if(left) return m_avoidance_points[0];
         return m_avoidance_points[1];
     }   // getAvoidancePoint
-
     // ------------------------------------------------------------------------
     scene::ISceneNode *getSceneNode()
     {

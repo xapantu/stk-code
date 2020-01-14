@@ -31,16 +31,30 @@
 class PhysicalObject;
 
 /**
- * \brief An implementation of World, to provide the 3 strikes battle game mode
+ *  \brief An implementation of WorldWithRank, to provide the 3 strikes battle
+ *  game mode
  * \ingroup modes
  */
 class ThreeStrikesBattle : public WorldWithRank
 {
 private:
+
+    // This struct is used to sort karts by time/lives
+    struct KartValues
+    {
+        int id;
+        int time;
+        int lives;
+
+        bool operator < (const KartValues& k) const
+        {
+            return (time == k.time) ? (lives < k.lives) : (time < k.time);
+        }   // operator <
+    }; // KartValues
+
     struct BattleInfo
     {
         int  m_lives;
-        int  m_on_node;
     };
 
     /** This vector contains an 'BattleInfo' struct for every kart in the race.
@@ -71,47 +85,69 @@ private:
 
     PtrVector<TrackObject, REF> m_tires;
 
-    /** Function to update the locations of all karts on the polygon map */
-    void updateKartNodes();
+    /** Profiling usage */
+    int m_total_rescue;
+    int m_frame_count;
+    int m_start_time;
+    int m_total_hit;
+
+    std::vector<AbstractKart*> m_spare_tire_karts;
+    int m_next_sta_spawn_ticks;
 
 public:
-
     /** Used to show a nice graph when battle is over */
     struct BattleEvent
     {
         float m_time;
         std::vector<BattleInfo> m_kart_info;
     };
+    // ------------------------------------------------------------------------
     std::vector<BattleEvent> m_battle_events;
-
+    // ------------------------------------------------------------------------
     ThreeStrikesBattle();
+    // ------------------------------------------------------------------------
     virtual ~ThreeStrikesBattle();
-
-    virtual void init();
-
+    // ------------------------------------------------------------------------
+    virtual void init() OVERRIDE;
+    // ------------------------------------------------------------------------
     // clock events
-    virtual bool isRaceOver();
-    virtual void terminateRace();
-
+    virtual bool isRaceOver() OVERRIDE;
+    // ------------------------------------------------------------------------
+    virtual void terminateRace() OVERRIDE;
+    // ------------------------------------------------------------------------
     // overriding World methods
-    virtual void reset();
-
-    //virtual void getDefaultCollectibles(int& collectible_type, int& amount);
-    virtual bool useFastMusicNearEnd() const { return false; }
+    virtual void reset(bool restart=false) OVERRIDE;
+    // ------------------------------------------------------------------------
     virtual void getKartsDisplayInfo(
-                          std::vector<RaceGUIBase::KartIconDisplayInfo> *info);
-    virtual bool raceHasLaps(){ return false; }
-
-    virtual const std::string& getIdent() const;
-
-    virtual void kartHit(const unsigned int kart_id);
-    virtual void update(float dt);
-
-    virtual void kartAdded(AbstractKart* kart, scene::ISceneNode* node);
-
-    int getKartNode(unsigned int kart_id) const;
-
+                 std::vector<RaceGUIBase::KartIconDisplayInfo> *info) OVERRIDE;
+    // ------------------------------------------------------------------------
+    virtual bool raceHasLaps() OVERRIDE                       { return false; }
+    // ------------------------------------------------------------------------
+    virtual const std::string& getIdent() const OVERRIDE;
+    // ------------------------------------------------------------------------
+    virtual bool kartHit(int kart_id, int hitter = -1) OVERRIDE;
+    // ------------------------------------------------------------------------
+    virtual void update(int ticks) OVERRIDE;
+    // ------------------------------------------------------------------------
+    virtual void kartAdded(AbstractKart* kart, scene::ISceneNode* node)
+                                                                      OVERRIDE;
+    // ------------------------------------------------------------------------
+    virtual void enterRaceOverState() OVERRIDE;
+    // ------------------------------------------------------------------------
+    virtual void loadCustomModels() OVERRIDE;
+    // ------------------------------------------------------------------------
     void updateKartRanks();
+    // ------------------------------------------------------------------------
+    void increaseRescueCount()                            { m_total_rescue++; }
+    // ------------------------------------------------------------------------
+    void addKartLife(unsigned int id);
+    // ------------------------------------------------------------------------
+    int getKartLife(unsigned int id) const  { return m_kart_info[id].m_lives; }
+    // ------------------------------------------------------------------------
+    bool spareTireKartsSpawned() const;
+    // ------------------------------------------------------------------------
+    void spawnSpareTireKarts();
+
 };   // ThreeStrikesBattles
 
 

@@ -21,41 +21,197 @@
 
 #include "graphics/irr_driver.hpp"
 #include "graphics/lod_node.hpp"
+#include "graphics/sp/sp_mesh.hpp"
+#include "graphics/sp/sp_mesh_node.hpp"
+#include "items/item_manager.hpp"
 #include "karts/abstract_kart.hpp"
-#include "modes/easter_egg_hunt.hpp"
-#include "modes/three_strikes_battle.hpp"
 #include "modes/world.hpp"
+#include "network/network_string.hpp"
+#include "network/rewind_manager.hpp"
+#include "tracks/arena_graph.hpp"
+#include "tracks/drive_graph.hpp"
+#include "tracks/drive_node.hpp"
 #include "tracks/track.hpp"
 #include "utils/constants.hpp"
-#include "utils/vec3.hpp"
+#include "utils/string_utils.hpp"
 
 #include <IMeshSceneNode.h>
 #include <ISceneManager.h>
 
-Item::Item(ItemType type, const Vec3& xyz, const Vec3& normal,
-           scene::IMesh* mesh, scene::IMesh* lowres_mesh)
+
+// ----------------------------------------------------------------------------
+/** Constructor.
+ *  \param type Type of the item.
+ *  \param owner If not NULL it is the kart that dropped this item; NULL
+ *         indicates an item that's part of the track.
+ *  \param id Index of this item in the array of all items.
+ */
+ItemState::ItemState(ItemType type, const AbstractKart *owner, int id)
 {
-    assert(type != ITEM_TRIGGER); // use other constructor for that
+    setType(type);
+    m_item_id = id;
+    m_previous_owner = owner;
+    m_used_up_counter = -1;
+     if (owner)
+         setDeactivatedTicks(stk_config->time2Ticks(1.5f));
+    else
+        setDeactivatedTicks(0);
+}   // ItemState(ItemType)
 
-    m_distance_2        = 0.8f;
-    initItem(type, xyz);
-    // Sets heading to 0, and sets pitch and roll depending on the normal. */
-    m_original_hpr      = Vec3(0, normal);
-    m_original_mesh     = mesh;
-    m_original_lowmesh  = lowres_mesh;
-    m_listener          = NULL;
+//-----------------------------------------------------------------------------
+/** Constructor to restore item state at current ticks in client for live join
+ */
+ItemState::ItemState(const BareNetworkString& buffer)
+{
+    m_type = (ItemType)buffer.getUInt8();
+    m_original_type = (ItemType)buffer.getUInt8();
+    m_ticks_till_return = buffer.getUInt32();
+    m_item_id = buffer.getUInt32();
+    m_deactive_ticks = buffer.getUInt32();
+    m_used_up_counter = buffer.getUInt32();
+    m_xyz = buffer.getVec3();
+    m_original_rotation = buffer.getQuat();
+    m_previous_owner = NULL;
+    int8_t kart_id = buffer.getUInt8();
+    if (kart_id != -1)
+        m_previous_owner = World::getWorld()->getKart(kart_id);
+}   // ItemState(const BareNetworkString& buffer)
 
-    LODNode* lodnode    = new LODNode("item",
-                                      irr_driver->getSceneManager()->getRootSceneNode(),
-                                      irr_driver->getSceneManager());
-    scene::IMeshSceneNode* meshnode = 
+// ------------------------------------------------------------------------
+/** Sets the disappear counter depending on type.  */
+void ItemState::setDisappearCounter()
+{
+    switch (m_type)
+    {
+    case ITEM_BUBBLEGUM:
+        m_used_up_counter = stk_config->m_bubblegum_counter; break;
+    case ITEM_EASTER_EGG:
+        m_used_up_counter = -1; break;
+    default:
+        m_used_up_counter = -1;
+    }   // switch
+}   // setDisappearCounter
+
+// -----------------------------------------------------------------------
+/** Initialises an item.
+ *  \param type Type for this item.
+ *  \param xyz The position for this item.
+ *  \param normal The normal for this item.
+ */
+void ItemState::initItem(ItemType type, const Vec3& xyz, const Vec3& normal)
+{
+    m_xyz               = xyz;
+    m_original_rotation = shortestArcQuat(Vec3(0, 1, 0), normal);
+    m_original_type     = ITEM_NONE;
+    m_ticks_till_return = 0;
+    setDisappearCounter();
+}   // initItem
+
+// ----------------------------------------------------------------------------
+/** Update the state of the item, called once per physics frame.
+ *  \param ticks Number of ticks to simulate. While this value is 1 when
+ *         called during the normal game loop, during a rewind this value
+ *         can be (much) larger than 1.
+ */
+void ItemState::update(int ticks)
+{
+    if (m_deactive_ticks > 0) m_deactive_ticks -= ticks;
+    if (m_ticks_till_return>0)
+    {
+        m_ticks_till_return -= ticks;
+    }   // if collected
+
+}   // update
+
+// ----------------------------------------------------------------------------
+/** Called when the item is collected.
+ *  \param kart The kart that collected the item.
+ */
+void ItemState::collected(const AbstractKart *kart)
+{
+    if (m_type == ITEM_EASTER_EGG)
+    {
+        // They will disappear 'forever'
+        m_ticks_till_return = stk_config->time2Ticks(99999);
+    }
+    else if (m_used_up_counter > 0)
+    {
+        m_used_up_counter--;
+        // Deactivates the item for a certain amount of time. It is used to
+        // prevent bubble gum from hitting a kart over and over again (in each
+        // frame) by giving it time to drive away.
+        m_deactive_ticks = stk_config->time2Ticks(0.5f);
+        // Set the time till reappear to -1 seconds --> the item will
+        // reappear immediately.
+        m_ticks_till_return = -1;
+    }
+    else
+    {
+        m_ticks_till_return = stk_config->time2Ticks(2.0f);
+    }
+
+    if (race_manager->isBattleMode())
+    {
+        m_ticks_till_return *= 3;
+    }
+}   // collected
+
+// ----------------------------------------------------------------------------
+/** Returns the graphical type of this item should be using (takes nolok into
+ *  account). */
+Item::ItemType ItemState::getGrahpicalType() const
+{
+    return m_previous_owner && m_previous_owner->getIdent() == "nolok" &&
+        getType() == ITEM_BUBBLEGUM ?
+        ITEM_BUBBLEGUM_NOLOK : getType();
+}   // getGrahpicalType
+
+//-----------------------------------------------------------------------------
+/** Save item state at current ticks in server for live join
+ */
+void ItemState::saveCompleteState(BareNetworkString* buffer) const
+{
+    buffer->addUInt8((uint8_t)m_type).addUInt8((uint8_t)m_original_type)
+        .addUInt32(m_ticks_till_return).addUInt32(m_item_id)
+        .addUInt32(m_deactive_ticks).addUInt32(m_used_up_counter)
+        .add(m_xyz).add(m_original_rotation)
+        .addUInt8(m_previous_owner ?
+            (int8_t)m_previous_owner->getWorldKartId() : (int8_t)-1);
+}   // saveCompleteState
+
+// ============================================================================
+/** Constructor for an item.
+ *  \param type Type of the item.
+ *  \param xyz Location of the item.
+ *  \param normal The normal upon which the item is placed (so that it can
+ *         be aligned properly with the ground).
+ *  \param mesh The mesh to be used for this item.
+ *  \param owner 'Owner' of this item, i.e. the kart that drops it. This is
+ *         used to deactivate this item for the owner, i.e. avoid that a kart
+ *         'collects' its own bubble gum. NULL means no owner, and the item
+ *         can be collected immediatley by any kart.
+ */
+Item::Item(ItemType type, const Vec3& xyz, const Vec3& normal,
+           scene::IMesh* mesh, scene::IMesh* lowres_mesh,
+           const AbstractKart *owner)
+    : ItemState(type, owner)
+{
+    m_was_available_previously = true;
+    m_distance_2        = 1.2f;
+    initItem(type, xyz, normal);
+    m_graphical_type    = getGrahpicalType();
+
+    LODNode* lodnode =
+        new LODNode("item", irr_driver->getSceneManager()->getRootSceneNode(),
+                    irr_driver->getSceneManager());
+    scene::ISceneNode* meshnode =
         irr_driver->addMesh(mesh, StringUtils::insertValues("item_%i", (int)type));
 
     if (lowres_mesh != NULL)
     {
         lodnode->add(35, meshnode, true);
-        scene::IMeshSceneNode* meshnode = 
-            irr_driver->addMesh(lowres_mesh, 
+        scene::ISceneNode* meshnode =
+            irr_driver->addMesh(lowres_mesh,
                                 StringUtils::insertValues("item_lo_%i", (int)type));
         lodnode->add(100, meshnode, true);
     }
@@ -63,168 +219,91 @@ Item::Item(ItemType type, const Vec3& xyz, const Vec3& normal,
     {
         lodnode->add(100, meshnode, true);
     }
-
     m_node              = lodnode;
+    setType(type);
+    handleNewMesh(getGrahpicalType());
 
-    //m_node             = irr_driver->addMesh(mesh);
 #ifdef DEBUG
     std::string debug_name("item: ");
-    debug_name += m_type;
+    debug_name += getType();
     m_node->setName(debug_name.c_str());
 #endif
-
-    World::getWorld()->getTrack()->adjustForFog(m_node);
     m_node->setAutomaticCulling(scene::EAC_FRUSTUM_BOX);
     m_node->setPosition(xyz.toIrrVector());
-    m_node->setRotation(m_original_hpr.toIrrHPR());
+    Vec3 hpr;
+    hpr.setHPR(getOriginalRotation());
+    m_node->setRotation(hpr.toIrrHPR());
     m_node->grab();
 }   // Item(type, xyz, normal, mesh, lowres_mesh)
-
-//-----------------------------------------------------------------------------
-
-/** \brief Constructor to create a trigger item.
-  * Trigger items are invisible and can be used to trigger a behavior when
-  * approaching a point.
-  */
-Item::Item(const Vec3& xyz, float distance, TriggerItemListener* trigger)
-{
-    m_distance_2        = distance*distance;
-    initItem(ITEM_TRIGGER, xyz);
-    // Sets heading to 0, and sets pitch and roll depending on the normal. */
-    m_original_hpr      = Vec3(0, 0, 0);
-    m_original_mesh     = NULL;
-    m_original_lowmesh  = NULL;
-    m_node              = NULL;
-    m_listener          = trigger;
-}   // Item(xyz, distance, trigger)
 
 //-----------------------------------------------------------------------------
 /** Initialises the item. Note that m_distance_2 must be defined before calling
  *  this function, since it pre-computes some values based on this.
  *  \param type Type of the item.
+ *  \param xyz Position of this item.
+ *  \param normal Normal for this item.
  */
-void Item::initItem(ItemType type, const Vec3 &xyz)
+void Item::initItem(ItemType type, const Vec3 &xyz, const Vec3&normal)
 {
-    m_type              = type;
-    m_xyz               = xyz;
-    m_event_handler     = NULL;
-    m_item_id           = -1;
-    m_collected         = false;
-    m_original_type     = ITEM_NONE;
-    m_deactive_time     = 0;
-    m_time_till_return  = 0.0f;  // not strictly necessary, see isCollected()
-    m_emitter           = NULL;
-    m_rotate            = (type!=ITEM_BUBBLEGUM) && (type!=ITEM_TRIGGER);
-    switch(m_type)
-    {
-    case ITEM_BUBBLEGUM:
-        m_disappear_counter = stk_config->m_bubblegum_counter; break;
-    case ITEM_EASTER_EGG:
-        m_disappear_counter = -1; break;
-    default:
-        m_disappear_counter = -1;
-    }
+    ItemState::initItem(type, xyz, normal);
     // Now determine in which quad this item is, and its distance
     // from the center within this quad.
-    m_graph_node = QuadGraph::UNKNOWN_SECTOR;
-    QuadGraph* currentQuadGraph = QuadGraph::get();
+    m_graph_node = Graph::UNKNOWN_SECTOR;
+    m_distance_from_center = 9999.9f;
+    m_avoidance_points[0] = NULL;
+    m_avoidance_points[1] = NULL;
 
-    // Check that QuadGraph exist (it might not in battle mode for eg)
-    if (currentQuadGraph != NULL)
+    // Check that Graph exist (it might not in battle mode without navmesh)
+    if (Graph::get())
     {
-      QuadGraph::get()->findRoadSector(xyz, &m_graph_node);
+        Graph::get()->findRoadSector(xyz, &m_graph_node);
     }
-
-    if(m_graph_node==QuadGraph::UNKNOWN_SECTOR)
+    if (DriveGraph::get() && m_graph_node != Graph::UNKNOWN_SECTOR)
     {
-        m_graph_node = -1;
-        m_distance_from_center = 9999.9f;   // is not used
-        m_avoidance_points[0] = NULL;
-        m_avoidance_points[1] = NULL;
-    }
-    else
-    {
-        // Item is on quad graph. Pre-compute the distance from center
+        // Item is on drive graph. Pre-compute the distance from center
         // of this item, which is used by the AI (mostly for avoiding items)
         Vec3 distances;
-        QuadGraph::get()->spatialToTrack(&distances, m_xyz, m_graph_node);
+        DriveGraph::get()->spatialToTrack(&distances, getXYZ(), m_graph_node);
         m_distance_from_center = distances.getX();
-        const GraphNode &gn = QuadGraph::get()->getNode(m_graph_node);
-        const Vec3 right = gn.getRightUnitVector();
+        const DriveNode* dn = DriveGraph::get()->getNode(m_graph_node);
+        const Vec3& right = dn->getRightUnitVector();
         // Give it 10% more space, since the kart will not always come
         // parallel to the drive line.
         Vec3 delta = right * sqrt(m_distance_2) * 1.3f;
-        m_avoidance_points[0] = new Vec3(m_xyz + delta);
-        m_avoidance_points[1] = new Vec3(m_xyz - delta);
+        m_avoidance_points[0] = new Vec3(getXYZ() + delta);
+        m_avoidance_points[1] = new Vec3(getXYZ() - delta);
     }
 
 }   // initItem
 
 //-----------------------------------------------------------------------------
-/** Sets the type of the item (and also derived attributes lile m_rotate
- *  \param type Type of the item.
- */
-void Item::setType(ItemType type)
+void Item::setMesh(scene::IMesh* mesh, scene::IMesh* lowres_mesh)
 {
-    m_type   = type;
-    m_rotate = (type!=ITEM_BUBBLEGUM) && (type!=ITEM_TRIGGER);
-}   // setType
-
-//-----------------------------------------------------------------------------
-/** Changes this item to be a new type for a certain amount of time.
- *  \param type New type of this item.
- *  \param mesh Mesh to use to display this item.
- */
-void Item::switchTo(ItemType type, scene::IMesh *mesh, scene::IMesh *lowmesh)
-{
-    // triggers and easter eggs should not be switched
-    if (m_type == ITEM_TRIGGER || m_type == ITEM_EASTER_EGG) return;
-
-    m_original_type = m_type;
-    setType(type);
-
-    scene::ISceneNode* node = m_node->getAllNodes()[0];
-    ((scene::IMeshSceneNode*)node)->setMesh(mesh);
-    if (lowmesh != NULL)
-    {
-        node = m_node->getAllNodes()[1];
-        ((scene::IMeshSceneNode*)node)->setMesh(lowmesh);
-        irr_driver->applyObjectPassShader(m_node->getAllNodes()[1]);
-    }
-
-    irr_driver->applyObjectPassShader(m_node->getAllNodes()[0]);
-
-    World::getWorld()->getTrack()->adjustForFog(m_node);
-}   // switchTo
-
-//-----------------------------------------------------------------------------
-/** Switch  backs to the original item.
- */
-void Item::switchBack()
-{
-    // triggers should not be switched
-    if (m_type == ITEM_TRIGGER) return;
-
-    // If the item is not switched, do nothing. This can happen if a bubble
-    // gum is dropped while items are switched - when switching back, this
-    // bubble gum has no original type.
-    if(m_original_type==ITEM_NONE)
+#ifndef SERVER_ONLY
+    if (m_node == NULL)
         return;
 
-    setType(m_original_type);
-    m_original_type = ITEM_NONE;
-
-    scene::ISceneNode* node = m_node->getAllNodes()[0];
-    ((scene::IMeshSceneNode*)node)->setMesh(m_original_mesh);
-    if (m_original_lowmesh != NULL)
+    unsigned i = 0;
+    for (auto* node : m_node->getAllNodes())
     {
-        node = m_node->getAllNodes()[1];
-        ((scene::IMeshSceneNode*)node)->setMesh(m_original_lowmesh);
+        scene::IMesh* m = i == 0 ? mesh : lowres_mesh;
+        if (m == NULL)
+        {
+            continue;
+        }
+        SP::SPMeshNode* spmn = dynamic_cast<SP::SPMeshNode*>(node);
+        if (spmn)
+        {
+            spmn->setMesh(static_cast<SP::SPMesh*>(m));
+        }
+        else
+        {
+            ((scene::IMeshSceneNode*)node)->setMesh(m);
+        }
+        i++;
     }
-
-    World::getWorld()->getTrack()->adjustForFog(m_node);
-    m_node->setRotation(m_original_hpr.toIrrHPR());
-}   // switchBack
+#endif
+}   // setMesh
 
 //-----------------------------------------------------------------------------
 /** Removes an item.
@@ -247,139 +326,106 @@ Item::~Item()
  */
 void Item::reset()
 {
-    m_collected         = false;
-    m_time_till_return  = 0.0f;
-    m_deactive_time     = 0.0f;
-    switch(m_type)
-    {
-    case ITEM_BUBBLEGUM:
-        m_disappear_counter = stk_config->m_bubblegum_counter; break;
-    case ITEM_EASTER_EGG:
-        m_disappear_counter = -1; break;
-    default:
-        m_disappear_counter = -1;
-    }
-    if(m_original_type!=ITEM_NONE)
-    {
-        setType(m_original_type);
-        m_original_type = ITEM_NONE;
-    }
+    m_was_available_previously = true;
+    ItemState::reset();
 
     if (m_node != NULL)
     {
         m_node->setScale(core::vector3df(1,1,1));
         m_node->setVisible(true);
     }
+
 }   // reset
 
-//-----------------------------------------------------------------------------
-/** Sets which karts dropped an item. This is used to avoid that a kart is
- *  affected by its own items.
- *  \param parent Kart that dropped the item.
- */
-void Item::setParent(AbstractKart* parent)
+// ----------------------------------------------------------------------------
+void Item::handleNewMesh(ItemType type)
 {
-    m_event_handler = parent;
-    m_emitter       = parent;
-    m_deactive_time = 1.5f;
-}   // setParent
+#ifndef SERVER_ONLY
+    if (m_node == NULL)
+        return;
+    setMesh(ItemManager::get()->getItemModel(type),
+        ItemManager::get()->getItemLowResolutionModel(type));
+    for (auto* node : m_node->getAllNodes())
+    {
+        SP::SPMeshNode* spmn = dynamic_cast<SP::SPMeshNode*>(node);
+        if (spmn)
+            spmn->setGlowColor(ItemManager::get()->getGlowColor(type));
+    }
+    Vec3 hpr;
+    hpr.setHPR(getOriginalRotation());
+    m_node->setRotation(hpr.toIrrHPR());
+#endif
+}   // handleNewMesh
 
-//-----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 /** Updated the item - rotates it, takes care of items coming back into
  *  the game after it has been collected.
- *  \param dt Time step size.
+ *  \param ticks Number of physics time steps - should be 1.
  */
-void Item::update(float dt)
+void Item::updateGraphics(float dt)
 {
-    if(m_deactive_time > 0) m_deactive_time -= dt;
-
-    if(m_collected)
-    {
-        m_time_till_return -= dt;
-        if(m_time_till_return<0)
-        {
-            m_collected=false;
-
-            if (m_node != NULL)
-            {
-                m_node->setScale(core::vector3df(1,1,1));
-            }
-        }   // time till return <0 --> is fully visible again
-        else if ( m_time_till_return <=1.0f )
-        {
-            if (m_node != NULL)
-            {
-                // Make it visible by scaling it from 0 to 1:
-                m_node->setVisible(true);
-                m_node->setScale(core::vector3df(1,1,1)*(1-m_time_till_return));
-            }
-        }   // time till return < 1
-    }   // if collected
-    else
-    {   // not m_collected
-
-        if(!m_rotate || m_node == NULL) return;
-        // have it rotate
-        Vec3 rotation(0, dt*M_PI, 0);
-        core::vector3df r = m_node->getRotation();
-        r.Y += dt*180.0f;
-        if(r.Y>360.0f) r.Y -= 360.0f;
-
-        m_node->setRotation(r);
+    if (m_node == NULL)
         return;
-    }   // not m_collected
-}   // update
 
-//-----------------------------------------------------------------------------
-/** Is called when the item is hit by a kart.  It sets the flag that the item
- *  has been collected, and the time to return to the parameter.
- *  \param t Time till the object reappears (defaults to 2 seconds).
- */
-void Item::collected(const AbstractKart *kart, float t)
-{
-    m_collected     = true;
-    m_event_handler = kart;
-    if(m_type==ITEM_EASTER_EGG)
+    if (m_graphical_type != getGrahpicalType())
     {
-        m_time_till_return=99999;
-        EasterEggHunt *world = dynamic_cast<EasterEggHunt*>(World::getWorld());
-        assert(world);
-        world->collectedEasterEgg(kart);
-        if (m_node != NULL)
+        handleNewMesh(getGrahpicalType());
+        m_graphical_type = getGrahpicalType();
+    }
+
+    float time_till_return = stk_config->ticks2Time(getTicksTillReturn());
+    bool is_visible = isAvailable() || time_till_return <= 1.0f ||
+                      (getType() == ITEM_BUBBLEGUM &&
+                       getOriginalType() == ITEM_NONE && !isUsedUp());
+
+    m_node->setVisible(is_visible);
+    m_node->setPosition(getXYZ().toIrrVector());
+
+    if (!m_was_available_previously && isAvailable())
+    {
+        // This item is now available again - make sure it is not
+        // scaled anymore.
+        m_node->setScale(core::vector3df(1, 1, 1));
+    }
+
+    if (!isAvailable() && time_till_return <= 1.0f)
+    {
+        // Make it visible by scaling it from 0 to 1:
+        if (rotating())
         {
-            m_node->setVisible(false);
+            float angle =
+                fmodf((float)(World::getWorld()->getTicksSinceStart() +
+                getTicksTillReturn()) / 40.0f, M_PI * 2);
+            btMatrix3x3 m;
+            m.setRotation(getOriginalRotation());
+            btQuaternion r = btQuaternion(m.getColumn(1), angle) *
+                getOriginalRotation();
+            Vec3 hpr;
+            hpr.setHPR(r);
+            m_node->setRotation(hpr.toIrrHPR());
         }
+        m_node->setVisible(true);
+        m_node->setScale(core::vector3df(1, 1, 1)*(1 - time_till_return));
     }
-    else if(m_type==ITEM_BUBBLEGUM && m_disappear_counter>0)
+    if (isAvailable())
     {
-        m_disappear_counter --;
-        // Deactivates the item for a certain amount of time. It is used to
-        // prevent bubble gum from hitting a kart over and over again (in each
-        // frame) by giving it time to drive away.
-        m_deactive_time = 0.5f;
-        // Set the time till reappear to -1 seconds --> the item will
-        // reappear immediately.
-        m_time_till_return = -1;
-    }
-    else
-    {
-        // Note if the time is negative, in update the m_collected flag will
-        // be automatically set to false again.
-        m_time_till_return = t;
-        if (m_node != NULL)
+        Vec3 hpr;
+        if (rotating())
         {
-            m_node->setVisible(false);
+            // have it rotate
+            float angle =
+                fmodf((float)World::getWorld()->getTicksSinceStart() / 40.0f,
+                M_PI * 2);
+
+            btMatrix3x3 m;
+            m.setRotation(getOriginalRotation());
+            btQuaternion r = btQuaternion(m.getColumn(1), angle) *
+                getOriginalRotation();
+            hpr.setHPR(r);
         }
-    }
-
-    if (m_listener != NULL)
-    {
-        m_listener->onTriggerItemApproached();
-    }
-
-    if (dynamic_cast<ThreeStrikesBattle*>(World::getWorld()) != NULL)
-    {
-        m_time_till_return *= 3;
-    }
-}   // isCollected
-
+        else
+            hpr.setHPR(getOriginalRotation());
+        m_node->setRotation(hpr.toIrrHPR());
+    }   // if item is available
+    m_was_available_previously = isAvailable();
+}   // updateGraphics

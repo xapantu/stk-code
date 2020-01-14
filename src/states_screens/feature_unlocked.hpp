@@ -24,10 +24,18 @@
 #include "race/race_manager.hpp"
 #include "utils/ptr_vector.hpp"
 
+#include <memory>
+
 namespace irr {
     namespace scene { class ISceneNode; class ICameraSceneNode;
                       class ILightSceneNode;                       }
 }
+
+namespace SP
+{
+    class SPTexture;
+}
+
 class KartModel;
 class KartProperties;
 class ChallengeData;
@@ -36,7 +44,8 @@ class ChallengeData;
   * \brief Screen shown when a feature has been unlocked
   * \ingroup states_screens
  */
-class FeatureUnlockedCutScene : public GUIEngine::CutsceneScreen, public GUIEngine::ScreenSingleton<FeatureUnlockedCutScene>
+class FeatureUnlockedCutScene : public GUIEngine::CutsceneScreen,
+                                public GUIEngine::ScreenSingleton<FeatureUnlockedCutScene>
 {
     friend class GUIEngine::ScreenSingleton<FeatureUnlockedCutScene>;
 
@@ -46,12 +55,15 @@ class FeatureUnlockedCutScene : public GUIEngine::CutsceneScreen, public GUIEngi
     struct UnlockedThing
     {
         /** Will be non-null if this unlocked thing is a kart */
-        KartProperties* m_unlocked_kart;
+        const KartProperties* m_unlocked_kart;
 
         std::string m_unlock_model;
 
         /** Will be non-empty if this unlocked thing is one or many pictures */
         std::vector<irr::video::ITexture*> m_pictures;
+
+        std::vector<std::shared_ptr<SP::SPTexture> > m_sp_pictures;
+
         /** Will be set if this unlocked thing is a picture */
         float m_w, m_h;
         /** used for slideshows */
@@ -60,16 +72,16 @@ class FeatureUnlockedCutScene : public GUIEngine::CutsceneScreen, public GUIEngi
         /** Contains whatever is in the chest */
         scene::ISceneNode* m_root_gift_node;
 
-        scene::IMeshSceneNode* m_side_1;
-        scene::IMeshSceneNode* m_side_2;
+        scene::ISceneNode* m_side_1;
+        scene::ISceneNode* m_side_2;
 
         float m_scale;
 
         irr::core::stringw m_unlock_message;
 
-        UnlockedThing(std::string model, irr::core::stringw msg);
+        UnlockedThing(const std::string &model, const irr::core::stringw &msg);
 
-        UnlockedThing(KartProperties* kart, irr::core::stringw msg);
+        UnlockedThing(const KartProperties* kart, const irr::core::stringw &msg);
 
         /**
           * Creates a 'picture' reward.
@@ -77,7 +89,8 @@ class FeatureUnlockedCutScene : public GUIEngine::CutsceneScreen, public GUIEngi
           * \param w     width of the picture to display
           * \param y     height of the picture to display
           */
-        UnlockedThing(irr::video::ITexture* pict, float w, float h, irr::core::stringw msg);
+        UnlockedThing(irr::video::ITexture* pict, float w, float h,
+                      const irr::core::stringw &msg);
 
         /**
          * Creates a 'picture slideshow' reward.
@@ -85,7 +98,8 @@ class FeatureUnlockedCutScene : public GUIEngine::CutsceneScreen, public GUIEngi
          * \param w     width of the pictures to display
          * \param y     height of the pictures to display
          */
-        UnlockedThing(std::vector<irr::video::ITexture*> picts, float w, float h, irr::core::stringw msg);
+        UnlockedThing(std::vector<irr::video::ITexture*> picts, float w, float h,
+                      const irr::core::stringw &msg);
 
         ~UnlockedThing();
     };
@@ -104,10 +118,6 @@ class FeatureUnlockedCutScene : public GUIEngine::CutsceneScreen, public GUIEngi
 
     /** Angle of the key (from 0 to 1, simply traces progression) */
     float m_key_angle;
-
-#ifdef USE_IRRLICHT_BUG_WORKAROUND
-    scene::IMeshSceneNode *m_avoid_irrlicht_bug;
-#endif
 
     void continueButtonPressed();
 
@@ -130,18 +140,23 @@ public:
     void eventCallback(GUIEngine::Widget* widget, const std::string& name,
                        const int playerID) OVERRIDE;
 
-    void findWhatWasUnlocked(RaceManager::Difficulty difficulty);
+    void findWhatWasUnlocked(RaceManager::Difficulty difficulty, 
+                             std::vector<const ChallengeData*>& unlocked);
 
     /** Call before showing up the screen to make a kart come out of the chest.
-        'addUnlockedThings' will invoke this, so you generally don't need to call this directly. */
-    void addUnlockedKart(KartProperties* unlocked_kart, irr::core::stringw msg);
+     *  'addUnlockedThings' will invoke this, so you generally don't need to 
+     *  call this directly. */
+    void addUnlockedKart(const KartProperties* unlocked_kart);
 
-    /** Call before showing up the screen to make a picture come out of the chest
-        'addUnlockedThings' will invoke this, so you generally don't need to call this directly. */
-    void addUnlockedPicture(irr::video::ITexture* picture, float w, float h, irr::core::stringw msg);
+    /** Call before showing up the screen to make a picture come out of the 
+     *  chest 'addUnlockedThings' will invoke this, so you generally don't 
+     *  need to call this directly. */
+    void addUnlockedPicture(irr::video::ITexture* picture, float w, float h,
+                            const irr::core::stringw &msg);
 
-    /** Call before showing up the screen to make a picture slideshow come out of the chest
-        'addUnlockedThings' will invoke this, so you generally don't need to call this directly. */
+    /** Call before showing up the screen to make a picture slideshow come out
+     *  of the chest 'addUnlockedThings' will invoke this, so you generally
+     *  don't need to call this directly. */
     void addUnlockedPictures(std::vector<irr::video::ITexture*> pictures,
                              float w, float h, irr::core::stringw msg);
 
@@ -155,7 +170,7 @@ public:
     void addUnlockedThings(const std::vector<const ChallengeData*> unlocked);
     */
 
-    void addTrophy(RaceManager::Difficulty difficulty);
+    void addTrophy(RaceManager::Difficulty difficulty, bool is_grandprix);
 
     /** override from base class to handle escape press */
     virtual bool onEscapePressed() OVERRIDE;
@@ -164,4 +179,3 @@ public:
 };
 
 #endif
-

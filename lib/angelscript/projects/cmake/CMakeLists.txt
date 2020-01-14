@@ -67,6 +67,7 @@ set(ANGELSCRIPT_SOURCE
     ../../source/as_builder.cpp
     ../../source/as_bytecode.cpp
     ../../source/as_callfunc.cpp
+    ../../source/as_callfunc_mips.cpp
     ../../source/as_callfunc_x86.cpp
     ../../source/as_callfunc_x64_gcc.cpp
     ../../source/as_callfunc_x64_msvc.cpp
@@ -110,7 +111,9 @@ if(${CMAKE_SYSTEM_PROCESSOR} MATCHES "^arm")
     enable_language(ASM)
     if(CMAKE_ASM_COMPILER_WORKS)
         set(ANGELSCRIPT_SOURCE ${ANGELSCRIPT_SOURCE} ../../source/as_callfunc_arm.cpp ../../source/as_callfunc_arm_gcc.S)
-        set_property(SOURCE ../../source/as_callfunc_arm_gcc.S APPEND PROPERTY COMPILE_FLAGS " -Wa,-mimplicit-it=always")
+        if (NOT IOS)
+            set_property(SOURCE ../../source/as_callfunc_arm_gcc.S APPEND PROPERTY COMPILE_FLAGS " -Wa,-mimplicit-it=always")
+        endif()
     else()
         message(FATAL ERROR "ARM target requires a working assembler")
     endif()
@@ -136,8 +139,10 @@ else()
     set(ANGELSCRIPT_LIBRARY_NAME Angelscript) # OS X frameworks should have capitalized name
     set(BUILD_SHARED_LIBS TRUE)
 endif()
+set(ANGELSCRIPT_LIBRARY_NAME ${ANGELSCRIPT_LIBRARY_NAME} CACHE STRING "" FORCE)
 
 add_library(${ANGELSCRIPT_LIBRARY_NAME} ${ANGELSCRIPT_SOURCE} ${ANGELSCRIPT_HEADERS})
+# Don't override the default library output path to avoid conflicts when building for multiple target platforms
 #set(LIBRARY_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/../../lib)
 target_link_libraries(${ANGELSCRIPT_LIBRARY_NAME} ${CMAKE_THREAD_LIBS_INIT})
 
@@ -159,7 +164,7 @@ if(MSVC)
     set_target_properties(${ANGELSCRIPT_LIBRARY_NAME} PROPERTIES COMPILE_FLAGS "/MP")
 endif()
 
+# Don't override the default runtime output path to avoid conflicts when building for multiple target platforms
 #set(RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/../../bin)
 
-#add_subdirectory(../../../samples/game/projects/cmake/ ./game)
 

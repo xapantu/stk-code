@@ -26,9 +26,16 @@
 #include "items/attachment.hpp"
 #include "items/projectile_manager.hpp"
 #include "karts/abstract_kart.hpp"
+#include "karts/kart_properties.hpp"
 #include "modes/linear_world.hpp"
+#include "network/network_string.hpp"
+#include "network/rewind_info.hpp"
+#include "network/rewind_manager.hpp"
 #include "physics/btKart.hpp"
 #include "physics/triangle_mesh.hpp"
+#include "tracks/check_manager.hpp"
+#include "tracks/drive_graph.hpp"
+#include "tracks/drive_node.hpp"
 #include "tracks/track.hpp"
 
 #include "utils/log.hpp" //TODO: remove after debugging is done
@@ -39,12 +46,15 @@ float RubberBall::m_st_squash_duration;
 float RubberBall::m_st_squash_slowdown;
 float RubberBall::m_st_target_distance;
 float RubberBall::m_st_target_max_angle;
-float RubberBall::m_st_delete_time;
+int16_t RubberBall::m_st_delete_ticks;
 float RubberBall::m_st_max_height_difference;
 float RubberBall::m_st_fast_ping_distance;
 float RubberBall::m_st_early_target_factor;
+float RubberBall::m_st_min_speed_offset;
+float RubberBall::m_st_max_speed_offset;
+float RubberBall::m_st_min_offset_distance;
+float RubberBall::m_st_max_offset_distance;
 int   RubberBall::m_next_id = 0;
-float RubberBall::m_time_between_balls;
 
 
 // Debug only, so that we can get a feel on how well balls are aiming etc.
@@ -60,19 +70,29 @@ RubberBall::RubberBall(AbstractKart *kart)
     m_next_id++;
     m_id = m_next_id;
 
+    m_target = NULL;
+    m_ping_sfx = SFXManager::get()->createSoundSource("ball_bounce");
+}   // RubberBall
+
+// ----------------------------------------------------------------------------
+void RubberBall::onFireFlyable()
+{
+    Flyable::onFireFlyable();
+    CheckManager::get()->addFlyableToCannons(this);
     // Don't let Flyable update the terrain information, since this object
     // has to do it earlier than that.
     setDoTerrainInfo(false);
-    float forw_offset = 0.5f*kart->getKartLength() + m_extend.getZ()*0.5f+5.0f;
+    float forw_offset =
+        0.5f * m_owner->getKartLength() + m_extend.getZ() * 0.5f + 5.0f;
 
     createPhysics(forw_offset, btVector3(0.0f, 0.0f, m_speed*2),
-                  new btSphereShape(0.5f*m_extend.getY()),
-                  -70.0f /*gravity*/,
+                  new btSphereShape(0.5f*m_extend.getY()), -70.0f,
+                  btVector3(.0f,.0f,.0f) /*gravity*/,
                   true /*rotates*/);
 
     // Do not adjust the up velocity
     setAdjustUpVelocity(false);
-    m_max_lifespan       = 9999;
+    m_max_lifespan       = stk_config->time2Ticks(9999);
     m_target             = NULL;
     m_aiming_at_target   = false;
     m_fast_ping          = false;
@@ -81,35 +101,35 @@ RubberBall::RubberBall(AbstractKart *kart)
     m_height_timer       = 0.0f;
     m_interval           = m_st_interval;
     m_current_max_height = m_max_height;
-    m_ping_sfx           = SFXManager::get()->createSoundSource("ball_bounce");
-    // Just init the previoux coordinates with some value that's not getXYZ()
+    // Just init the previous coordinates with some value that's not getXYZ()
     m_previous_xyz       = m_owner->getXYZ();
     m_previous_height    = 2.0f;  //
     // A negative value indicates that the timer is not active
-    m_delete_timer       = -1.0f;
+    m_delete_ticks       = -1;
     m_tunnel_count       = 0;
 
     LinearWorld *world = dynamic_cast<LinearWorld*>(World::getWorld());
     // FIXME: what does the rubber ball do in case of battle mode??
     if(!world) return;
 
+    m_restoring_state = true;
     computeTarget();
 
     // initialises the current graph node
     TrackSector::update(getXYZ());
-    TerrainInfo::update(getXYZ());
+    const Vec3& normal =
+        DriveGraph::get()->getNode(getCurrentGraphNode())->getNormal();
+    TerrainInfo::update(getXYZ(), -normal);
     initializeControlPoints(m_owner->getXYZ());
-
-}   // RubberBall
+}   // onFireFlyable
 
 // ----------------------------------------------------------------------------
 /** Destructor, removes any playing sfx.
  */
 RubberBall::~RubberBall()
 {
-    if(m_ping_sfx->getStatus()==SFXBase::SFX_PLAYING)
-        m_ping_sfx->stop();
-    m_ping_sfx->deleteSFX();
+    removePingSFX();
+    CheckManager::get()->removeFlyableFromCannons(this);
 }   // ~RubberBall
 
 // ----------------------------------------------------------------------------
@@ -132,7 +152,7 @@ void RubberBall::initializeControlPoints(const Vec3 &xyz)
     // left or right when firing the ball off track.
     getNextControlPoint();
     m_control_points[2]     =
-        QuadGraph::get()->getQuadOfNode(m_last_aimed_graph_node).getCenter();
+        DriveGraph::get()->getNode(m_last_aimed_graph_node)->getCenter();
 
     // This updates m_last_aimed_graph_node, and sets m_control_points[3]
     getNextControlPoint();
@@ -142,27 +162,45 @@ void RubberBall::initializeControlPoints(const Vec3 &xyz)
 }   // initializeControlPoints
 
 // ----------------------------------------------------------------------------
+void RubberBall::setAnimation(AbstractKartAnimation *animation)
+{
+    if (!animation)
+    {
+        initializeControlPoints(getXYZ());
+        m_height_timer = 0;
+    }
+    Flyable::setAnimation(animation);
+}   // setAnimation
+
+// ----------------------------------------------------------------------------
 /** Determines the first kart that is still in the race.
  */
 void RubberBall::computeTarget()
 {
     LinearWorld *world = dynamic_cast<LinearWorld*>(World::getWorld());
 
-    for(unsigned int p = race_manager->getFinishedKarts()+1;
-                     p < world->getNumKarts()+1; p++)
+    if (m_restoring_state)
+    {
+        // Update kart position from rewind data 1st time
+        world->updateTrackSectors();
+        world->updateRacePosition();
+        m_restoring_state = false;
+    }
+
+    for (unsigned int p = 1; p < world->getNumKarts() + 1; p++)
     {
         m_target = world->getKartAtPosition(p);
         if(!m_target->isEliminated() && !m_target->hasFinishedRace())
         {
             // If the firing kart itself is the first kart (that is
             // still driving), prepare to remove the rubber ball
-            if(m_target==m_owner && m_delete_timer < 0)
+            if(m_target==m_owner && m_delete_ticks < 0)
             {
 #ifdef PRINT_BALL_REMOVE_INFO
                 Log::debug("[RubberBall]",
                            "ball %d removed because owner is target.", m_id);
 #endif
-                m_delete_timer = m_st_delete_time;
+                m_delete_ticks = m_st_delete_ticks;
             }
             return;
         }
@@ -175,7 +213,7 @@ void RubberBall::computeTarget()
     Log::debug("[RubberBall]" "ball %d removed because no more active target.",
                m_id);
 #endif
-    m_delete_timer = m_st_delete_time;
+    m_delete_ticks = m_st_delete_ticks;
     m_target       = m_owner;
 }   // computeTarget
 
@@ -197,12 +235,12 @@ unsigned int RubberBall::getSuccessorToHitTarget(unsigned int node_index,
 
     unsigned int sect =
         lin_world->getSectorForKart(m_target);
-    succ = QuadGraph::get()->getNode(node_index).getSuccessorToReach(sect);
+    succ = DriveGraph::get()->getNode(node_index)->getSuccessorToReach(sect);
 
     if(dist)
-        *dist += QuadGraph::get()->getNode(node_index)
-                .getDistanceToSuccessor(succ);
-    return QuadGraph::get()->getNode(node_index).getSuccessor(succ);
+        *dist += DriveGraph::get()->getNode(node_index)
+                 ->getDistanceToSuccessor(succ);
+    return DriveGraph::get()->getNode(node_index)->getSuccessor(succ);
 }   // getSuccessorToHitTarget
 
 // ----------------------------------------------------------------------------
@@ -220,21 +258,21 @@ void RubberBall::getNextControlPoint()
     // spline between the control points.
     float dist=0;
 
-    float f = QuadGraph::get()->getDistanceFromStart(m_last_aimed_graph_node);
+    float f = DriveGraph::get()->getDistanceFromStart(m_last_aimed_graph_node);
 
     int next = getSuccessorToHitTarget(m_last_aimed_graph_node, &dist);
-    float d = QuadGraph::get()->getDistanceFromStart(next)-f;
+    float d = DriveGraph::get()->getDistanceFromStart(next)-f;
     while(d<m_st_min_interpolation_distance && d>=0)
     {
         next = getSuccessorToHitTarget(next, &dist);
-        d = QuadGraph::get()->getDistanceFromStart(next)-f;
+        d = DriveGraph::get()->getDistanceFromStart(next)-f;
     }
 
     m_last_aimed_graph_node = next;
     m_length_cp_2_3         = dist;
-    const Quad &quad        =
-        QuadGraph::get()->getQuadOfNode(m_last_aimed_graph_node);
-    m_control_points[3]     = quad.getCenter();
+    const DriveNode* dn     =
+        DriveGraph::get()->getNode(m_last_aimed_graph_node);
+    m_control_points[3]     = dn->getCenter();
 }   // getNextControlPoint
 
 // ----------------------------------------------------------------------------
@@ -245,53 +283,78 @@ void RubberBall::getNextControlPoint()
  */
 void RubberBall::init(const XMLNode &node, scene::IMesh *rubberball)
 {
-    m_st_interval                   =  1.0f;
-    m_st_squash_duration            =  3.0f;
-    m_st_squash_slowdown            =  0.5f;
-    m_st_min_interpolation_distance = 30.0f;
-    m_st_target_distance            = 50.0f;
-    m_st_target_max_angle           = 25.0f;
-    m_st_delete_time                = 10.0f;
-    m_st_max_height_difference      = 10.0f;
-    m_st_fast_ping_distance         = 50.0f;
-    m_st_early_target_factor        =  1.0f;
-    m_time_between_balls            = 15;
+    m_st_interval                   =   1.0f;
+    m_st_squash_duration            =   3.0f;
+    m_st_squash_slowdown            =   0.5f;
+    m_st_min_interpolation_distance =  30.0f;
+    m_st_target_distance            =  50.0f;
+    m_st_target_max_angle           =  25.0f;
+    m_st_delete_ticks               = (int16_t)stk_config->time2Ticks(10.0f);
+    m_st_max_height_difference      =  10.0f;
+    m_st_fast_ping_distance         =  50.0f;
+    m_st_early_target_factor        =   1.0f;
+    m_st_min_speed_offset           =   8.0f;
+    m_st_max_speed_offset           =  28.0f;
+    m_st_min_offset_distance        =  50.0f;
+    m_st_max_offset_distance        = 250.0f;
+
 
     if(!node.get("interval", &m_st_interval))
-        Log::warn("powerup", "No interval specified for rubber ball.");
+        Log::warn("powerup", "No interval specified for basket ball.");
     if(!node.get("squash-duration", &m_st_squash_duration))
         Log::warn("powerup",
-                  "No squash-duration specified for rubber ball.");
+                  "No squash-duration specified for basket ball.");
     if(!node.get("squash-slowdown", &m_st_squash_slowdown))
-        Log::warn("powerup", "No squash-slowdown specified for rubber ball.");
+        Log::warn("powerup", "No squash-slowdown specified for basket ball.");
     if(!node.get("min-interpolation-distance",
                  &m_st_min_interpolation_distance))
         Log::warn("powerup", "No min-interpolation-distance specified "
-                             "for rubber ball.");
+                             "for basket ball.");
     if(!node.get("target-distance", &m_st_target_distance))
         Log::warn("powerup",
-                  "No target-distance specified for rubber ball.");
-    if(!node.get("delete-time", &m_st_delete_time))
-        Log::warn("powerup", "No delete-time specified for rubber ball.");
+                  "No target-distance specified for basket ball.");
+    float f;
+    if(!node.get("delete-time", &f))
+        Log::warn("powerup", "No delete-time specified for basket ball.");
+    m_st_delete_ticks = stk_config->time2Ticks(f);
     if(!node.get("target-max-angle", &m_st_target_max_angle))
-        Log::warn("powerup", "No target-max-angle specified for rubber ball.");
+        Log::warn("powerup", "No target-max-angle specified for basket ball.");
     m_st_target_max_angle *= DEGREE_TO_RAD;
     if(!node.get("max-height-difference", &m_st_max_height_difference))
         Log::warn("powerup",
-                  "No max-height-difference specified for rubber ball.");
+                  "No max-height-difference specified for basket ball.");
     if(!node.get("fast-ping-distance", &m_st_fast_ping_distance))
         Log::warn("powerup",
-                  "No fast-ping-distance specified for rubber ball.");
+                  "No fast-ping-distance specified for basket ball.");
     if(m_st_fast_ping_distance < m_st_target_distance)
         Log::warn("powerup",
                    "Ping-distance is smaller than target distance.\n"
                    "That should not happen, but is ignored for now.");
     if(!node.get("early-target-factor", &m_st_early_target_factor))
         Log::warn("powerup",
-                  "No early-target-factor specified for rubber ball.");
-    if(!node.get("time-between-balls", &m_time_between_balls))
-        Log::warn("powerup",
-                  "No time-between-balls specified for rubber ball.");
+                  "No early-target-factor specified for basket ball.");
+    if(!node.get("min-speed-offset", &m_st_min_speed_offset))
+        Log::warn("powerup", "No min-speed-offset specified for basket ball.");
+    if(!node.get("max-speed-offset", &m_st_max_speed_offset))
+        Log::warn("powerup", "No max-speed-offset specified for basket ball.");
+    if(!node.get("min-offset-distance", &m_st_min_offset_distance))
+        Log::warn("powerup", "No min-offset-distance specified for basket ball.");
+    if(!node.get("max-offset-distance", &m_st_max_offset_distance))
+        Log::warn("powerup", "No max-offset-distance specified for basket ball.");
+
+
+    //sanity checks
+    if (m_st_min_speed_offset < 10.0f)
+        m_st_min_speed_offset = 10.0f;
+    if (m_st_min_speed_offset > m_st_max_speed_offset)
+    {
+        m_st_max_speed_offset = m_st_min_speed_offset;
+    }
+    if (m_st_max_offset_distance <= (m_st_min_offset_distance + 10.0f))
+    {
+        m_st_max_offset_distance = m_st_min_offset_distance + 10.0f;
+    }
+
     Flyable::init(node, rubberball, PowerupManager::POWERUP_RUBBERBALL);
 }   // init
 
@@ -300,37 +363,64 @@ void RubberBall::init(const XMLNode &node, scene::IMesh *rubberball)
  *  \param dt Time step size.
  *  \returns True if the rubber ball should be removed.
  */
-bool RubberBall::updateAndDelete(float dt)
+bool RubberBall::updateAndDelete(int ticks)
 {
     LinearWorld *world = dynamic_cast<LinearWorld*>(World::getWorld());
     // FIXME: what does the rubber ball do in case of battle mode??
     if(!world) return true;
 
-    if(m_delete_timer>0)
+    if(m_delete_ticks>0)
     {
-        m_delete_timer -= dt;
-        if(m_delete_timer<=0)
+        m_delete_ticks -= 1;
+        if(m_delete_ticks<=0)
         {
             hit(NULL);
 #ifdef PRINT_BALL_REMOVE_INFO
             Log::debug("[RubberBall]", "ball %d deleted.", m_id);
 #endif
+            removePingSFX();
             return true;
         }
     }
+
+    if (hasAnimation())
+    {
+        // Flyable will call update() of the animation to 
+        // update the ball's position.
+        m_previous_xyz = getXYZ();
+        bool can_be_deleted = Flyable::updateAndDelete(ticks);
+        if (can_be_deleted)
+            removePingSFX();
+        return can_be_deleted;
+    }
+
+    bool can_be_deleted = Flyable::updateAndDelete(ticks);
+    if (can_be_deleted)
+    {
+        removePingSFX();
+        return true;
+    }
+
+    // Update normal from rewind first
+    const Vec3& normal =
+        DriveGraph::get()->getNode(getCurrentGraphNode())->getNormal();
+    TerrainInfo::update(getXYZ(), -normal);
 
     // Update the target in case that the first kart was overtaken (or has
     // finished the race).
     computeTarget();
     updateDistanceToTarget();
 
+    //Update the speed
+    updateWeightedSpeed(ticks);
+
     // Determine the new position. This new position is only temporary,
     // since it still needs to be adjusted for the height of the terrain.
     Vec3 next_xyz;
     if(m_aiming_at_target)
-        moveTowardsTarget(&next_xyz, dt);
+        moveTowardsTarget(&next_xyz, ticks);
     else
-        interpolate(&next_xyz, dt);
+        interpolate(&next_xyz, ticks);
 
     // If the ball is close to the ground, we have to start the raycast
     // slightly higher (to avoid that the ball tunnels through the floor).
@@ -342,55 +432,67 @@ bool RubberBall::updateAndDelete(float dt)
     bool close_to_ground = 2.0*m_previous_height < m_current_max_height;
 
     float vertical_offset = close_to_ground ? 4.0f : 2.0f;
-    // Note that at this stage getHoT still reports the height at
-    // the previous location (since TerrainInfo wasn't updated). On
-    // the other hand, we can't update TerrainInfo without having
-    // at least a good estimation of the height.
-    next_xyz.setY(getHoT() + vertical_offset);
+
     // Update height of terrain (which isn't done as part of
-    // Flyable::update for rubber balls.
-    TerrainInfo::update(next_xyz);
+    // Flyable::update for basket balls.
+    TerrainInfo::update(next_xyz + getNormal()*vertical_offset, -getNormal());
 
-    m_height_timer += dt;
+    m_height_timer += stk_config->ticks2Time(ticks);
     float height    = updateHeight()+m_extend.getY()*0.5f;
-    float new_y     = getHoT()+height;
-
+    
     if(UserConfigParams::logFlyable())
-        Log::debug("[RubberBall]", "ball %d: %f %f %f height %f new_y %f gethot %f ",
-                m_id, next_xyz.getX(), next_xyz.getY(), next_xyz.getZ(), height, new_y, getHoT());
+        Log::debug("[RubberBall]", "ball %d: %f %f %f height %f gethot %f terrain %d aim %d",
+                m_id, next_xyz.getX(), next_xyz.getY(), next_xyz.getZ(), height, getHoT(),
+			    isOnRoad(),
+            m_aiming_at_target);
 
     // No need to check for terrain height if the ball is low to the ground
     if(height > 0.5f)
     {
-        float terrain_height = getMaxTerrainHeight(vertical_offset)
+        float tunnel_height = getTunnelHeight(next_xyz, vertical_offset)
                              - m_extend.getY();
-        if(new_y>terrain_height)
-            new_y = terrain_height;
+        // If the current height of ball (above terrain) is higher than the 
+        // tunnel height then set adjust max height and compute new height again.
+        // Else reset the max height.
+        if (height > tunnel_height)
+        {
+            m_max_height = tunnel_height;
+            height = updateHeight();
+        }
+        else
+            m_max_height = m_st_max_height[m_type];
     }
 
     if(UserConfigParams::logFlyable())
-        Log::verbose("RubberBall", "newy2 %f gmth %f", new_y,
-                     getMaxTerrainHeight(vertical_offset));
+        Log::verbose("RubberBall", "newy2 %f gmth %f", height,
+                     getTunnelHeight(next_xyz,vertical_offset));
 
-    next_xyz.setY(new_y);
+    // Ball squashing:
+    // ===============
+    float scale = 1.0f;
+    if (height < 1.0f * m_extend.getY())
+        scale = height / m_extend.getY();
+
+#ifndef SERVER_ONLY
+    if (!RewindManager::get()->isRewinding())
+        m_node->setScale(core::vector3df(1.0f, scale, 1.0f));
+#endif
+
+    next_xyz = getHitPoint() + getNormal() * (height * scale);
     m_previous_xyz = getXYZ();
-    m_previous_height = next_xyz.getY()-getHoT();
+    m_previous_height = (getXYZ() - getHitPoint()).length();
     setXYZ(next_xyz);
 
-    if(checkTunneling())
+    if (checkTunneling())
+    {
+        removePingSFX();
         return true;
+    }
 
     // Determine new distance along track
     TrackSector::update(next_xyz);
 
-    // Ball squashing:
-    // ===============
-    if(height<1.5f*m_extend.getY())
-        m_node->setScale(core::vector3df(1.0f, height/m_extend.getY(),1.0f));
-    else
-        m_node->setScale(core::vector3df(1.0f, 1.0f, 1.0f));
-
-    return Flyable::updateAndDelete(dt);
+    return false;
 }   // updateAndDelete
 
 // ----------------------------------------------------------------------------
@@ -398,47 +500,95 @@ bool RubberBall::updateAndDelete(float dt)
  *  once the rubber ball is close to its target. It restricts the angle by
  *  which the rubber ball can change its direction per frame.
  *  \param next_xyz The position the ball should move to.
- *  \param dt Time step size.
+ *  \param ticks Number of physics steps - should be 1.
  */
-void RubberBall::moveTowardsTarget(Vec3 *next_xyz, float dt)
+void RubberBall::moveTowardsTarget(Vec3 *next_xyz, int ticks)
 {
     // If the rubber ball is already close to a target, i.e. aiming
     // at it directly, stop interpolating, instead fly straight
     // towards it.
-    Vec3 diff = m_target->getXYZ()-getXYZ();
+    Vec3 diff = m_target->getXYZ() - getXYZ();
+    diff = diff - diff.dot(getNormal())*getNormal();
     // Avoid potential division by zero
     if(diff.length2()==0)
-        *next_xyz = getXYZ();
+        *next_xyz = getXYZ() - getNormal()*m_previous_height;
     else
-        *next_xyz = getXYZ() + (dt*m_speed/diff.length())*diff;
-
-    Vec3 old_vec = getXYZ()-m_previous_xyz;
-    Vec3 new_vec = *next_xyz - getXYZ();
-    float angle  = atan2(new_vec.getZ(), new_vec.getX())
-                 - atan2(old_vec.getZ(), old_vec.getX());
-    // Adjust angle to be between -180 and 180 degrees
-    if(angle < -M_PI)
-        angle += 2*M_PI;
-    else if(angle > M_PI)
-        angle -= 2*M_PI;
-
-    // If the angle is too large, adjust next xyz
-    if(fabsf(angle)>m_st_target_max_angle*dt)
     {
-        core::vector2df old_2d(old_vec.getX(), old_vec.getZ());
-        if(old_2d.getLengthSQ()==0.0f) old_2d.Y = 1.0f;
-        old_2d.normalize();
-        old_2d.rotateBy(  RAD_TO_DEGREE * dt
-                                       * (angle > 0 ?  m_st_target_max_angle
-                                                    : -m_st_target_max_angle));
-        next_xyz->setX(getXYZ().getX() + old_2d.X*dt*m_speed);
-        next_xyz->setZ(getXYZ().getZ() + old_2d.Y*dt*m_speed);
-    }   // if fabsf(angle) > m_st_target_angle_max*dt
+        float dt = stk_config->ticks2Time(ticks);
+        *next_xyz = getXYZ() - getNormal()*m_previous_height
+                             + (dt*m_speed / diff.length())*diff;
+    }
 
-    assert(!isnan((*next_xyz)[0]));
-    assert(!isnan((*next_xyz)[1]));
-    assert(!isnan((*next_xyz)[2]));
+    // If ball is close to the target, then explode
+    if (diff.length() < m_target->getKartLength())
+        hit((AbstractKart*)m_target);
+
+    assert(!std::isnan((*next_xyz)[0]));
+    assert(!std::isnan((*next_xyz)[1]));
+    assert(!std::isnan((*next_xyz)[2]));
+
 }   // moveTowardsTarget
+
+// ----------------------------------------------------------------------------
+/** Calculates the current speed of the basket ball.
+ *  The base basket ball speed is the target's normal max speed.
+ *  Then an offset is applied.
+ *  If closer than m_st_min_offset_distance ; it is m_st_min_speed_offset
+ *  If farther than m_st_max_offset_distance ; it is m_st_max_speed_offset
+ *  Else, it is a weighted average.
+ *  It takes up to 5 seconds to fully change its speed
+ *  (to avoid sudden big speed changes when the distance change suddenly
+ *  at ball throwing, because of paths, shortcuts, etc.)
+ *  If there is no target, it will keep its current speed
+ */
+void RubberBall::updateWeightedSpeed(int ticks)
+{
+    // Don't change the speed if there is no target
+    if (m_delete_ticks >= 10)
+    {
+        return;
+    }
+    const KartProperties *kp = m_target->getKartProperties();
+    // Get the speed depending on difficulty but not on kart type/handicap
+    float targeted_speed = kp->getEngineGenericMaxSpeed();
+
+    float dt = stk_config->ticks2Time(ticks);
+
+    //Calculate the targeted weighted speed
+    if (m_distance_to_target <= m_st_min_offset_distance)
+    {
+        targeted_speed += m_st_min_speed_offset;
+    }
+    else if (m_distance_to_target > m_st_max_offset_distance)
+    {
+        targeted_speed += m_st_max_speed_offset;
+    }
+    else
+    {
+        float weight = 1.0f;
+        float offset = 0.0f;
+        weight = (m_st_max_offset_distance - m_distance_to_target)
+                /(m_st_max_offset_distance - m_st_min_offset_distance);
+        offset = weight * m_st_min_speed_offset  + (1-weight) * m_st_max_speed_offset;
+        targeted_speed += offset;
+    }
+    //Update the real speed
+    //Always >= 0
+    float max_change = (m_st_max_speed_offset - m_st_min_speed_offset)*dt/(5.0f);
+    if (m_speed-targeted_speed <= max_change && m_speed-targeted_speed >= -max_change)
+    {
+        m_speed = targeted_speed;
+    }
+    else if (m_speed < targeted_speed)
+    {
+        m_speed += max_change;
+    }
+    else
+    {
+        m_speed -= max_change;
+    }
+}   // updateWeightedSpeed
+
 
 // ----------------------------------------------------------------------------
 /** Uses Hermite splines (Catmull-Rom) to interpolate the position of the
@@ -448,10 +598,11 @@ void RubberBall::moveTowardsTarget(Vec3 *next_xyz, float dt)
  *  \param next_xyz Returns the new position.
  *  \param The time step size.
  */
-void RubberBall::interpolate(Vec3 *next_xyz, float dt)
+void RubberBall::interpolate(Vec3 *next_xyz, int ticks)
 {
     // If we have reached or overshot the next control point, move to the
     // the next section of the spline
+    float dt = stk_config->ticks2Time(ticks);
     m_t += m_t_increase * dt;
     if(m_t > 1.0f)
     {
@@ -474,9 +625,9 @@ void RubberBall::interpolate(Vec3 *next_xyz, float dt)
                       + (-  m_control_points[0] +  m_control_points[2])*m_t
                       +   2*m_control_points[1]                              );
                       
-    assert(!isnan((*next_xyz)[0]));
-    assert(!isnan((*next_xyz)[1]));
-    assert(!isnan((*next_xyz)[2]));
+    assert(!std::isnan((*next_xyz)[0]));
+    assert(!std::isnan((*next_xyz)[1]));
+    assert(!std::isnan((*next_xyz)[2]));
 }   // interpolate
 
 // ----------------------------------------------------------------------------
@@ -491,7 +642,7 @@ void RubberBall::interpolate(Vec3 *next_xyz, float dt)
  */
 bool RubberBall::checkTunneling()
 {
-    const TriangleMesh &tm = World::getWorld()->getTrack()->getTriangleMesh();
+    const TriangleMesh &tm = Track::getCurrentTrack()->getTriangleMesh();
     Vec3 hit_point;
     const Material *material;
 
@@ -541,7 +692,8 @@ float RubberBall::updateHeight()
     if(m_height_timer>m_interval)
     {
         m_height_timer -= m_interval;
-        if(m_ping_sfx->getStatus()!=SFXBase::SFX_PLAYING)
+        if (m_ping_sfx && m_ping_sfx->getStatus()!=SFXBase::SFX_PLAYING &&
+            !RewindManager::get()->isRewinding())
         {
             m_ping_sfx->setPosition(getXYZ());
             m_ping_sfx->play();
@@ -585,29 +737,27 @@ float RubberBall::updateHeight()
 }   // updateHeight
 
 // ----------------------------------------------------------------------------
-/** Returns the maximum height of the terrain at the current point. While
- *  generall the height is arbitrary (a skybox is not part of the physics and
- *  will therefore not be detected), it is important that a rubber ball does
- *  not end up on top of a tunnel.
+/** When the ball is in a tunnel, this will return the tunnel height.
+ *  NOTE: When this function is called next_xyz is usually the interpolated point 
+ *  on the track and not the ball's current location. Look at updateAndDelete().
+ *  
  *  \param vertical_offset A vertical offset which is added to the current
- *         position of the kart in order to avoid tunneling effects (it could
- *         happen that the raycast down find the track since it uses the
- *         vertical offset, while the raycast up would hit under the track
- *         if the vertical offset is not used).
- *  \returns The height (Y coordinate) of the next terrain element found by
- *           a raycast up. If no terrain is found, it returns 99990
+ *         position in order to avoid hitting the track when doing a raycast up.
+ *  \returns The distance to the terrain element found by raycast in the up
+              direction. If no terrain found, it returns 99990
  */
-float RubberBall::getMaxTerrainHeight(const Vec3 &vertical_offset) const
+float RubberBall::getTunnelHeight(const Vec3 &next_xyz, 
+                                  const float vertical_offset) const
 {
-    const TriangleMesh &tm = World::getWorld()->getTrack()->getTriangleMesh();
-    Vec3 to(getXYZ());
-    to.setY(10000.0f);
+    const TriangleMesh &tm = Track::getCurrentTrack()->getTriangleMesh();
+    Vec3 from(next_xyz + vertical_offset*getNormal());
+    Vec3 to(next_xyz + 10000.0f*getNormal());
     Vec3 hit_point;
     const Material *material;
-    tm.castRay(getXYZ()+vertical_offset, to, &hit_point, &material);
+    tm.castRay(from, to, &hit_point, &material);
 
-    return (material) ? hit_point.getY() : 99999.f;
-}   // getMaxTerrainHeight
+    return (material) ? (hit_point - next_xyz).length() : 99999.f;
+}   // getTunnelHeight
 
 // ----------------------------------------------------------------------------
 /** Determines the distance to the target kart. If the target is close, the
@@ -619,13 +769,13 @@ void RubberBall::updateDistanceToTarget()
     const LinearWorld *world = dynamic_cast<LinearWorld*>(World::getWorld());
 
     float target_distance =
-        world->getDistanceDownTrackForKart(m_target->getWorldKartId());
-    float ball_distance = getDistanceFromStart();
+        world->getDistanceDownTrackForKart(m_target->getWorldKartId(), true);
+    float ball_distance = getDistanceFromStart(/* account for checklines */ false);
 
     m_distance_to_target = target_distance - ball_distance;
     if(m_distance_to_target < 0)
     {
-        m_distance_to_target += world->getTrack()->getTrackLength();
+        m_distance_to_target += Track::getCurrentTrack()->getTrackLength();
     }
     if(UserConfigParams::logFlyable())
         Log::debug("[RubberBall]", "ball %d: target %f %f %f distance_2_target %f",
@@ -633,12 +783,16 @@ void RubberBall::updateDistanceToTarget()
         m_target->getXYZ().getZ(),m_distance_to_target
         );
 
-    float height_diff = fabsf(m_target->getXYZ().getY() - getXYZ().getY());
+    float height_diff = fabsf((m_target->getXYZ() - getXYZ()).dot(getNormal().normalized()));
 
     if(m_distance_to_target < m_st_fast_ping_distance &&
         height_diff < m_st_max_height_difference)
     {
         m_fast_ping = true;
+    }
+    else
+    {
+        m_fast_ping = false;
     }
     if(m_distance_to_target < m_st_target_distance &&
         height_diff < m_st_max_height_difference)
@@ -654,9 +808,9 @@ void RubberBall::updateDistanceToTarget()
         // new target. If the new distance is nearly the full track
         // length, assume that the rubber ball has overtaken the
         // original target, and start deleting it.
-        if(m_distance_to_target > 0.9f * world->getTrack()->getTrackLength())
+        if(m_distance_to_target > 0.9f * Track::getCurrentTrack()->getTrackLength())
         {
-            m_delete_timer = m_st_delete_time;
+            m_delete_ticks = m_st_delete_ticks;
 #ifdef PRINT_BALL_REMOVE_INFO
             Log::debug("[RubberBall]", "ball %d lost target (overtook?).",
                         m_id);
@@ -689,6 +843,9 @@ void RubberBall::updateDistanceToTarget()
  */
 bool RubberBall::hit(AbstractKart* kart, PhysicalObject* object)
 {
+    // When moved to infinity during cannon animation do nothing
+    if (hasAnimation())
+        return false;
 #ifdef PRINT_BALL_REMOVE_INFO
     if(kart)
         Log::debug("[RuberBall]", "ball %d hit kart.", m_id);
@@ -717,3 +874,68 @@ bool RubberBall::hit(AbstractKart* kart, PhysicalObject* object)
     }
     return was_real_hit;
 }   // hit
+
+// ----------------------------------------------------------------------------
+BareNetworkString* RubberBall::saveState(std::vector<std::string>* ru)
+{
+    BareNetworkString* buffer = Flyable::saveState(ru);
+    if (!buffer)
+        return NULL;
+
+    buffer->addUInt16((int16_t)m_last_aimed_graph_node);
+    buffer->add(m_control_points[0]);
+    buffer->add(m_control_points[1]);
+    buffer->add(m_control_points[2]);
+    buffer->add(m_control_points[3]);
+    buffer->add(m_previous_xyz);
+    buffer->addFloat(m_previous_height);
+    buffer->addFloat(m_length_cp_1_2);
+    buffer->addFloat(m_length_cp_2_3);
+    buffer->addFloat(m_t);
+    buffer->addFloat(m_t_increase);
+    buffer->addFloat(m_interval);
+    buffer->addFloat(m_height_timer);
+    buffer->addUInt16(m_delete_ticks);
+    buffer->addFloat(m_current_max_height);
+    buffer->addUInt8(m_tunnel_count | (m_aiming_at_target ? (1 << 7) : 0));
+    TrackSector::saveState(buffer);
+    return buffer;
+}   // saveState
+
+// ----------------------------------------------------------------------------
+void RubberBall::restoreState(BareNetworkString *buffer, int count)
+{
+    Flyable::restoreState(buffer, count);
+    m_restoring_state = true;
+    int16_t last_aimed_graph_node = buffer->getUInt16();
+    m_last_aimed_graph_node = last_aimed_graph_node;
+    m_control_points[0] = buffer->getVec3();
+    m_control_points[1] = buffer->getVec3();
+    m_control_points[2] = buffer->getVec3();
+    m_control_points[3] = buffer->getVec3();
+    m_previous_xyz = buffer->getVec3();
+    m_previous_height = buffer->getFloat();
+    m_length_cp_1_2 = buffer->getFloat();
+    m_length_cp_2_3 = buffer->getFloat();
+    m_t = buffer->getFloat();
+    m_t_increase = buffer->getFloat();
+    m_interval = buffer->getFloat();
+    m_height_timer = buffer->getFloat();
+    m_delete_ticks = buffer->getUInt16();
+    m_current_max_height = buffer->getFloat();
+    uint8_t tunnel_and_aiming = buffer->getUInt8();
+    m_tunnel_count = tunnel_and_aiming & 127;
+    m_aiming_at_target = ((tunnel_and_aiming >> 7) & 1) == 1;
+    TrackSector::rewindTo(buffer);
+}   // restoreState
+
+// ----------------------------------------------------------------------------
+void RubberBall::removePingSFX()
+{
+    if (!m_ping_sfx)
+        return;
+    if (m_ping_sfx->getStatus() == SFXBase::SFX_PLAYING)
+        m_ping_sfx->stop();
+    m_ping_sfx->deleteSFX();
+    m_ping_sfx = NULL;
+}   // removePingSFX

@@ -19,13 +19,14 @@
 #include "items/attachment.hpp"
 
 #include <algorithm>
-#include "achievements/achievement_info.hpp"
+#include "achievements/achievements_status.hpp"
 #include "audio/sfx_base.hpp"
 #include "config/player_manager.hpp"
 #include "config/stk_config.hpp"
 #include "config/user_config.hpp"
 #include "graphics/explosion.hpp"
 #include "graphics/irr_driver.hpp"
+#include "graphics/render_info.hpp"
 #include "items/attachment_manager.hpp"
 #include "items/item_manager.hpp"
 #include "items/projectile_manager.hpp"
@@ -34,37 +35,45 @@
 #include "karts/controller/controller.hpp"
 #include "karts/explosion_animation.hpp"
 #include "karts/kart_properties.hpp"
-#include "modes/three_strikes_battle.hpp"
 #include "modes/world.hpp"
+#include "network/network_string.hpp"
+#include "network/rewind_manager.hpp"
 #include "physics/triangle_mesh.hpp"
 #include "tracks/track.hpp"
 #include "physics/triangle_mesh.hpp"
 #include "tracks/track.hpp"
 #include "utils/constants.hpp"
 
+#include "irrMath.h"
+#include <IAnimatedMeshSceneNode.h>
+
 /** Initialises the attachment each kart has.
  */
 Attachment::Attachment(AbstractKart* kart)
 {
     m_type                 = ATTACH_NOTHING;
-    m_time_left            = 0.0;
+    m_ticks_left           = 0;
     m_plugin               = NULL;
     m_kart                 = kart;
     m_previous_owner       = NULL;
     m_bomb_sound           = NULL;
     m_bubble_explode_sound = NULL;
-    m_node_scale           = 1.0f;
-    m_initial_speed        = 0.0f;
-
+    m_initial_speed        = 0;
+    m_graphical_type       = ATTACH_NOTHING;
+    m_scaling_end_ticks    = -1;
     // If we attach a NULL mesh, we get a NULL scene node back. So we
     // have to attach some kind of mesh, but make it invisible.
-    m_node = irr_driver->addAnimatedMesh(
-                         attachment_manager->getMesh(Attachment::ATTACH_BOMB), "bomb");
+    if (kart->isGhostKart())
+        m_node = irr_driver->addAnimatedMesh(
+            attachment_manager->getMesh(Attachment::ATTACH_BOMB), "bomb",
+            NULL, std::make_shared<RenderInfo>(0.0f, true));
+    else
+        m_node = irr_driver->addAnimatedMesh(
+            attachment_manager->getMesh(Attachment::ATTACH_BOMB), "bomb");
 #ifdef DEBUG
     std::string debug_name = kart->getIdent()+" (attachment)";
     m_node->setName(debug_name.c_str());
 #endif
-    m_node->setAnimationEndCallback(this);
     m_node->setParent(m_kart->getNode());
     m_node->setVisible(false);
 }   // Attachment
@@ -101,87 +110,62 @@ Attachment::~Attachment()
  *         can be passed back to the previous owner). NULL if a no
  *         previous owner exists.
  */
-void Attachment::set(AttachmentType type, float time,
-                     AbstractKart *current_kart)
+void Attachment::set(AttachmentType type, int ticks,
+                     AbstractKart *current_kart,
+                     bool set_by_rewind_parachute)
 {
-    bool was_bomb = (m_type == ATTACH_BOMB);
-    scene::ISceneNode* bomb_scene_node = NULL;
-    if (was_bomb && type == ATTACH_SWATTER) //What about  ATTACH_NOLOKS_SWATTER ??
-    {
-        // let's keep the bomb node, and create a new one for
-        // the new attachment
-        bomb_scene_node = m_node;
-
-        m_node = irr_driver->addAnimatedMesh(
-                     attachment_manager->getMesh(Attachment::ATTACH_BOMB), "bomb");
-#ifdef DEBUG
-        std::string debug_name = m_kart->getIdent() + " (attachment)";
-        m_node->setName(debug_name.c_str());
-#endif
-        m_node->setAnimationEndCallback(this);
-        m_node->setParent(m_kart->getNode());
-        m_node->setVisible(false);
-    }
-
+    bool was_bomb = m_type == ATTACH_BOMB;
+    int16_t prev_ticks = m_ticks_left;
     clear();
-    m_node_scale = 0.3f;
 
     // If necessary create the appropriate plugin which encapsulates
     // the associated behavior
     switch(type)
     {
-    case ATTACH_SWATTER :
-        if (m_kart->getIdent() == "nolok")
-            m_node->setMesh(attachment_manager->getMesh(ATTACH_NOLOKS_SWATTER));
-        else
-            m_node->setMesh(attachment_manager->getMesh(type));
-        m_plugin = new Swatter(m_kart, was_bomb, bomb_scene_node);
-        break;
-    case ATTACH_BOMB:
-        m_node->setMesh(attachment_manager->getMesh(type));
-        m_node->setAnimationSpeed(0);
-        if (m_bomb_sound) m_bomb_sound->deleteSFX();
-        m_bomb_sound = SFXManager::get()->createSoundSource("clock");
-        m_bomb_sound->setLoop(true);
-        m_bomb_sound->setPosition(m_kart->getXYZ());
-        m_bomb_sound->play();
+    case ATTACH_SWATTER:
+        m_plugin =
+            new Swatter(m_kart, was_bomb ? prev_ticks : -1, ticks, this);
         break;
     default:
-        m_node->setMesh(attachment_manager->getMesh(type));
         break;
     }   // switch(type)
 
-    if (!UserConfigParams::m_graphical_effects)
-    {
-        m_node->setAnimationSpeed(0);
-        m_node->setCurrentFrame(0);
-    }
-
-    m_node->setScale(core::vector3df(m_node_scale,m_node_scale,m_node_scale));
-
     m_type             = type;
-    m_time_left        = time;
+    m_ticks_left       = ticks;
     m_previous_owner   = current_kart;
-    m_node->setRotation(core::vector3df(0, 0, 0));
+    m_scaling_end_ticks = World::getWorld()->getTicksSinceStart() +
+        stk_config->time2Ticks(0.7f);
 
+    m_initial_speed = 0;
     // A parachute can be attached as result of the usage of an item. In this
     // case we have to save the current kart speed so that it can be detached
     // by slowing down.
-    if(m_type==ATTACH_PARACHUTE)
+    // if set by rewind the parachute ticks is already correct
+    if (m_type == ATTACH_PARACHUTE && !set_by_rewind_parachute)
     {
-        m_initial_speed = m_kart->getSpeed();
+        const KartProperties *kp = m_kart->getKartProperties();
+        float speed_mult;
+
+        float initial_speed = m_kart->getSpeed();
         // if going very slowly or backwards, braking won't remove parachute
-        if(m_initial_speed <= 1.5) m_initial_speed = 1.5;
+        if(initial_speed <= 1.5f) initial_speed = 1.5f;
 
-        if (UserConfigParams::m_graphical_effects)
-        {
-            // .blend was created @25 (<10 real, slow computer), make it faster
-            m_node->setAnimationSpeed(50);
-        }
+        float f = initial_speed / kp->getParachuteMaxSpeed();
+        float temp_mult = kp->getParachuteDurationSpeedMult();
+
+        // duration can't be reduced by higher speed
+        if (temp_mult < 1.0f) temp_mult = 1.0f;
+
+        if (f > 1.0f) f = 1.0f;   // cap fraction
+
+        speed_mult = 1.0f + (f *  (temp_mult - 1.0f));
+
+        m_ticks_left = int(m_ticks_left * speed_mult);
+        int initial_speed_round = (int)(initial_speed * 100.0f);
+        initial_speed_round =
+            irr::core::clamp(initial_speed_round, -32768, 32767);
+        m_initial_speed = (int16_t)initial_speed_round;
     }
-    m_node->setVisible(true);
-
-    irr_driver->applyObjectPassShader(m_node);
 }   // set
 
 // -----------------------------------------------------------------------------
@@ -191,130 +175,208 @@ void Attachment::set(AttachmentType type, float time,
  */
 void Attachment::clear()
 {
-    if(m_plugin)
+    if (m_plugin)
     {
         delete m_plugin;
         m_plugin = NULL;
     }
 
-    if (m_bomb_sound)
-    {
-        m_bomb_sound->deleteSFX();
-        m_bomb_sound = NULL;
-    }
-
-    m_type=ATTACH_NOTHING;
-
-    m_time_left=0.0;
-    m_node->setVisible(false);
-    m_node->setPosition(core::vector3df());
-    m_node->setRotation(core::vector3df());
-
-    // Resets the weight of the kart if the previous attachment affected it
-    // (e.g. anvil). This must be done *after* setting m_type to
-    // ATTACH_NOTHING in order to reset the physics parameters.
-    m_kart->updateWeight();
+    m_type = ATTACH_NOTHING;
+    m_ticks_left = 0;
+    m_initial_speed = 0;
 }   // clear
 
 // -----------------------------------------------------------------------------
-/** Randomly selects the new attachment. For a server process, the
-*   attachment can be passed into this function.
-*  \param item The item that was collected.
-*  \param new_attachment Optional: only used on the clients, it
-*                        specifies the new attachment to use
-*/
-void Attachment::hitBanana(Item *item, int new_attachment)
+/** Saves the attachment state. Called as part of the kart saving its state.
+ *  \param buffer The kart rewinder's state buffer.
+ */
+void Attachment::saveState(BareNetworkString *buffer) const
 {
-    if(m_kart->getController()->canGetAchievements())
-        PlayerManager::increaseAchievement(AchievementInfo::ACHIEVE_BANANA,
-                                           "banana",1                      );
+    // We use bit 6 to indicate if a previous owner is defined for a bomb,
+    // bit 7 to indicate if the attachment is a plugin
+    assert(ATTACH_MAX < 64);
+    uint8_t bit_7 = 0;
+    if (m_plugin)
+    {
+        bit_7 = 1 << 7;
+    }
+    uint8_t type = m_type | (( (m_type==ATTACH_BOMB) && (m_previous_owner!=NULL) )
+                             ? (1 << 6) : 0 ) | bit_7;
+    buffer->addUInt8(type);
+    buffer->addUInt16(m_ticks_left);
+    if (m_type==ATTACH_BOMB && m_previous_owner)
+        buffer->addUInt8(m_previous_owner->getWorldKartId());
+    if (m_type == ATTACH_PARACHUTE)
+        buffer->addUInt16(m_initial_speed);
+    if (m_plugin)
+        m_plugin->saveState(buffer);
+}   // saveState
+
+// -----------------------------------------------------------------------------
+/** Called from the kart rewinder when resetting to a certain state.
+ *  \param buffer The kart rewinder's buffer with the attachment state next.
+ */
+void Attachment::rewindTo(BareNetworkString *buffer)
+{
+    uint8_t type = buffer->getUInt8();
+    bool is_plugin = (type >> 7 & 1) == 1;
+
+    // mask out bit 6 and 7
+    AttachmentType new_type = AttachmentType(type & 63);
+    type &= 127;
+
+    int16_t ticks_left = buffer->getUInt16();
+    // Now it is a new attachment:
+    if (type == (ATTACH_BOMB | 64))   // we have previous owner information
+    {
+        uint8_t kart_id = buffer->getUInt8();
+        m_previous_owner = World::getWorld()->getKart(kart_id);
+    }
+    else
+    {
+        m_previous_owner = NULL;
+    }
+
+    if (new_type == ATTACH_PARACHUTE)
+        m_initial_speed = buffer->getUInt16();
+    else
+        m_initial_speed = 0;
+
+    if (is_plugin)
+    {
+        if (!m_plugin)
+            m_plugin = new Swatter(m_kart, -1, 0, this);
+        m_plugin->restoreState(buffer);
+    }
+    else
+    {
+        // Remove unconfirmed plugin
+        delete m_plugin;
+        m_plugin = NULL;
+    }
+
+    m_type = new_type;
+    m_ticks_left = ticks_left;
+}   // rewindTo
+
+// -----------------------------------------------------------------------------
+/** Selects the new attachment. In order to simplify synchronisation with the
+ *  server, the new item is based on the current world time. 
+ *  \param item The item that was collected.
+ */
+void Attachment::hitBanana(ItemState *item_state)
+{
+    if (m_kart->getController()->canGetAchievements())
+    {
+        PlayerManager::increaseAchievement(AchievementsStatus::BANANA, 1);
+        if (race_manager->isLinearRaceMode())
+            PlayerManager::increaseAchievement(AchievementsStatus::BANANA_1RACE, 1);
+    }
     //Bubble gum shield effect:
     if(m_type == ATTACH_BUBBLEGUM_SHIELD ||
        m_type == ATTACH_NOLOK_BUBBLEGUM_SHIELD)
     {
-        m_time_left = 0.0f;
+        m_ticks_left = 0;
         return;
     }
 
-    float leftover_time   = 0.0f;
+    int leftover_ticks = 0;
 
     bool add_a_new_item = true;
 
-    if (dynamic_cast<ThreeStrikesBattle*>(World::getWorld()) != NULL)
+    if (race_manager->isBattleMode())
     {
         World::getWorld()->kartHit(m_kart->getWorldKartId());
-        ExplosionAnimation::create(m_kart);
+        if (m_kart->getKartAnimation() == NULL)
+            ExplosionAnimation::create(m_kart);
         return;
     }
 
+    AttachmentType new_attachment = ATTACH_NOTHING;
     const KartProperties *kp = m_kart->getKartProperties();
+    // Use this as a basic random number to make sync with server easier.
+    // Divide by 16 to increase probablity to have same time as server in
+    // case of a few physics frames different between client and server.
+    int ticks = World::getWorld()->getTicksSinceStart() / 16;
     switch(getType())   // If there already is an attachment, make it worse :)
     {
     case ATTACH_BOMB:
         {
         add_a_new_item = false;
-        HitEffect *he = new Explosion(m_kart->getXYZ(), "explosion", "explosion_bomb.xml");
-        if(m_kart->getController()->isLocalPlayerController())
-            he->setLocalPlayerKartHit();
-        projectile_manager->addHitEffect(he);
-        ExplosionAnimation::create(m_kart);
+        if (!RewindManager::get()->isRewinding())
+        {
+            HitEffect* he = new Explosion(m_kart->getXYZ(), "explosion",
+                "explosion_bomb.xml");
+            if (m_kart->getController()->isLocalPlayerController())
+                he->setLocalPlayerKartHit();
+            projectile_manager->addHitEffect(he);
+        }
+        if (m_kart->getKartAnimation() == NULL)
+            ExplosionAnimation::create(m_kart);
         clear();
-        if(new_attachment==-1)
-            new_attachment = m_random.get(3);
+        new_attachment = AttachmentType(ticks % 3);
         // Disable the banana on which the kart just is for more than the
         // default time. This is necessary to avoid that a kart lands on the
         // same banana again once the explosion animation is finished, giving
         // the kart the same penalty twice.
-        float f = std::max(item->getDisableTime(), kp->getExplosionDuration() + 2.0f);
-        item->setDisableTime(f);
+        int ticks = 
+            std::max(item_state->getTicksTillReturn(), 
+                     stk_config->time2Ticks(kp->getExplosionDuration() + 2.0f));
+        item_state->setTicksTillReturn(ticks);
         break;
         }
     case ATTACH_ANVIL:
         // if the kart already has an anvil, attach a new anvil,
         // and increase the overall time
-        new_attachment = 2;
-        leftover_time  = m_time_left;
+        new_attachment = ATTACH_ANVIL;
+        leftover_ticks  = m_ticks_left;
         break;
     case ATTACH_PARACHUTE:
-        new_attachment = 2;
-        leftover_time  = m_time_left;
+        new_attachment = ATTACH_PARACHUTE;
+        leftover_ticks  = m_ticks_left;
         break;
     default:
         // There is no attachment currently, but there will be one
         // so play the character sound ("Uh-Oh")
         m_kart->playCustomSFX(SFXManager::CUSTOM_ATTACH);
 
-        if(new_attachment==-1)
-            new_attachment = m_random.get(3);
+        if (race_manager->getMinorMode() == RaceManager::MINOR_MODE_TIME_TRIAL)
+            new_attachment = AttachmentType(ticks % 2);
+        else
+            new_attachment = AttachmentType(ticks % 3);
     }   // switch
 
     if (add_a_new_item)
     {
         switch (new_attachment)
         {
-        case 0:
-            set(ATTACH_PARACHUTE, kp->getParachuteDuration() + leftover_time);
-            m_initial_speed = m_kart->getSpeed();
-
+        case ATTACH_PARACHUTE:
+        {
+            set(ATTACH_PARACHUTE, kp->getParachuteDuration() + leftover_ticks);
+            int initial_speed_round = (int)(m_kart->getSpeed() * 100.0f);
+            initial_speed_round =
+                irr::core::clamp(initial_speed_round, -32768, 32767);
+            m_initial_speed = (int16_t)initial_speed_round;
             // if going very slowly or backwards,
             // braking won't remove parachute
-            if(m_initial_speed <= 1.5) m_initial_speed = 1.5;
-            break ;
-        case 1:
-            set( ATTACH_BOMB, stk_config->m_bomb_time+leftover_time);
-
-            // if ( m_kart == m_kart[0] )
-            //   sound -> playSfx ( SOUND_SHOOMF ) ;
-            break ;
-        case 2:
-            set(ATTACH_ANVIL, kp->getAnvilDuration() + leftover_time);
+            if (m_initial_speed <= 150) m_initial_speed = 150;
+            break;
+        }
+        case ATTACH_ANVIL:
+            set(ATTACH_ANVIL, stk_config->time2Ticks(kp->getAnvilDuration())
+                + leftover_ticks                                      );
             // if ( m_kart == m_kart[0] )
             //   sound -> playSfx ( SOUND_SHOOMF ) ;
             // Reduce speed once (see description above), all other changes are
             // handled in Kart::updatePhysics
             m_kart->adjustSpeed(kp->getAnvilSpeedFactor());
-            m_kart->updateWeight();
-            break ;
+            break;
+        case ATTACH_BOMB:
+            set( ATTACH_BOMB, stk_config->time2Ticks(stk_config->m_bomb_time)
+                            + leftover_ticks                                 );
+            break;
+        default:
+            break;
         }   // switch
     }
 }   // hitBanana
@@ -340,26 +402,29 @@ void Attachment::handleCollisionWithKart(AbstractKart *other)
         // If both karts have a bomb, explode them immediately:
         if(attachment_other->getType()==Attachment::ATTACH_BOMB)
         {
-            setTimeLeft(0.0f);
-            attachment_other->setTimeLeft(0.0f);
+            setTicksLeft(0);
+            attachment_other->setTicksLeft(0);
         }
         else  // only this kart has a bomb, move it to the other
         {
             // if there are only two karts, let them switch bomb from one to other
-            if (getPreviousOwner() != other || World::getWorld()->getNumKarts() <= 2)
+            if (getPreviousOwner() != other ||
+                World::getWorld()->getNumKarts() <= 2)
             {
                 // Don't move if this bomb was from other kart originally
-                other->getAttachment()->set(ATTACH_BOMB,
-                                            getTimeLeft()+
-                                            stk_config->m_bomb_time_increase,
-                                            m_kart);
+                other->getAttachment()
+                    ->set(ATTACH_BOMB, 
+                          getTicksLeft()+stk_config->time2Ticks(
+                                           stk_config->m_bomb_time_increase),
+                          m_kart);
                 other->playCustomSFX(SFXManager::CUSTOM_ATTACH);
                 clear();
             }
         }
     }   // type==BOMB
     else if(attachment_other->getType()==Attachment::ATTACH_BOMB &&
-            (attachment_other->getPreviousOwner()!=m_kart || World::getWorld()->getNumKarts() <= 2))
+             (attachment_other->getPreviousOwner()!=m_kart || 
+               World::getWorld()->getNumKarts() <= 2         )      )
     {
         // Don't attach a bomb when the kart is shielded
         if(m_kart->isShielded())
@@ -367,8 +432,10 @@ void Attachment::handleCollisionWithKart(AbstractKart *other)
             m_kart->decreaseShieldTime();
             return;
         }
-        set(ATTACH_BOMB, other->getAttachment()->getTimeLeft()+
-                         stk_config->m_bomb_time_increase, other);
+        set(ATTACH_BOMB,
+            other->getAttachment()->getTicksLeft()+
+               stk_config->time2Ticks(stk_config->m_bomb_time_increase),
+            other);
         other->getAttachment()->clear();
         m_kart->playCustomSFX(SFXManager::CUSTOM_ATTACH);
     }
@@ -381,26 +448,20 @@ void Attachment::handleCollisionWithKart(AbstractKart *other)
 }   // handleCollisionWithKart
 
 //-----------------------------------------------------------------------------
-void Attachment::update(float dt)
+void Attachment::update(int ticks)
 {
     if(m_type==ATTACH_NOTHING) return;
-    m_time_left -=dt;
 
+    // suspend the bomb during animations to avoid having 2 animations at the
+    // same time should the bomb explode before the previous animation is done
+    if (m_type == ATTACH_BOMB && m_kart->getKartAnimation() != NULL)
+        return;
 
-    bool is_shield = (m_type == ATTACH_BUBBLEGUM_SHIELD|| m_type == ATTACH_NOLOK_BUBBLEGUM_SHIELD);
-    float m_wanted_node_scale = is_shield ? std::max(1.0f, m_kart->getHighestPoint()*1.1f) : 1.0f;
+    m_ticks_left -= ticks;
 
-    if (m_node_scale < m_wanted_node_scale)
+    if (m_plugin)
     {
-        m_node_scale += dt*1.5f;
-        if (m_node_scale > m_wanted_node_scale) m_node_scale = m_wanted_node_scale;
-        m_node->setScale(core::vector3df(m_node_scale,m_node_scale,m_node_scale));
-    }
-
-    if(m_plugin)
-    {
-        bool discard = m_plugin->updateAndTestFinished(dt);
-        if(discard)
+        if (m_plugin->updateAndTestFinished(ticks))
         {
             clear();  // also removes the plugin
             return;
@@ -419,103 +480,194 @@ void Attachment::update(float dt)
 
         const KartProperties *kp = m_kart->getKartProperties();
 
-        float f = m_initial_speed / kp->getParachuteMaxSpeed();
+        float initial_speed = (float)m_initial_speed / 100.f;
+        float f = initial_speed / kp->getParachuteMaxSpeed();
         if (f > 1.0f) f = 1.0f;   // cap fraction
-        if (m_kart->getSpeed() <= m_initial_speed *
+        if (m_kart->getSpeed() <= initial_speed *
                                  (kp->getParachuteLboundFraction() +
                                   f * (kp->getParachuteUboundFraction()
                                      - kp->getParachuteLboundFraction())))
         {
-            m_time_left = -1;
+            m_ticks_left = -1;
         }
         }
         break;
     case ATTACH_ANVIL:     // handled in Kart::updatePhysics
     case ATTACH_NOTHING:   // Nothing to do, but complete all cases for switch
     case ATTACH_MAX:
+        m_initial_speed = 0;
         break;
     case ATTACH_SWATTER:
-    case ATTACH_NOLOKS_SWATTER:
         // Everything is done in the plugin.
+        m_initial_speed = 0;
+        break;
+    case ATTACH_NOLOKS_SWATTER:
+    case ATTACH_SWATTER_ANIM:
+        // Should never be called, these symbols are only used as an index for
+        // the model, Nolok's attachment type is ATTACH_SWATTER
+        assert(false);
         break;
     case ATTACH_BOMB:
-
-        if (m_bomb_sound) m_bomb_sound->setPosition(m_kart->getXYZ());
-
-        // Mesh animation frames are 1 to 61 frames (60 steps)
-        // The idea is change second by second, counterclockwise 60 to 0 secs
-        // If longer times needed, it should be a surprise "oh! bomb activated!"
-        if(m_time_left <= (m_node->getEndFrame() - m_node->getStartFrame()-1))
+    {
+        m_initial_speed = 0;
+        if (m_ticks_left <= 0)
         {
-            m_node->setCurrentFrame(m_node->getEndFrame()
-                                    - m_node->getStartFrame()-1-m_time_left);
-        }
-        if(m_time_left<=0.0)
-        {
-            HitEffect *he = new Explosion(m_kart->getXYZ(), "explosion", "explosion_bomb.xml");
-            if(m_kart->getController()->isLocalPlayerController())
-                he->setLocalPlayerKartHit();
-            projectile_manager->addHitEffect(he);
-            ExplosionAnimation::create(m_kart);
-
-            if (m_bomb_sound)
+            if (!RewindManager::get()->isRewinding())
             {
-                m_bomb_sound->deleteSFX();
-                m_bomb_sound = NULL;
+                HitEffect* he = new Explosion(m_kart->getXYZ(), "explosion",
+                    "explosion_bomb.xml");
+                if (m_kart->getController()->isLocalPlayerController())
+                    he->setLocalPlayerKartHit();
+                projectile_manager->addHitEffect(he);
             }
+            if (m_kart->getKartAnimation() == NULL)
+                ExplosionAnimation::create(m_kart);
         }
         break;
-    case ATTACH_TINYTUX:
-        // Nothing to do for tinytux, this is all handled in EmergencyAnimation
-        break;
+    }
     case ATTACH_BUBBLEGUM_SHIELD:
     case ATTACH_NOLOK_BUBBLEGUM_SHIELD:
-        if (m_time_left < 0)
+        m_initial_speed = 0;
+        if (m_ticks_left <= 0)
         {
-            m_time_left = 0.0f;
-            if (m_bubble_explode_sound) m_bubble_explode_sound->deleteSFX();
-            m_bubble_explode_sound = SFXManager::get()->createSoundSource("bubblegum_explode");
-            m_bubble_explode_sound->setPosition(m_kart->getXYZ());
-            m_bubble_explode_sound->play();
-
-            // drop a small bubble gum
-            Vec3 hit_point;
-            Vec3 normal;
-            const Material* material_hit;
-            Vec3 pos = m_kart->getXYZ();
-            Vec3 to=pos+Vec3(0, -10000, 0);
-            World* world = World::getWorld();
-            world->getTrack()->getTriangleMesh().castRay(pos, to, &hit_point,
-                                                         &material_hit, &normal);
-            // This can happen if the kart is 'over nothing' when dropping
-            // the bubble gum
-            if(material_hit)
+            if (!RewindManager::get()->isRewinding())
             {
-                normal.normalize();
-
-                pos.setY(hit_point.getY()-0.05f);
-
-                ItemManager::get()->newItem(Item::ITEM_BUBBLEGUM, pos, normal, m_kart);
+                if (m_bubble_explode_sound) m_bubble_explode_sound->deleteSFX();
+                m_bubble_explode_sound =
+                    SFXManager::get()->createSoundSource("bubblegum_explode");
+                m_bubble_explode_sound->setPosition(m_kart->getXYZ());
+                m_bubble_explode_sound->play();
             }
+            if (!m_kart->isGhostKart())
+                ItemManager::get()->dropNewItem(Item::ITEM_BUBBLEGUM, m_kart);
         }
         break;
     }   // switch
 
     // Detach attachment if its time is up.
-    if ( m_time_left <= 0.0f)
+    if (m_ticks_left <= 0)
         clear();
 }   // update
 
 // ----------------------------------------------------------------------------
-float Attachment::weightAdjust() const
+void Attachment::updateGraphics(float dt)
 {
-    return m_type == ATTACH_ANVIL ? m_kart->getKartProperties()->getAnvilWeight() : 0.0f;
-}
+    // Add the suitable graphical effects if different attachment is set
+    if (m_type != m_graphical_type)
+    {
+        // Attachement is different, reset and add suitable sfx effects
+        m_node->setPosition(core::vector3df(0.0f, 0.0f, 0.0f));
+        m_node->setRotation(core::vector3df(0.0f, 0.0f, 0.0f));
+        m_node->setScale(core::vector3df(1.0f, 1.0f, 1.0f));
+        m_node->setLoopMode(true);
+        switch (m_type)
+        {
+        case ATTACH_NOTHING:
+            break;
+        case ATTACH_SWATTER:
+            // Graphical model set in swatter class
+            break;
+        default:
+            m_node->setMesh(attachment_manager->getMesh(m_type));
+            break;
+        }   // switch(type)
+
+        if (m_type != ATTACH_NOTHING)
+        {
+            m_node->setAnimationSpeed(0);
+            m_node->setCurrentFrame(0);
+        }
+        if (UserConfigParams::m_particles_effects > 1 &&
+            m_type == ATTACH_PARACHUTE)
+        {
+            // .blend was created @25 (<10 real, slow computer), make it faster
+            m_node->setAnimationSpeed(50);
+        }
+        m_graphical_type = m_type;
+    }
+
+    if (m_plugin)
+        m_plugin->updateGraphics(dt);
+
+    if (m_type != ATTACH_NOTHING)
+    {
+        m_node->setVisible(true);
+        bool is_shield = m_type == ATTACH_BUBBLEGUM_SHIELD ||
+                        m_type == ATTACH_NOLOK_BUBBLEGUM_SHIELD;
+        float wanted_node_scale = is_shield ?
+            std::max(1.0f, m_kart->getHighestPoint() * 1.1f) : 1.0f;
+        float scale_ratio = stk_config->ticks2Time(m_scaling_end_ticks -
+            World::getWorld()->getTicksSinceStart()) / 0.7f;
+        if (scale_ratio > 0.0f)
+        {
+            float scale = 0.3f * scale_ratio +
+                wanted_node_scale * (1.0f - scale_ratio);
+            m_node->setScale(core::vector3df(scale, scale, scale));
+        }
+        else
+        {
+            m_node->setScale(core::vector3df(
+                wanted_node_scale, wanted_node_scale, wanted_node_scale));
+        }
+        int slow_flashes = stk_config->time2Ticks(3.0f);
+        if (is_shield && m_ticks_left < slow_flashes)
+        {
+            // Bubble gum flashing when close to dropping
+            int ticks_per_flash = stk_config->time2Ticks(0.2f);
+
+            int fast_flashes = stk_config->time2Ticks(0.5f);
+            if (m_ticks_left < fast_flashes)
+            {
+                ticks_per_flash = stk_config->time2Ticks(0.07f);
+            }
+
+            int division = (m_ticks_left / ticks_per_flash);
+            m_node->setVisible((division & 0x1) == 0);
+        }
+    }
+    else
+        m_node->setVisible(false);
+
+    switch (m_type)
+    {
+    case ATTACH_BOMB:
+    {
+        if (!m_bomb_sound)
+        {
+            m_bomb_sound = SFXManager::get()->createSoundSource("clock");
+            m_bomb_sound->setLoop(true);
+            m_bomb_sound->play();
+        }
+        m_bomb_sound->setPosition(m_kart->getXYZ());
+        // Mesh animation frames are 1 to 61 frames (60 steps)
+        // The idea is change second by second, counterclockwise 60 to 0 secs
+        // If longer times needed, it should be a surprise "oh! bomb activated!"
+        float time_left = stk_config->ticks2Time(m_ticks_left);
+        if (time_left <= (m_node->getEndFrame() - m_node->getStartFrame() - 1))
+        {
+            m_node->setCurrentFrame(m_node->getEndFrame()
+                - m_node->getStartFrame() - 1 - time_left);
+        }
+        return;
+    }
+    default:
+        break;
+    }   // switch
+
+    if (m_bomb_sound)
+    {
+        m_bomb_sound->deleteSFX();
+        m_bomb_sound = NULL;
+    }
+}   // updateGraphics
 
 // ----------------------------------------------------------------------------
-/** Inform any eventual plugin when an animation is done. */
-void Attachment::OnAnimationEnd(scene::IAnimatedMeshSceneNode* node)
+/** Return the additional weight of the attachment (some attachments slow
+ *  karts down by also making them heavier).
+ */
+float Attachment::weightAdjust() const
 {
-    if(m_plugin)
-        m_plugin->onAnimationEnd();
-}
+    return m_type == ATTACH_ANVIL 
+           ? m_kart->getKartProperties()->getAnvilWeight() 
+          : 0.0f;
+}   // weightAdjust

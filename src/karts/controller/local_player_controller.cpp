@@ -25,7 +25,8 @@
 #include "config/user_config.hpp"
 #include "graphics/camera.hpp"
 #include "graphics/irr_driver.hpp"
-#include "graphics/post_processing.hpp"
+#include "graphics/particle_emitter.hpp"
+#include "graphics/particle_kind.hpp"
 #include "input/input_manager.hpp"
 #include "items/attachment.hpp"
 #include "items/item.hpp"
@@ -37,11 +38,16 @@
 #include "karts/rescue_animation.hpp"
 #include "modes/world.hpp"
 #include "network/network_config.hpp"
+#include "network/protocols/game_events_protocol.hpp"
+#include "network/protocols/game_protocol.hpp"
 #include "network/race_event_manager.hpp"
+#include "network/rewind_manager.hpp"
 #include "race/history.hpp"
 #include "states_screens/race_gui_base.hpp"
+#include "tracks/track.hpp"
 #include "utils/constants.hpp"
 #include "utils/log.hpp"
+#include "utils/string_utils.hpp"
 #include "utils/translation.hpp"
 
 /** The constructor for a loca player kart, i.e. a player that is playing
@@ -52,21 +58,30 @@
  *  \param init_pos The start coordinates and heading of the kart.
  */
 LocalPlayerController::LocalPlayerController(AbstractKart *kart,
-                                   StateManager::ActivePlayer *player)
+                                             const int local_player_id,
+                                             HandicapLevel h)
                      : PlayerController(kart)
 {
-    m_player = player;
-    if(player)
-        player->setKart(kart);
+    m_has_started = false;
+    m_handicap = h;
+    m_player = StateManager::get()->getActivePlayer(local_player_id);
+    if(m_player)
+        m_player->setKart(kart);
 
     // Keep a pointer to the camera to remove the need to search for
     // the right camera once per frame later.
-    m_camera       = Camera::createCamera(kart);
-    m_bzzt_sound   = SFXManager::get()->createSoundSource("bzzt");
+    Camera *camera = Camera::createCamera(kart, local_player_id);
+
+    m_camera_index = camera->getIndex();
     m_wee_sound    = SFXManager::get()->createSoundSource("wee");
-    m_ugh_sound    = SFXManager::get()->createSoundSource("ugh");
-    m_grab_sound   = SFXManager::get()->createSoundSource("grab_collectable");
-    m_full_sound   = SFXManager::get()->createSoundSource("energy_bar_full");
+    m_bzzt_sound   = SFXManager::get()->getBuffer("bzzt");
+    m_ugh_sound    = SFXManager::get()->getBuffer("ugh");
+    m_grab_sound   = SFXManager::get()->getBuffer("grab_collectable");
+    m_full_sound   = SFXManager::get()->getBuffer("energy_bar_full");
+    m_unfull_sound = SFXManager::get()->getBuffer("energy_bar_unfull");
+
+    m_is_above_nitro_target = false;
+    initParticleEmitter();
 }   // LocalPlayerController
 
 //-----------------------------------------------------------------------------
@@ -74,12 +89,33 @@ LocalPlayerController::LocalPlayerController(AbstractKart *kart,
  */
 LocalPlayerController::~LocalPlayerController()
 {
-    m_bzzt_sound->deleteSFX();
-    m_wee_sound ->deleteSFX();
-    m_ugh_sound ->deleteSFX();
-    m_grab_sound->deleteSFX();
-    m_full_sound->deleteSFX();
+    m_wee_sound->deleteSFX();
 }   // ~LocalPlayerController
+
+//-----------------------------------------------------------------------------
+void LocalPlayerController::initParticleEmitter()
+{
+    // Attach Particle System
+    m_sky_particles_emitter = nullptr;
+    Track *track = Track::getCurrentTrack();
+#ifndef SERVER_ONLY
+    if (UserConfigParams::m_particles_effects > 1 &&
+        track->getSkyParticles() != NULL)
+    {
+        track->getSkyParticles()->setBoxSizeXZ(150.0f, 150.0f);
+
+        m_sky_particles_emitter.reset(
+            new ParticleEmitter(track->getSkyParticles(),
+                                core::vector3df(0.0f, 30.0f, 100.0f),
+                                m_kart->getNode(),
+                                true));
+
+        // FIXME: in multiplayer mode, this will result in several instances
+        //        of the heightmap being calculated and kept in memory
+        m_sky_particles_emitter->addHeightMapAffector(track);
+    }
+#endif
+}   // initParticleEmitter
 
 //-----------------------------------------------------------------------------
 /** Resets the player kart for a new or restarted race.
@@ -88,6 +124,7 @@ void LocalPlayerController::reset()
 {
     PlayerController::reset();
     m_sound_schedule = false;
+    m_has_started = false;
 }   // reset
 
 // ----------------------------------------------------------------------------
@@ -113,47 +150,88 @@ void LocalPlayerController::resetInputState()
  *                if between 1 and 32767, it indicates an analog value,
  *                and if it's 0 it indicates that the corresponding button
  *                was released.
+ *  \param dry_run If set it will return if this action will trigger a
+ *                 state change or not.
+ *  \return       True if dry_run==true and a state change would be triggered.
+ *                If dry_run==false, it returns true.
  */
-void LocalPlayerController::action(PlayerAction action, int value)
+bool LocalPlayerController::action(PlayerAction action, int value,
+                                   bool dry_run)
 {
-    PlayerController::action(action, value);
-
-    // If this is a client, send the action to the server
-    if (World::getWorld()->isNetworkWorld()      && 
-        NetworkConfig::get()->isClient()         &&
-        RaceEventManager::getInstance()->isRunning()    )
+    // Pause race doesn't need to be sent to server
+    if (action == PA_PAUSE_RACE)
     {
-        RaceEventManager::getInstance()->controllerAction(this, action, value);
+        PlayerController::action(action, value);
+        return true;
     }
 
+    if (action == PA_ACCEL && value != 0 && !m_has_started)
+    {
+        m_has_started = true;
+        if (!NetworkConfig::get()->isNetworking())
+        {
+            float f = m_kart->getStartupBoostFromStartTicks(
+                World::getWorld()->getAuxiliaryTicks());
+            m_kart->setStartupBoost(f);
+        }
+        else if (NetworkConfig::get()->isClient())
+        {
+            auto ge = RaceEventManager::getInstance()->getProtocol();
+            assert(ge);
+            ge->sendStartupBoost((uint8_t)m_kart->getWorldKartId());
+        }
+    }
+
+    // If this event does not change the control state (e.g.
+    // it's a (auto) repeat event), do nothing. This especially
+    // optimises traffic to the server and other clients.
+    if (!PlayerController::action(action, value, /*dry_run*/true)) return false;
+
+    // Register event with history
+    if(!history->replayHistory())
+        history->addEvent(m_kart->getWorldKartId(), action, value);
+
+    // If this is a client, send the action to networking layer
+    if (NetworkConfig::get()->isNetworking() &&
+        NetworkConfig::get()->isClient() &&
+        !RewindManager::get()->isRewinding() &&
+        World::getWorld() && !World::getWorld()->isLiveJoinWorld())
+    {
+        if (auto gp = GameProtocol::lock())
+        {
+            gp->controllerAction(m_kart->getWorldKartId(), action, value,
+                m_steer_val_l, m_steer_val_r);
+        }
+    }
+    return PlayerController::action(action, value, /*dry_run*/false);
 }   // action
 
 //-----------------------------------------------------------------------------
 /** Handles steering for a player kart.
  */
-void LocalPlayerController::steer(float dt, int steer_val)
+void LocalPlayerController::steer(int ticks, int steer_val)
 {
     if(UserConfigParams::m_gamepad_debug)
     {
-        Log::debug("LocalPlayerController", "steering: steer_val %d ", steer_val);
         RaceGUIBase* gui_base = World::getWorld()->getRaceGUI();
         gui_base->clearAllMessages();
         gui_base->addMessage(StringUtils::insertValues(L"steer_val %i", steer_val),
                              m_kart, 1.0f,
                              video::SColor(255, 255, 0, 255), false);
     }
-    PlayerController::steer(dt, steer_val);
+    PlayerController::steer(ticks, steer_val);
     
     if(UserConfigParams::m_gamepad_debug)
     {
-        Log::debug("LocalPlayerController", "  set to: %f\n", m_controls->m_steer);
+        Log::debug("LocalPlayerController", "  set to: %f\n",
+                   m_controls->getSteer());
     }
 }   // steer
 
 //-----------------------------------------------------------------------------
 /** Updates the player kart, called once each timestep.
  */
-void LocalPlayerController::update(float dt)
+void LocalPlayerController::update(int ticks)
 {
     if (UserConfigParams::m_gamepad_debug)
     {
@@ -162,33 +240,50 @@ void LocalPlayerController::update(float dt)
         Log::debug("LocalPlayerController", "irr_driver", "-------------------------------------");
     }
 
-    PlayerController::update(dt);
+    PlayerController::update(ticks);
 
     // look backward when the player requests or
     // if automatic reverse camera is active
-    if (m_camera->getMode() != Camera::CM_FINAL)
+#ifndef SERVER_ONLY
+    Camera *camera = Camera::getCamera(m_camera_index);
+    if (camera->getType() != Camera::CM_TYPE_END)
     {
-        if (m_controls->m_look_back || (UserConfigParams::m_reverse_look_threshold > 0 &&
+        if (m_controls->getLookBack() || (UserConfigParams::m_reverse_look_threshold > 0 &&
             m_kart->getSpeed() < -UserConfigParams::m_reverse_look_threshold))
         {
-            m_camera->setMode(Camera::CM_REVERSE);
+            camera->setMode(Camera::CM_REVERSE);
+            if (m_sky_particles_emitter)
+            {
+                m_sky_particles_emitter->setPosition(Vec3(0, 30, -100));
+                m_sky_particles_emitter->setRotation(Vec3(0, 180, 0));
+            }
         }
         else
         {
-            if (m_camera->getMode() == Camera::CM_REVERSE)
-                m_camera->setMode(Camera::CM_NORMAL);
+            if (camera->getMode() == Camera::CM_REVERSE)
+            {
+                camera->setMode(Camera::CM_NORMAL);
+                if (m_sky_particles_emitter)
+                {
+                    m_sky_particles_emitter->setPosition(Vec3(0, 30, 100));
+                    m_sky_particles_emitter->setRotation(Vec3(0, 0, 0));
+                }
+            }
         }
     }
 
-    if (m_kart->getKartAnimation() && m_sound_schedule == false &&
-        m_kart->getAttachment()->getType() != Attachment::ATTACH_TINYTUX)
+    if (m_is_above_nitro_target == true &&
+        m_kart->getEnergy() < race_manager->getCoinTarget())
+        nitroNotFullSound();
+#endif
+    if (m_kart->getKartAnimation() && m_sound_schedule == false)
     {
         m_sound_schedule = true;
     }
     else if (!m_kart->getKartAnimation() && m_sound_schedule == true)
     {
         m_sound_schedule = false;
-        m_bzzt_sound->play();
+        m_kart->playSound(m_bzzt_sound);
     }
 }   // update
 
@@ -198,15 +293,18 @@ void LocalPlayerController::update(float dt)
  */
 void LocalPlayerController::displayPenaltyWarning()
 {
+    PlayerController::displayPenaltyWarning();
     RaceGUIBase* m=World::getWorld()->getRaceGUI();
     if (m)
     {
         m->addMessage(_("Penalty time!!"), m_kart, 2.0f,
-                      GUIEngine::getSkin()->getColor("font::top"));
-        m->addMessage(_("Don't accelerate before go"), m_kart, 2.0f,
-                      GUIEngine::getSkin()->getColor("font::normal"));
+                      GUIEngine::getSkin()->getColor("font::top"), true /* important */,
+            false /*  big font */, true /* outline */);
+        m->addMessage(_("Don't accelerate before 'Set!'"), m_kart, 2.0f,
+            GUIEngine::getSkin()->getColor("font::normal"), true /* important */,
+            false /*  big font */, true /* outline */);
     }
-    m_bzzt_sound->play();
+    m_kart->playSound(m_bzzt_sound);
 }   // displayPenaltyWarning
 
 //-----------------------------------------------------------------------------
@@ -241,9 +339,8 @@ void LocalPlayerController::setPosition(int p)
  d*/
 void LocalPlayerController::finishedRace(float time)
 {
-    // This will implicitely trigger setting the first end camera to be active
-    m_camera->setMode(Camera::CM_FINAL);
-
+    // This will implicitly trigger setting the first end camera to be active
+    Camera::changeCamera(m_camera_index, Camera::CM_TYPE_END);
 }   // finishedRace
 
 //-----------------------------------------------------------------------------
@@ -262,8 +359,10 @@ void LocalPlayerController::handleZipper(bool play_sound)
         m_wee_sound->play();
     }
 
+#ifndef SERVER_ONLY
     // Apply the motion blur according to the speed of the kart
-    irr_driver->getPostProcessing()->giveBoost(m_camera->getIndex());
+    irr_driver->giveBoost(m_camera_index);
+#endif
 
 }   // handleZipper
 
@@ -271,49 +370,48 @@ void LocalPlayerController::handleZipper(bool play_sound)
 /** Called when a kart hits an item. It plays certain sfx (e.g. nitro full,
  *  or item specific sounds).
  *  \param item Item that was collected.
- *  \param add_info Additional info to be used then handling the item. If
- *                  this is -1 (default), the item type is selected
- *                  randomly. Otherwise it contains the powerup or
- *                  attachment for the kart. This is used in network mode to
- *                  let the server determine the powerup/attachment for
- *                  the clients.
  *  \param old_energy The previous energy value
  */
-void LocalPlayerController::collectedItem(const Item &item, int add_info,
+void LocalPlayerController::collectedItem(const ItemState &item_state,
                                           float old_energy)
 {
     if (old_energy < m_kart->getKartProperties()->getNitroMax() &&
         m_kart->getEnergy() == m_kart->getKartProperties()->getNitroMax())
     {
-        m_full_sound->play();
+        m_kart->playSound(m_full_sound);
     }
     else if (race_manager->getCoinTarget() > 0 &&
              old_energy < race_manager->getCoinTarget() &&
-             m_kart->getEnergy() == race_manager->getCoinTarget())
+             m_kart->getEnergy() >= race_manager->getCoinTarget())
     {
-        m_full_sound->play();
+        m_kart->playSound(m_full_sound);
+        m_is_above_nitro_target = true;
     }
     else
     {
-        switch(item.getType())
+        switch(item_state.getType())
         {
         case Item::ITEM_BANANA:
-            m_ugh_sound->play();
-            break;
         case Item::ITEM_BUBBLEGUM:
             //More sounds are played by the kart class
             //See Kart::collectedItem()
-            m_ugh_sound->play();
-            break;
-        case Item::ITEM_TRIGGER:
-            // no default sound for triggers
+            m_kart->playSound(m_ugh_sound);
             break;
         default:
-            m_grab_sound->play();
+            m_kart->playSound(m_grab_sound);
             break;
         }
     }
 }   // collectedItem
+
+//-----------------------------------------------------------------------------
+/** If the nitro level has gone under the nitro goal, play a bad effect sound 
+ */
+void LocalPlayerController::nitroNotFullSound()
+{
+    m_kart->playSound(m_unfull_sound);
+    m_is_above_nitro_target = false;
+} //nitroNotFullSound
 
 // ----------------------------------------------------------------------------
 /** Returns true if the player of this controller can collect achievements.
@@ -324,5 +422,19 @@ void LocalPlayerController::collectedItem(const Item &item, int add_info,
  */
 bool LocalPlayerController::canGetAchievements() const 
 {
-    return m_player->getConstProfile() == PlayerManager::getCurrentPlayer();
+    return !RewindManager::get()->isRewinding() &&
+        m_player->getConstProfile() == PlayerManager::getCurrentPlayer();
 }   // canGetAchievements
+
+// ----------------------------------------------------------------------------
+core::stringw LocalPlayerController::getName(bool include_handicap_string) const
+{
+    if (NetworkConfig::get()->isNetworking())
+        return PlayerController::getName();
+
+    core::stringw name = m_player->getProfile()->getName();
+    if (include_handicap_string && m_handicap != HANDICAP_NONE)
+        name = _("%s (handicapped)", name);
+
+    return name;
+}   // getName

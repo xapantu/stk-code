@@ -20,6 +20,7 @@
 #define HEADER_AI_BASE_CONTROLLER_HPP
 
 #include "karts/controller/controller.hpp"
+#include "utils/cpp2011.hpp"
 
 class AIProperties;
 class Track;
@@ -35,13 +36,14 @@ private:
     /** Stores the last N times when a collision happened. This is used
     *  to detect when the AI is stuck, i.e. N collisions happened in
     *  a certain period of time. */
-    std::vector<float> m_collision_times;
+    std::vector<int> m_collision_ticks;
 
     /** A flag that is set during the physics processing to indicate that
     *  this kart is stuck and needs to be rescued. */
     bool m_stuck;
 
 protected:
+    bool m_enabled_network_ai;
 
     /** Length of the kart, storing it here saves many function calls. */
     float m_kart_length;
@@ -57,38 +59,56 @@ protected:
 
     static bool m_ai_debug;
 
-    /** Position info structure of targets. */
-    struct posData {bool behind; bool on_side; float angle; float distance;};
+    /** Stores the '--test-ai=n' command line parameter:
+     *  It indicates which fraction of the AIs are going to
+     *  be the test AI: 1 means only to use the TestAI,
+     *  2 means every second AI will be test etc. Used
+     *  for AI testing only. */
+    static int m_test_ai;
 
-    void         setControllerName(const std::string &name);
+    void         setControllerName(const std::string &name) OVERRIDE;
     float        steerToPoint(const Vec3 &point);
     float        normalizeAngle(float angle);
-    virtual void update      (float delta) ;
-    virtual void setSteering   (float angle, float dt);
-    virtual bool canSkid(float steer_fraction) = 0;
     // ------------------------------------------------------------------------
     /** This can be called to detect if the kart is stuck (i.e. repeatedly
     *  hitting part of the track). */
     bool         isStuck() const { return m_stuck; }
-    void         checkPosition(const Vec3&, posData*, Vec3* lc = NULL) const;
+    // ------------------------------------------------------------------------
+    void         determineTurnRadius(const Vec3 &end, Vec3 *center,
+                                     float *radius) const;
+    virtual void setSteering   (float angle, float dt);
+    // ------------------------------------------------------------------------
+    /** Return true if AI can skid now. */
+    virtual bool canSkid(float steer_fraction) = 0;
 
 public:
              AIBaseController(AbstractKart *kart);
     virtual ~AIBaseController() {};
-    virtual void reset();
-    virtual bool disableSlipstreamBonus() const;
-    virtual void crashed(const Material *m);
+    virtual void reset() OVERRIDE;
+    virtual bool disableSlipstreamBonus() const OVERRIDE;
+    virtual void crashed(const Material *m) OVERRIDE;
     static  void enableDebug() {m_ai_debug = true; }
-    virtual void crashed(const AbstractKart *k) {};
-    virtual void handleZipper(bool play_sound) {};
-    virtual void finishedRace(float time) {};
-    virtual void collectedItem(const Item &item, int add_info=-1,
-                               float previous_energy=0) {};
-    virtual void setPosition(int p) {};
-    virtual bool isPlayerController() const { return false; }
-    virtual bool isLocalPlayerController() const { return false; }
-    virtual void action(PlayerAction action, int value) {};
-    virtual void skidBonusTriggered() {};
+    static  void setTestAI(int n) {m_test_ai = n; }
+    static  int  getTestAI() { return m_test_ai; }
+    virtual void crashed(const AbstractKart *k) OVERRIDE {};
+    virtual void handleZipper(bool play_sound) OVERRIDE {};
+    virtual void finishedRace(float time) OVERRIDE {};
+    virtual void collectedItem(const ItemState &item,
+                               float previous_energy=0) OVERRIDE {};
+    virtual void setPosition(int p) OVERRIDE {};
+    virtual bool isPlayerController() const OVERRIDE { return false; }
+    virtual bool isLocalPlayerController() const OVERRIDE { return false; }
+    virtual bool action(PlayerAction action, int value, bool dry_run=false) OVERRIDE
+    {
+        return true;
+    };
+    virtual void skidBonusTriggered() OVERRIDE {}
+    // ------------------------------------------------------------------------
+    virtual bool saveState(BareNetworkString *buffer) const OVERRIDE;
+    virtual void rewindTo(BareNetworkString *buffer) OVERRIDE;
+    void setNetworkAI(bool val)                 { m_enabled_network_ai = val; }
+    // ------------------------------------------------------------------------
+    virtual void update(int ticks) OVERRIDE;
 
 };   // AIBaseController
 

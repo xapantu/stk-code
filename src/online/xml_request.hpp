@@ -19,17 +19,18 @@
 #ifndef HEADER_XML_REQUEST_HPP
 #define HEADER_XML_REQUEST_HPP
 
-#include "io/file_manager.hpp"
 #include "online/http_request.hpp"
 #include "utils/cpp2011.hpp"
-#include "utils/string_utils.hpp"
 #include "utils/synchronised.hpp"
 
 #ifdef WIN32
 #  include <winsock2.h>
 #endif
+#include <curl/curl.h>
 #include <assert.h>
 #include <string>
+
+class XMLNode;
 
 namespace Online
 {
@@ -41,18 +42,19 @@ namespace Online
         /** On a successful download contains the converted XML tree. */
         XMLNode *m_xml_data;
 
+    protected:
+
         /** Additional info contained the downloaded data (or an error
-         *  message if a problem occurred). */
+        *  message if a problem occurred). */
         irr::core::stringw m_info;
 
-    protected:
         /** True if the request was successful executed on the server. */
         bool m_success;
 
         virtual void afterOperation() OVERRIDE;
 
     public :
-        XMLRequest(bool manage_memory = false, int priority = 1);
+        XMLRequest(int priority = 1);
         virtual ~XMLRequest();
 
         // ------------------------------------------------------------------------
@@ -87,7 +89,6 @@ namespace Online
             assert(hasBeenExecuted());
             return m_success;
         }   // isSuccess
-
     };   // class XMLRequest
 } //namespace Online
 #endif // HEADER_XML_REQUEST_HPP

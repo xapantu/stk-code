@@ -21,13 +21,20 @@
 #include "config/stk_config.hpp"
 #include "io/file_manager.hpp"
 #include "karts/ghost_kart.hpp"
+#include "karts/controller/ghost_controller.hpp"
 #include "modes/world.hpp"
 #include "race/race_manager.hpp"
 #include "tracks/track.hpp"
+#include "tracks/track_manager.hpp"
+#include "utils/file_utils.hpp"
+#include "utils/string_utils.hpp"
 
+#include <irrlicht.h>
 #include <stdio.h>
 #include <string>
+#include <cinttypes>
 
+ReplayPlay::SortOrder ReplayPlay::m_sort_order = ReplayPlay::SO_DEFAULT;
 ReplayPlay *ReplayPlay::m_replay_play = NULL;
 
 //-----------------------------------------------------------------------------
@@ -35,7 +42,9 @@ ReplayPlay *ReplayPlay::m_replay_play = NULL;
  */
 ReplayPlay::ReplayPlay()
 {
-    m_next            = 0;
+    m_current_replay_file   = 0;
+    m_second_replay_file    = 0;
+    m_second_replay_enabled = false;
 }   // ReplayPlay
 
 //-----------------------------------------------------------------------------
@@ -45,95 +54,300 @@ ReplayPlay::~ReplayPlay()
 }   // ~Replay
 
 //-----------------------------------------------------------------------------
-/** Starts replay from the replay file in the current directory.
- */
-void ReplayPlay::init()
-{
-    m_next = 0;
-    Load();
-}   // init
-
-//-----------------------------------------------------------------------------
 /** Resets all ghost karts back to start position.
  */
 void ReplayPlay::reset()
 {
-    m_next = 0;
     for(unsigned int i=0; i<(unsigned int)m_ghost_karts.size(); i++)
     {
-        m_ghost_karts[i].reset();
+        m_ghost_karts[i]->reset();
     }
 }   // reset
 
 //-----------------------------------------------------------------------------
-/** Updates all ghost karts.
- *  \param dt Time step size.
- */
-void ReplayPlay::update(float dt)
+void ReplayPlay::loadAllReplayFile()
 {
-    // First update all ghost karts
-    for(unsigned int i=0; i<(unsigned int)m_ghost_karts.size(); i++)
-        m_ghost_karts[i].update(dt);
+    m_replay_file_list.clear();
 
-}   // update
+    // Load stock replay first
+    std::set<std::string> pre_record;
+    file_manager->listFiles(pre_record, file_manager
+        ->getAssetDirectory(FileManager::REPLAY), /*is_full_path*/ true);
+    for (std::set<std::string>::iterator i  = pre_record.begin();
+                                         i != pre_record.end(); ++i)
+    {
+        if (!addReplayFile(*i, /*custom_replay*/ true))
+        {
+            // Skip invalid replay file
+            continue;
+        }
+    }
+
+    // Now user recorded replay
+    std::set<std::string> files;
+    file_manager->listFiles(files, file_manager->getReplayDir(),
+        /*is_full_path*/ false);
+
+    int j=0;
+
+    for (std::set<std::string>::iterator i  = files.begin();
+                                         i != files.end(); ++i)
+    {
+        if (!addReplayFile(*i, false, j))
+        {
+            // Skip invalid replay file
+            continue;
+        }
+        j++;
+    }
+
+}   // loadAllReplayFile
 
 //-----------------------------------------------------------------------------
-/** Loads a replay data from  file called 'trackname'.replay.
- */
-void ReplayPlay::Load()
+bool ReplayPlay::addReplayFile(const std::string& fn, bool custom_replay, int call_index)
 {
-    m_ghost_karts.clearAndDeleteAll();
-    char s[1024], s1[1024];
 
-    FILE *fd = openReplayFile(/*writeable*/false);
+    char s[1024], s1[1024];
+    if (StringUtils::getExtension(fn) != "replay") return false;
+    FILE* fd = FileUtils::fopenU8Path(custom_replay ? fn :
+        file_manager->getReplayDir() + fn, "r");
+    if (fd == NULL) return false;
+    ReplayData rd;
+
+    // custom_replay is true when full path of filename is given
+    rd.m_custom_replay_file = custom_replay;
+    rd.m_filename = fn;
+
+    fgets(s, 1023, fd);
+    unsigned int version;
+    if (sscanf(s,"version: %u", &version) != 1)
+    {
+        Log::warn("Replay", "No Version information "
+                  "found in replay file (bogus replay file).");
+        fclose(fd);
+        return false;
+    }
+    if (version > getCurrentReplayVersion() ||
+        version < getMinSupportedReplayVersion() )
+    {
+        Log::warn("Replay", "Replay is version '%d'", version);
+        Log::warn("Replay", "STK replay version is '%d'", getCurrentReplayVersion());
+        Log::warn("Replay", "Minimum supported replay version is '%d'", getMinSupportedReplayVersion());
+        Log::warn("Replay", "Skipped '%s'", fn.c_str());
+        fclose(fd);
+        return false;
+    }
+        rd.m_replay_version = version;
+
+    if (version >= 4)
+    {
+        fgets(s, 1023, fd);
+        if(sscanf(s, "stk_version: %1023s", s1) != 1)
+        {
+            Log::warn("Replay", "No STK release version found in replay file, '%s'.", fn.c_str());
+            fclose(fd);
+            return false;
+        }
+        rd.m_stk_version = s1;
+    }
+    else
+        rd.m_stk_version = "";
+
+    while(true)
+    {
+        fgets(s, 1023, fd);
+        core::stringc is_end(s);
+        is_end.trim();
+        if (is_end == "kart_list_end") break;
+        char s1[1024];
+        char display_name_encoded[1024];
+
+        int scanned = sscanf(s,"kart: %1023s %1023[^\n]", s1, display_name_encoded);
+        if (scanned < 1)
+        {
+            Log::warn("Replay", "Could not read ghost karts info!");
+            break;
+        }
+
+        rd.m_kart_list.push_back(std::string(s1));
+        if (scanned == 2)
+        {
+            // If username of kart is present, use it
+            rd.m_name_list.push_back(StringUtils::xmlDecode(std::string(display_name_encoded)));
+            if (rd.m_name_list.size() == 1)
+            {
+                // First user is the game master and the "owner" of this replay file
+                rd.m_user_name = rd.m_name_list[0];
+            }
+        } else
+        { // scanned == 1
+            // If username is not present, kart display name will default to kart name
+            // (see GhostController::getName)
+            rd.m_name_list.push_back("");
+        }
+
+        // Read kart color data
+        if (version >= 4)
+        {
+            float f = 0;
+            fgets(s, 1023, fd);
+            if(sscanf(s, "kart_color: %f", &f) != 1)
+            {
+                Log::warn("Replay", "Kart color missing in replay file, '%s'.", fn.c_str());
+                fclose(fd);
+                return false;
+            }
+            rd.m_kart_color.push_back(f);
+        }
+        else
+            rd.m_kart_color.push_back(0.0f); // Use default kart color
+    }
+
+    int reverse = 0;
+    fgets(s, 1023, fd);
+    if(sscanf(s, "reverse: %d", &reverse) != 1)
+    {
+        Log::warn("Replay", "No reverse info found in replay file, '%s'.", fn.c_str());
+        fclose(fd);
+        return false;
+    }
+    rd.m_reverse = reverse != 0;
+
+    fgets(s, 1023, fd);
+    if (sscanf(s, "difficulty: %u", &rd.m_difficulty) != 1)
+    {
+        Log::warn("Replay", " No difficulty found in replay file, '%s'.", fn.c_str());
+        fclose(fd);
+        return false;
+    }
+
+    if (version >= 4)
+    {
+        fgets(s, 1023, fd);
+        if (sscanf(s, "mode: %1023s", s1) != 1)
+        {
+            Log::warn("Replay", "Replay mode not found in replay file, '%s'.", fn.c_str());
+            fclose(fd);
+            return false;
+        }
+        rd.m_minor_mode = s1;
+    }
+    // Assume time-trial mode for old replays
+    else
+        rd.m_minor_mode = "time-trial";
+
+
+    fgets(s, 1023, fd);
+    if (sscanf(s, "track: %1023s", s1) != 1)
+    {
+        Log::warn("Replay", "Track info not found in replay file, '%s'.", fn.c_str());
+        fclose(fd);
+        return false;
+    }
+    rd.m_track_name = std::string(s1);
+
+    // If former official tracks are present as addons, show the matching replays.
+    if (rd.m_track_name.compare("greenvalley") == 0)
+        rd.m_track_name = std::string("addon_green-valley");
+    if (rd.m_track_name.compare("mansion") == 0)
+        rd.m_track_name = std::string("addon_blackhill-mansion");
+
+    Track* t = track_manager->getTrack(rd.m_track_name);
+    if (t == NULL)
+    {
+        Log::warn("Replay", "Track '%s' used in replay '%s' not found in STK!",
+        rd.m_track_name.c_str(), fn.c_str());
+        fclose(fd);
+        return false;
+    }
+
+    rd.m_track = t;
+
+    fgets(s, 1023, fd);
+    if (sscanf(s, "laps: %u", &rd.m_laps) != 1)
+    {
+        Log::warn("Replay", "No number of laps found in replay file, '%s'.", fn.c_str());
+        fclose(fd);
+        return false;
+    }
+
+    fgets(s, 1023, fd);
+    if (sscanf(s, "min_time: %f", &rd.m_min_time) != 1)
+    {
+        Log::warn("Replay", "Finish time not found in replay file, '%s'.", fn.c_str());
+        fclose(fd);
+        return false;
+    }
+
+    if (version >= 4)
+    {
+        fgets(s, 1023, fd);
+        if (sscanf(s, "replay_uid: %" PRIu64, &rd.m_replay_uid) != 1)
+        {
+            Log::warn("Replay", "Replay UID not found in replay file, '%s'.", fn.c_str());
+            fclose(fd);
+            return false;
+        }
+    }
+    // No UID in old replay format
+    else
+        rd.m_replay_uid = call_index;
+
+    fclose(fd);
+    m_replay_file_list.push_back(rd);
+
+    assert(m_replay_file_list.size() > 0);
+    // Force to use custom replay file immediately
+    if (custom_replay)
+        m_current_replay_file = (unsigned int)m_replay_file_list.size() - 1;
+
+    return true;
+
+}   // addReplayFile
+
+//-----------------------------------------------------------------------------
+void ReplayPlay::load()
+{
+    m_ghost_karts.clear();
+
+    if (m_second_replay_enabled)
+        loadFile(/* second replay */ true);
+
+    // Always load the first replay
+    loadFile(/* second replay */ false);
+    
+} // load
+
+//-----------------------------------------------------------------------------
+void ReplayPlay::loadFile(bool second_replay)
+{
+    char s[1024];
+
+    int replay_index = second_replay ? m_second_replay_file : m_current_replay_file;
+    int replay_file_number = second_replay ? 2 : 1;
+
+    FILE *fd = openReplayFile(/*writeable*/false,
+            m_replay_file_list.at(replay_index).m_custom_replay_file, replay_file_number);
+
     if(!fd)
     {
         Log::error("Replay", "Can't read '%s', ghost replay disabled.",
-               getReplayFilename().c_str());
+                    getReplayFilename(replay_file_number).c_str());
         destroy();
         return;
     }
 
-    Log::info("Replay", "Reading replay file '%s'.", getReplayFilename().c_str());
+    Log::info("Replay", "Reading replay file '%s'.",
+                    getReplayFilename(replay_file_number).c_str());
 
-    if (fgets(s, 1023, fd) == NULL)
-        Log::fatal("Replay", "Could not read '%s'.", getReplayFilename().c_str());
+    ReplayData &rd = m_replay_file_list[replay_index];
+    unsigned int num_kart = (unsigned int)m_replay_file_list.at(replay_index)
+                                                            .m_kart_list.size();
+    unsigned int lines_to_skip = (rd.m_replay_version == 3) ? 7 : 10;
+    lines_to_skip += (rd.m_replay_version == 3) ? num_kart : 2*num_kart;
 
-    unsigned int version;
-    if (sscanf(s,"Version: %u", &version) != 1)
-        Log::fatal("Replay", "No Version information found in replay file (bogus replay file).");
-
-    if (version != getReplayVersion())
-    {
-        Log::warn("Replay", "Replay is version '%d'",version);
-        Log::warn("Replay", "STK version is '%d'",getReplayVersion());
-        Log::warn("Replay", "We try to proceed, but it may fail.");
-    }
-
-    if (fgets(s, 1023, fd) == NULL)
-        Log::fatal("Replay", "Could not read '%s'.", getReplayFilename().c_str());
-
-    int  n;
-    if(sscanf(s, "difficulty: %d", &n) != 1)
-        Log::fatal("Replay", " No difficulty found in replay file.");
-
-    if(race_manager->getDifficulty()!=(RaceManager::Difficulty)n)
-        Log::warn("Replay", "Difficulty of replay is '%d', "
-                  "while '%d' is selected.",
-                  race_manager->getDifficulty(), n);
-
-    fgets(s, 1023, fd);
-    if(sscanf(s, "track: %s", s1) != 1)
-        Log::warn("Replay", "Track not found in replay file.");
-    assert(std::string(s1)==race_manager->getTrackName());
-    race_manager->setTrack(s1);
-
-    unsigned int num_laps;
-    fgets(s, 1023, fd);
-    if(sscanf(s, "Laps: %u", &num_laps) != 1)
-        Log::fatal("Replay", "No number of laps found in replay file.");
-
-    race_manager->setNumLaps(num_laps);
+    for (unsigned int i = 0; i < lines_to_skip; i++)
+        fgets(s, 1023, fd);
 
     // eof actually doesn't trigger here, since it requires first to try
     // reading behind eof, but still it's clearer this way.
@@ -141,86 +355,178 @@ void ReplayPlay::Load()
     {
         if(fgets(s, 1023, fd)==NULL)  // eof reached
             break;
-        readKartData(fd, s);
-    }   // for k<num_ghost_karts
+        readKartData(fd, s, second_replay);
+    }
 
-    fprintf(fd, "Replay file end.\n");
     fclose(fd);
-}   // Load
+}   // loadFile
 
 //-----------------------------------------------------------------------------
 /** Reads all data from a replay file for a specific kart.
  *  \param fd The file descriptor from which to read.
  */
-void ReplayPlay::readKartData(FILE *fd, char *next_line)
+void ReplayPlay::readKartData(FILE *fd, char *next_line, bool second_replay)
 {
     char s[1024];
-    if(sscanf(next_line, "model: %s", s)!=1)
-        Log::fatal("Replay", "No model information for kart %d found.",
-            m_ghost_karts.size());
 
-    m_ghost_karts.push_back(new GhostKart(std::string(s)));
-    m_ghost_karts[m_ghost_karts.size()-1].init(RaceManager::KT_GHOST);
+    int replay_index = second_replay ? m_second_replay_file
+                                     : m_current_replay_file;
 
-    fgets(s, 1023, fd);
+    const unsigned int kart_num = (unsigned int)m_ghost_karts.size();
+    unsigned int first_loaded_f_num = 0;
+
+    if (!second_replay && m_second_replay_enabled)
+        first_loaded_f_num = (unsigned int)m_replay_file_list.at(m_second_replay_file)
+                                                             .m_kart_list.size();
+
+    ReplayData &rd = m_replay_file_list[replay_index];
+    m_ghost_karts.push_back(std::make_shared<GhostKart>
+        (rd.m_kart_list.at(kart_num-first_loaded_f_num), kart_num, kart_num + 1,
+        rd.m_kart_color.at(kart_num-first_loaded_f_num)));
+    m_ghost_karts[kart_num]->init(RaceManager::KT_GHOST);
+    Controller* controller = new GhostController(getGhostKart(kart_num).get(),
+                                                 rd.m_name_list[kart_num-first_loaded_f_num]);
+    getGhostKart(kart_num)->setController(controller);
+
     unsigned int size;
-    if(sscanf(s,"size: %u",&size)!=1)
+    if(sscanf(next_line,"size: %u",&size)!=1)
         Log::fatal("Replay", "Number of records not found in replay file "
-            "for kart %d.",
-            m_ghost_karts.size()-1);
+            "for kart %d.", kart_num);
 
     for(unsigned int i=0; i<size; i++)
     {
         fgets(s, 1023, fd);
-        float x, y, z, rx, ry, rz, rw, time;
+        float x, y, z, rx, ry, rz, rw, time, speed, steer, w1, w2, w3, w4, nitro_amount, distance;
+        int skidding_state, attachment, item_amount, item_type, special_value,
+            nitro, zipper, skidding, red_skidding, jumping;
 
         // Check for EV_TRANSFORM event:
         // -----------------------------
-        if(sscanf(s, "%f  %f %f %f  %f %f %f %f\n",
-            &time,
-            &x, &y, &z,
-            &rx, &ry, &rz, &rw
-            )==8)
+
+        // Up to STK 0.9.3 replays
+        if (rd.m_replay_version == 3)
         {
-            btQuaternion q(rx, ry, rz, rw);
-            btVector3 xyz(x, y, z);
-            m_ghost_karts[m_ghost_karts.size()-1].addTransform(time,
-                                                          btTransform(q, xyz));
+            if(sscanf(s, "%f  %f %f %f  %f %f %f %f  %f  %f  %f %f %f %f  %d %d %d %d %d\n",
+                &time,
+                &x, &y, &z,
+                &rx, &ry, &rz, &rw,
+                &speed, &steer, &w1, &w2, &w3, &w4,
+                &nitro, &zipper, &skidding, &red_skidding, &jumping
+                )==19)
+            {
+                btQuaternion q(rx, ry, rz, rw);
+                btVector3 xyz(x, y, z);
+                PhysicInfo pi             = {0};
+                BonusInfo bi              = {0};
+                KartReplayEvent kre       = {0};
+
+                pi.m_speed                = speed;
+                pi.m_steer                = steer;
+                pi.m_suspension_length[0] = w1;
+                pi.m_suspension_length[1] = w2;
+                pi.m_suspension_length[2] = w3;
+                pi.m_suspension_length[3] = w4;
+                pi.m_skidding_state       = 0;    //not saved in version 3 replays
+                bi.m_attachment           = 0;    //not saved in version 3 replays
+                bi.m_nitro_amount         = 0;    //not saved in version 3 replays
+                bi.m_item_amount          = 0;    //not saved in version 3 replays
+                bi.m_item_type            = 0;    //not saved in version 3 replays
+                bi.m_special_value        = 0;    //not saved in version 3 replays
+                kre.m_distance            = 0.0f; //not saved in version 3 replays
+                kre.m_nitro_usage         = nitro;
+                kre.m_zipper_usage        = zipper!=0;
+                kre.m_skidding_effect     = skidding;
+                kre.m_red_skidding        = red_skidding!=0;
+                kre.m_jumping             = jumping != 0;
+                m_ghost_karts[kart_num]->addReplayEvent(time,
+                    btTransform(q, xyz), pi, bi, kre);
+            }
+            else
+            {
+                // Invalid record found
+                // ---------------------
+                Log::warn("Replay", "Can't read replay data line %d:", i);
+                Log::warn("Replay", "%s", s);
+                Log::warn("Replay", "Ignored.");
+            }
         }
+
+        //version 4 replays (STK 0.9.4 and higher)
         else
         {
-            // Invalid record found
-            // ---------------------
-            Log::warn("Replay", "Can't read replay data line %d:", i);
-            Log::warn("Replay", "%s", s);
-            Log::warn("Replay", "Ignored.");
+            if(sscanf(s, "%f  %f %f %f  %f %f %f %f  %f  %f  %f %f %f %f %d  %d %f %d %d %d  %f %d %d %d %d %d\n",
+                &time,
+                &x, &y, &z,
+                &rx, &ry, &rz, &rw,
+                &speed, &steer, &w1, &w2, &w3, &w4, &skidding_state,
+                &attachment, &nitro_amount, &item_amount, &item_type, &special_value,
+                &distance, &nitro, &zipper, &skidding, &red_skidding, &jumping
+                )==26)
+            {
+                btQuaternion q(rx, ry, rz, rw);
+                btVector3 xyz(x, y, z);
+                PhysicInfo pi             = {0};
+                BonusInfo bi              = {0};
+                KartReplayEvent kre       = {0};
+
+                pi.m_speed                = speed;
+                pi.m_steer                = steer;
+                pi.m_suspension_length[0] = w1;
+                pi.m_suspension_length[1] = w2;
+                pi.m_suspension_length[2] = w3;
+                pi.m_suspension_length[3] = w4;
+                pi.m_skidding_state       = skidding_state;
+                bi.m_attachment           = attachment;
+                bi.m_nitro_amount         = nitro_amount;
+                bi.m_item_amount          = item_amount;
+                bi.m_item_type            = item_type;
+                bi.m_special_value        = special_value;
+                kre.m_distance            = distance;
+                kre.m_nitro_usage         = nitro;
+                kre.m_zipper_usage        = zipper!=0;
+                kre.m_skidding_effect     = skidding;
+                kre.m_red_skidding        = red_skidding!=0;
+                kre.m_jumping             = jumping != 0;
+                m_ghost_karts[kart_num]->addReplayEvent(time,
+                    btTransform(q, xyz), pi, bi, kre);
+            }
+            else
+            {
+                // Invalid record found
+                // ---------------------
+                Log::warn("Replay", "Can't read replay data line %d:", i);
+                Log::warn("Replay", "%s", s);
+                Log::warn("Replay", "Ignored.");
+            }
         }
     }   // for i
-    fgets(s, 1023, fd);
-    unsigned int num_events;
-    if(sscanf(s,"events: %u",&num_events)!=1)
-        Log::warn("Replay", "Number of events not found in replay file "
-                "for kart %d.", m_ghost_karts.size()-1);
-
-    for(unsigned int i=0; i<num_events; i++)
-    {
-        fgets(s, 1023, fd);
-        KartReplayEvent kre;
-        int type;
-        if(sscanf(s, "%f %d\n", &kre.m_time, &type)==2)
-        {
-            kre.m_type = (KartReplayEvent::KartReplayEventType)type;
-            m_ghost_karts[m_ghost_karts.size()-1].addReplayEvent(kre);
-        }
-        else
-        {
-            // Invalid record found
-            // ---------------------
-            Log::warn("Replay", "Can't read replay event line %d:", i);
-            Log::warn("Replay", "%s", s);
-            Log::warn("Replay", "Ignored.");
-        }
-
-    }   // for i < events
 
 }   // readKartData
+
+//-----------------------------------------------------------------------------
+/** call getReplayIdByUID and set the current replay file to the first one
+ *  with a matching UID.
+ *  \param uid The UID to match
+ */
+void ReplayPlay::setReplayFileByUID(uint64_t uid)
+{
+    m_current_replay_file = getReplayIdByUID(uid);
+} //setReplayFileByUID
+
+//-----------------------------------------------------------------------------
+/** Search among replay file and return the first index with a matching UID.
+ *  \param uid The UID to match
+ */
+unsigned int ReplayPlay::getReplayIdByUID(uint64_t uid)
+{
+    for(unsigned int i = 0; i < m_replay_file_list.size(); i++)
+    {
+        if (m_replay_file_list[i].m_replay_uid == uid)
+        {
+            return i;
+        }
+    }
+
+    Log::error("Replay", "Replay with UID of " PRIu64 " not found.", uid);
+    return 0;
+} //setReplayFileByUID

@@ -21,11 +21,12 @@
 #include "achievements/achievements_manager.hpp"
 #include "challenges/unlock_manager.hpp"
 #include "config/player_manager.hpp"
+#include "io/file_manager.hpp"
+#include "io/utf_writer.hpp"
+#include "io/xml_node.hpp"
 #include "karts/kart_properties.hpp"
 #include "karts/kart_properties_manager.hpp"
 #include "online/online_player_profile.hpp"
-#include "io/xml_node.hpp"
-#include "io/utf_writer.hpp"
 #include "utils/string_utils.hpp"
 
 //------------------------------------------------------------------------------
@@ -48,6 +49,7 @@ PlayerProfile::PlayerProfile(const core::stringw& name, bool is_guest)
     m_last_online_name    = "";
     m_last_was_online     = false;
     m_remember_password   = false;
+    m_default_kart_color  = 0.0f;
     initRemainingData();
 }   // PlayerProfile
 
@@ -76,29 +78,32 @@ PlayerProfile::PlayerProfile(const XMLNode* node)
     m_remember_password   = false;
     m_story_mode_status   = NULL;
     m_achievements_status = NULL;
+    m_default_kart_color  = 0.0f;
     m_icon_filename       = "";
 
-    node->getAndDecode("name",     &m_local_name);
-    node->get("guest",             &m_is_guest_account );
-    node->get("use-frequency",     &m_use_frequency    );
-    node->get("unique-id",         &m_unique_id        );
-    node->get("saved-session",     &m_saved_session    );
-    node->get("saved-user",        &m_saved_user_id    );
-    node->get("saved-token",       &m_saved_token      );
-    node->get("last-online-name",  &m_last_online_name );
-    node->get("last-was-online",   &m_last_was_online  );
-    node->get("remember-password", &m_remember_password);
-    node->get("icon-filename",     &m_icon_filename    );
-
+    node->getAndDecode("name",      &m_local_name);
+    node->get("guest",              &m_is_guest_account );
+    node->get("use-frequency",      &m_use_frequency    );
+    node->get("unique-id",          &m_unique_id        );
+    node->get("saved-session",      &m_saved_session    );
+    node->get("saved-user",         &m_saved_user_id    );
+    node->get("saved-token",        &m_saved_token      );
+    node->getAndDecode("last-online-name",   &m_last_online_name );
+    node->get("last-was-online",    &m_last_was_online  );
+    node->get("remember-password",  &m_remember_password);
+    node->get("icon-filename",      &m_icon_filename    );
+    node->get("default-kart-color", &m_default_kart_color);
     #ifdef DEBUG
     m_magic_number = 0xABCD1234;
     #endif
-    
+
 }   // PlayerProfile
 
 //------------------------------------------------------------------------------
 PlayerProfile::~PlayerProfile()
 {
+    delete m_story_mode_status;
+    delete m_achievements_status;
 #ifdef DEBUG
     m_magic_number = 0xDEADBEEF;
 #endif
@@ -184,7 +189,7 @@ const std::string PlayerProfile::getIconFilename() const
     if(m_icon_filename.size()==0 ||
        !file_manager->fileExists(file_manager->getUserConfigFile(m_icon_filename)))
     {
-        return file_manager->getAsset(FileManager::GUI, "main_help.png");
+        return file_manager->getAsset(FileManager::GUI_ICON, "main_help.png");
     }
 
     return file_manager->getUserConfigFile(m_icon_filename);
@@ -196,28 +201,35 @@ const std::string PlayerProfile::getIconFilename() const
  */
 void PlayerProfile::save(UTFWriter &out)
 {
-    out << L"    <player name=\"" << StringUtils::xmlEncode(m_local_name)
-        << L"\" guest=\""         << m_is_guest_account
-        << L"\" use-frequency=\"" << m_use_frequency << L"\"\n";
+    out << "    <player name=\"" << StringUtils::xmlEncode(m_local_name)
+        << "\" guest=\""         << m_is_guest_account
+        << "\" use-frequency=\"" << m_use_frequency << "\"\n";
 
-    out << L"            icon-filename=\"" << m_icon_filename << L"\"\n";
+    out << "            icon-filename=\"" << m_icon_filename << "\"\n";
 
-    out << L"            unique-id=\""  << m_unique_id
-        << L"\" saved-session=\""       << m_saved_session << L"\"\n";
+    out << "            unique-id=\""  << m_unique_id
+        << "\" saved-session=\""       << m_saved_session << "\"\n";
 
-    out << L"            saved-user=\"" << m_saved_user_id
-        << L"\" saved-token=\""         << m_saved_token << L"\"\n";
-    out << L"            last-online-name=\"" << m_last_online_name
-        << L"\" last-was-online=\""           << m_last_was_online << L"\"\n";
-    out << L"            remember-password=\""         << m_remember_password << L"\">\n";
+    out << "            saved-user=\"" << m_saved_user_id
+        << "\" saved-token=\""         << m_saved_token << "\"\n";
+    out << "            last-online-name=\"" << StringUtils::xmlEncode(m_last_online_name)
+        << "\" last-was-online=\""           << m_last_was_online << "\"\n";
+    out << "            remember-password=\""         << m_remember_password << "\"\n";
+    out << "            default-kart-color=\""        << m_default_kart_color << "\">\n";
     {
+        bool is_current_player = false;
+        PlayerProfile *player = PlayerManager::getCurrentPlayer();
+
+        if (player != NULL && (getName() == player->getName()))
+            is_current_player = true;
+
         if(m_story_mode_status)
-            m_story_mode_status->save(out);
+            m_story_mode_status->save(out, is_current_player);
 
         if(m_achievements_status)
             m_achievements_status->save(out);
     }
-    out << L"    </player>\n";
+    out << "    </player>\n";
 }   // save
 
 //------------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 //
 //  SuperTuxKart - a fun racing game with go-kart
-//  Copyright (C) 2006-2015 SuperTuxKart-Team
-//  Modelled after Supertux's configfile.cpp
+//  Copyright (C) 2006-2016 SuperTuxKart-Team
+//  Modeled after Supertux's configfile.cpp
 //
 //  This program is free software; you can redistribute it and/or
 //  modify it under the terms of the GNU General Public License
@@ -18,13 +18,13 @@
 //  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 
-#include "utils/ptr_vector.hpp"
+#include <vector>
 
 // The order here is important. If all_params is declared later (e.g. after
 // the #includes), all elements will be added to all_params, and then
 // all_params will be initialised, i.e. cleared!
 class UserConfigParam;
-static PtrVector<UserConfigParam, REF> all_params;
+static std::vector<UserConfigParam*> all_params;
 
 // X-macros
 #define PARAM_PREFIX
@@ -38,9 +38,12 @@ static PtrVector<UserConfigParam, REF> all_params;
 #include "io/utf_writer.hpp"
 #include "io/xml_node.hpp"
 #include "race/race_manager.hpp"
+#include "utils/file_utils.hpp"
+#include "utils/log.hpp"
 #include "utils/string_utils.hpp"
 #include "utils/translation.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <stdlib.h>
@@ -53,7 +56,12 @@ const int UserConfig::m_current_config_version = 8;
 // ----------------------------------------------------------------------------
 UserConfigParam::~UserConfigParam()
 {
-    all_params.remove(this);
+    if (m_can_be_deleted)
+    {
+        auto it = std::find(all_params.begin(), all_params.end(), this);
+        if (it != all_params.end())
+            all_params.erase(it);
+    }
 }   // ~UserConfigParam
 
 // ----------------------------------------------------------------------------
@@ -61,7 +69,7 @@ UserConfigParam::~UserConfigParam()
  *  \param stream the xml writer.
  *  \param level determines indentation level.
  */
-void UserConfigParam::writeInner(std::ofstream& stream, int level) const
+void UserConfigParam::writeInner(std::stringstream& stream, int level) const
 {
     std::string tab(level * 4,' ');
     stream << "    " << tab.c_str() << m_param_name.c_str() << "=\""
@@ -88,7 +96,7 @@ GroupUserConfigParam::GroupUserConfigParam(const char* group_name,
 }   // GroupUserConfigParam
 
 // ----------------------------------------------------------------------------
-void GroupUserConfigParam::write(std::ofstream& stream) const
+void GroupUserConfigParam::write(std::stringstream& stream) const
 {
     const int attr_amount = (int)m_attributes.size();
 
@@ -118,11 +126,11 @@ void GroupUserConfigParam::write(std::ofstream& stream) const
 }   // write
 
 // ----------------------------------------------------------------------------
-void GroupUserConfigParam::writeInner(std::ofstream& stream, int level) const
+void GroupUserConfigParam::writeInner(std::stringstream& stream, int level) const
 {
     std::string tab(level * 4,' ');
     for(int i = 0; i < level; i++) tab =+ "    ";
-    const int children_amount = m_attributes.size();
+    const int  children_amount = (int)m_attributes.size();
 
     stream << "    " << tab.c_str() << "<" << m_param_name.c_str() << "\n";
 
@@ -144,7 +152,7 @@ void GroupUserConfigParam::findYourDataInAChildOf(const XMLNode* node)
         return;
     }
 
-    const int attributes_amount = m_attributes.size();
+    const int attributes_amount = (int)m_attributes.size();
     for (int n=0; n<attributes_amount; n++)
     {
         m_attributes[n]->findYourDataInAnAttributeOf(child);
@@ -181,149 +189,130 @@ void GroupUserConfigParam::addChild(UserConfigParam* child)
     m_attributes.push_back(child);
 }   // addChild
 
-
-// ============================================================================
+// ----------------------------------------------------------------------------
 template<typename T, typename U>
-ListUserConfigParam<T, U>::ListUserConfigParam(const char* param_name,
-                                           const char* comment)
+MapUserConfigParam<T, U>::MapUserConfigParam(const char* param_name,
+    const char* comment, std::array<std::string, 3> key_names,
+    std::map<T, U> default_value)
 {
     m_param_name = param_name;
     all_params.push_back(this);
-    if(comment != NULL) m_comment = comment;
-}   // ListUserConfigParam
+    if (comment != NULL) m_comment = comment;
 
-// ============================================================================
-template<typename T, typename U>
-ListUserConfigParam<T,U>::ListUserConfigParam(const char* param_name,
-                                           const char* comment,
-                                           int nb_elements,
-                                           ...)
-{
-    m_param_name = param_name;
-    all_params.push_back(this);
-    if(comment != NULL) m_comment = comment;
-
-    // add the default list
-    va_list arguments;
-    va_start ( arguments, nb_elements );
-    for ( int i = 0; i < nb_elements; i++ )
-        m_elements.push_back(T(va_arg ( arguments, U )));
-    va_end ( arguments );                  // Cleans up the list
-}   // ListUserConfigParam
-
-// ============================================================================
-template<typename T, typename U>
-ListUserConfigParam<T, U>::ListUserConfigParam(const char* param_name,
-                                           GroupUserConfigParam* group,
-                                           const char* comment)
-{
-    m_param_name = param_name;
-    group->addChild(this);
-    if(comment != NULL) m_comment = comment;
-}   // ListUserConfigParam
-
-// ============================================================================
-template<typename T, typename U>
-ListUserConfigParam<T, U>::ListUserConfigParam(const char* param_name,
-                                           GroupUserConfigParam* group,
-                                           const char* comment,
-                                           int nb_elements,
-                                           ...)
-{
-    m_param_name = param_name;
-    group->addChild(this);
-    if(comment != NULL) m_comment = comment;
-
-    // add the default list
-    va_list arguments;
-    va_start ( arguments, nb_elements );
-    for ( int i = 0; i < nb_elements; i++ )
-        m_elements.push_back(va_arg ( arguments, T ));
-    va_end ( arguments );                  // Cleans up the list
-}   // ListUserConfigParam
+    m_key_names = key_names;
+    m_elements = default_value;
+}   // MapUserConfigParam
 
 // ----------------------------------------------------------------------------
 template<typename T, typename U>
-void ListUserConfigParam<T, U>::write(std::ofstream& stream) const
+MapUserConfigParam<T, U>::MapUserConfigParam(const char* param_name,
+    GroupUserConfigParam* group,
+    const char* comment)
 {
-    const int elts_amount = m_elements.size();
+    m_param_name = param_name;
+    group->addChild(this);
+    if (comment != NULL) m_comment = comment;
+}   // MapUserConfigParam
 
+// ----------------------------------------------------------------------------
+template<typename T, typename U>
+MapUserConfigParam<T, U>::MapUserConfigParam(const char* param_name,
+    GroupUserConfigParam* group, const char* comment,
+    std::array<std::string, 3> key_names, std::map<T, U> default_value)
+{
+    m_param_name = param_name;
+    group->addChild(this);
+    if (comment != NULL) m_comment = comment;
+
+    m_key_names = key_names;
+    m_elements = default_value;
+}   // MapUserConfigParam
+
+// ----------------------------------------------------------------------------
+template<typename T, typename U>
+void MapUserConfigParam<T, U>::write(std::stringstream& stream) const
+{
     // comment
-    if(m_comment.size() > 0) stream << "    <!-- " << m_comment.c_str();
-    stream << " -->\n    <" << m_param_name.c_str() << "\n";
+    if (m_comment.size() > 0) stream << "    <!-- " << m_comment.c_str();
+    stream << " -->\n    <" << m_param_name.c_str() << ">\n";
 
-    stream << "        Size=\"" << elts_amount << "\"\n";
-    // actual elements
-    for (int n=0; n<elts_amount; n++)
+    for (const auto& kv : m_elements)
     {
-        stream << "        " << n << "=\"" << m_elements[n].c_str() << "\"\n";
+        stream << "        <" << m_key_names[0] << " " << m_key_names[1] <<
+            "=\"" << kv.first << "\" " <<  m_key_names[2] << "=\"" <<
+            kv.second << "\"/>\n";
     }
-    stream << "    >\n";
     stream << "    </" << m_param_name.c_str() << ">\n\n";
 }   // write
 
 // ----------------------------------------------------------------------------
-
 template<typename T, typename U>
-void ListUserConfigParam<T, U>::findYourDataInAChildOf(const XMLNode* node)
+void MapUserConfigParam<T, U>::findYourDataInAChildOf(const XMLNode* node)
 {
-    const XMLNode* child = node->getNode( m_param_name );
+    const XMLNode* child = node->getNode(m_param_name);
     if (child == NULL)
     {
-        //Log::error("User Config", "Couldn't find parameter group %s", m_param_name.c_str());
+        Log::error("User Config", "Couldn't find parameter group %s",
+          m_param_name.c_str());
         return;
     }
-
-    int attr_count = 0;
-    child->get( "Size", &attr_count);
-    for (int n=0; n<attr_count; n++)
+    for (unsigned i = 0; i < child->getNumNodes(); i++)
     {
-        T elt;
-        std::string str;
-        child->get( StringUtils::toString(n), &str);
-        StringUtils::fromString<T>(str, elt);
-        
-        // check if the element is already there :
-        bool there = false;
-        for (unsigned int i = 0; i < m_elements.size(); i++)
+        const std::string& map_name = m_key_names[0];
+        const std::string& key_name = m_key_names[1];
+        const std::string& value_name = m_key_names[2];
+        const XMLNode* map = child->getNode(i);
+        if (map->getName() != map_name)
         {
-            if (elt == m_elements[i])
-            {
-                there = true;
-                break;
-            }
+            Log::error("User Config", "Invalid name %s",
+                map->getName().c_str());
+            continue;
         }
-        if (!there)
-        {
-            m_elements.push_back(elt);
-        }
-    }
 
+        T key;
+        std::string key_string;
+        if (!map->get(key_name, &key_string) ||
+            !StringUtils::fromString(key_string, key))
+        {
+            Log::error("User Config", "Invalid key name %s",
+                key_name.c_str());
+            continue;
+        }
+
+        U value;
+        std::string value_string;
+        if (!map->get(value_name, &value_string) ||
+            !StringUtils::fromString(value_string, value))
+        {
+            Log::error("User Config", "Invalid value name %s",
+                value_name.c_str());
+            continue;
+        }
+        m_elements[key] = value;
+    }
 }   // findYourDataInAChildOf
 
 // ----------------------------------------------------------------------------
 template<typename T, typename U>
-void ListUserConfigParam<T, U>::findYourDataInAnAttributeOf(const XMLNode* node)
+void MapUserConfigParam<T, U>::findYourDataInAnAttributeOf(const XMLNode* node)
 {
 }   // findYourDataInAnAttributeOf
 
 // ----------------------------------------------------------------------------
 template<typename T, typename U>
-void ListUserConfigParam<T,U>::addElement(T element)
+void MapUserConfigParam<T, U>::addElement(T element, U value)
 {
-    m_elements.push_back(element);
+    m_elements[element] = value;
 }   // findYourDataInAnAttributeOf
 
 // ----------------------------------------------------------------------------
 template<typename T, typename U>
-core::stringc ListUserConfigParam<T, U>::toString() const
+core::stringc MapUserConfigParam<T, U>::toString() const
 {
     return "";
 }   // toString
 
-
-
-// ============================================================================
+// ----------------------------------------------------------------------------
 IntUserConfigParam::IntUserConfigParam(int default_value,
                                        const char* param_name,
                                        const char* comment)
@@ -349,7 +338,7 @@ IntUserConfigParam::IntUserConfigParam(int default_value,
 }   // IntUserConfigParam
 
 // ----------------------------------------------------------------------------
-void IntUserConfigParam::write(std::ofstream& stream) const
+void IntUserConfigParam::write(std::stringstream& stream) const
 {
     if(m_comment.size() > 0) stream << "    <!-- " << m_comment.c_str()
                                     << " -->\n";
@@ -412,11 +401,11 @@ TimeUserConfigParam::TimeUserConfigParam(StkTime::TimeType default_value,
 }   // TimeUserConfigParam
 
 // ----------------------------------------------------------------------------
-void TimeUserConfigParam::write(std::ofstream& stream) const
+void TimeUserConfigParam::write(std::stringstream& stream) const
 {
     if(m_comment.size() > 0) stream << "    <!-- " << m_comment.c_str()
                                     << " -->\n";
-    std::ostringstream o;
+    std::stringstream o;
     o<<m_value;
     stream << "    <" << m_param_name.c_str() << " value=\""
            << o.str().c_str() << "\" />\n\n";
@@ -429,7 +418,7 @@ irr::core::stringc TimeUserConfigParam::toString() const
     // we can't use an irrlicht's stringw directly. Since it's only a
     // number, we can use std::string, and convert to stringw
 
-    std::ostringstream o;
+    std::stringstream o;
     o<<m_value;
     return o.str().c_str();
 }   // toString
@@ -483,7 +472,7 @@ StringUserConfigParam::StringUserConfigParam(const char* default_value,
 }   // StringUserConfigParam
 
 // ----------------------------------------------------------------------------
-void StringUserConfigParam::write(std::ofstream& stream) const
+void StringUserConfigParam::write(std::stringstream& stream) const
 {
     if(m_comment.size() > 0) stream << "    <!-- " << m_comment.c_str()
                                     << " -->\n";
@@ -535,7 +524,7 @@ BoolUserConfigParam::BoolUserConfigParam(bool default_value,
 
 
 // ----------------------------------------------------------------------------
-void BoolUserConfigParam::write(std::ofstream& stream) const
+void BoolUserConfigParam::write(std::stringstream& stream) const
 {
     if(m_comment.size() > 0) stream << "    <!-- " << m_comment.c_str()
                                     << " -->\n";
@@ -620,7 +609,7 @@ FloatUserConfigParam::FloatUserConfigParam(float default_value,
 }   // FloatUserConfigParam
 
 // ----------------------------------------------------------------------------
-void FloatUserConfigParam::write(std::ofstream& stream) const
+void FloatUserConfigParam::write(std::stringstream& stream) const
 {
     if(m_comment.size() > 0) stream << "    <!-- " << m_comment.c_str()
                                     << " -->\n";
@@ -683,8 +672,8 @@ bool UserConfig::loadConfig()
     XMLNode* root = file_manager->createXMLTree(filename);
     if(!root || root->getName() != "stkconfig")
     {
-        Log::error("UserConfig",
-                   "Could not read user config file '%s'.", filename.c_str());
+        Log::info("UserConfig",
+                   "Could not read user config file '%s'.  A new file will be created.", filename.c_str());
         if(root) delete root;
         // Create a default config file - just in case that stk crashes later
         // there is a config file that can be modified (to e.g. disable
@@ -717,10 +706,9 @@ bool UserConfig::loadConfig()
 
     // ---- Read parameters values (all parameter objects must have been created before this point if
     //      you want them automatically read from the config file)
-    const int paramAmount = all_params.size();
-    for(int i=0; i<paramAmount; i++)
+    for (unsigned i = 0; i < all_params.size(); i++)
     {
-        all_params[i].findYourDataInAChildOf(root);
+        all_params[i]->findYourDataInAChildOf(root);
     }
 
 
@@ -728,7 +716,7 @@ bool UserConfig::loadConfig()
     UserConfigParams::m_saved_grand_prix_list.clearAndDeleteAll();
     std::vector<XMLNode*> saved_gps;
     root->getNodes("SavedGP", saved_gps);
-    const int gp_amount = saved_gps.size();
+    const int gp_amount = (int)saved_gps.size();
     for (int i=0; i<gp_amount; i++)
     {
         UserConfigParams::m_saved_grand_prix_list.push_back(
@@ -744,29 +732,28 @@ bool UserConfig::loadConfig()
 void UserConfig::saveConfig()
 {
     const std::string filename = file_manager->getUserConfigFile(m_filename);
+    std::stringstream ss;
+    ss << "<?xml version=\"1.0\"?>\n";
+    ss << "<stkconfig version=\"" << m_current_config_version
+        << "\" >\n\n";
+    for (unsigned i = 0; i < all_params.size(); i++)
+    {
+        all_params[i]->write(ss);
+    }
+    ss << "</stkconfig>\n";
 
     try
     {
-        std::ofstream configfile (filename.c_str(), std::ofstream::out);
-
-        configfile << "<?xml version=\"1.0\"?>\n";
-        configfile << "<stkconfig version=\"" << m_current_config_version
-                   << "\" >\n\n";
-
-        const int paramAmount = all_params.size();
-        for(int i=0; i<paramAmount; i++)
-        {
-            //Log::info("UserConfig", "Saving parameter %d to file", i);
-            all_params[i].write(configfile);
-        }
-
-        configfile << "</stkconfig>\n";
+        std::string s = ss.str();
+        std::ofstream configfile(FileUtils::getPortableWritingPath(filename),
+            std::ofstream::out);
+        configfile << ss.rdbuf();
         configfile.close();
     }
     catch (std::runtime_error& e)
     {
-        Log::error("UserConfig::saveConfig", "Failed to write config to %s, because %s",
-            filename.c_str(), e.what());
+        Log::error("UserConfig::saveConfig", "Failed to write config to %s, "
+            "because %s", filename.c_str(), e.what());
     }
 
 }   // saveConfig

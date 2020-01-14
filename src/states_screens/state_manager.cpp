@@ -25,6 +25,7 @@
 #include "guiengine/engine.hpp"
 #include "guiengine/modaldialog.hpp"
 #include "guiengine/screen.hpp"
+#include "guiengine/screen_keyboard.hpp"
 #include "input/input_device.hpp"
 #include "input/input_manager.hpp"
 #include "main_loop.hpp"
@@ -151,8 +152,12 @@ void StateManager::resetActivePlayers()
 
 bool StateManager::throttleFPS()
 {
+#ifndef SERVER_ONLY
     return m_game_mode != GUIEngine::GAME  &&
            GUIEngine::getCurrentScreen()->throttleFPS();
+#else
+    return true;
+#endif
 }   // throttleFPS
 
 // ----------------------------------------------------------------------------
@@ -163,8 +168,15 @@ void StateManager::escapePressed()
     if(input_manager->isInMode(InputManager::INPUT_SENSE_KEYBOARD) ||
        input_manager->isInMode(InputManager::INPUT_SENSE_GAMEPAD) )
     {
+        ScreenKeyboard::dismiss();
         ModalDialog::dismiss();
         input_manager->setMode(InputManager::MENU);
+    }
+    // when another modal dialog is visible
+    else if(ScreenKeyboard::isActive())
+    {
+        if(ScreenKeyboard::getCurrent()->onEscapePressed())
+            ScreenKeyboard::getCurrent()->dismiss();
     }
     // when another modal dialog is visible
     else if(ModalDialog::isADialogActive())
@@ -206,7 +218,7 @@ void StateManager::onGameStateChange(GameState new_state)
         if (new_state == MENU)
         {
             GUIEngine::Screen* screen = GUIEngine::getCurrentScreen();
-            if (screen != NULL)
+            if (screen != NULL && music_manager)
             {
                 music_manager->startMusic(
                     GUIEngine::getCurrentScreen()->getMusic());
@@ -221,14 +233,14 @@ void StateManager::onTopMostScreenChanged()
 {
     if (m_game_mode == MENU && GUIEngine::getCurrentScreen() != NULL)
     {
-        if (GUIEngine::getCurrentScreen()->getMusic() != NULL)
+        if (GUIEngine::getCurrentScreen()->getMusic() != NULL && music_manager)
         {
             music_manager->startMusic(GUIEngine::getCurrentScreen()->getMusic());
         }
     }
     else if (m_game_mode == INGAME_MENU && GUIEngine::getCurrentScreen() != NULL)
     {
-        if (GUIEngine::getCurrentScreen()->getInGameMenuMusic() != NULL)
+        if (GUIEngine::getCurrentScreen()->getInGameMenuMusic() != NULL && music_manager)
         {
             music_manager->startMusic(GUIEngine::getCurrentScreen()->getInGameMenuMusic());
         }

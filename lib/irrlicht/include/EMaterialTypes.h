@@ -61,7 +61,7 @@ namespace video
 		/** The first texture is diffuse color map, the second is added
 		to this and usually displayed with a bigger scale value so that
 		it adds more detail. The detail map is added to the diffuse map
-		using ADD_SIGNED, so that it is possible to add and substract
+		using ADD_SIGNED, so that it is possible to add and subtract
 		color from the diffuse map. For example a value of
 		(127,127,127) will not change the appearance of the diffuse map
 		at all. Often used for terrain rendering. */
@@ -191,6 +191,9 @@ namespace video
 		//! BlendFunc = source * sourceFactor + dest * destFactor ( E_BLEND_FUNC )
 		/** Using only first texture. Generic blending method. */
 		EMT_ONETEXTURE_BLEND,
+
+		//! Alphatest material for grass without using vertex color in stk. */
+		EMT_STK_GRASS,
 
 		//! This value is not used. It only forces this enumeration to compile to 32 bit.
 		EMT_FORCE_32BIT = 0x7fffffff

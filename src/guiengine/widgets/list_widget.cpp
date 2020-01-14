@@ -17,6 +17,8 @@
 
 #include "guiengine/widgets/list_widget.hpp"
 
+#include "guiengine/widgets/button_widget.hpp"
+#include "guiengine/widgets/icon_button_widget.hpp"
 #include "guiengine/CGUISpriteBank.hpp"
 #include "guiengine/engine.hpp"
 #include "io/file_manager.hpp"
@@ -44,6 +46,8 @@ ListWidget::ListWidget() : Widget(WTYPE_LIST)
     m_sort_default = true;
     m_sort_col = 0;
     m_sortable = true;
+    m_header_created = false;
+    m_choosing_header = false;
 }
 
 // -----------------------------------------------------------------------------
@@ -53,11 +57,11 @@ void ListWidget::setIcons(STKModifiedSpriteBank* icons, int size)
     m_use_icons = (icons != NULL);
     m_icons = icons;
 
+    CGUISTKListBox* list = getIrrlichtElement<CGUISTKListBox>();
+    assert(list != NULL);
+
     if (m_use_icons)
     {
-        CGUISTKListBox* list = getIrrlichtElement<CGUISTKListBox>();
-        assert(list != NULL);
-
         list->setSpriteBank(m_icons);
 
         // determine needed height
@@ -82,6 +86,10 @@ void ListWidget::setIcons(STKModifiedSpriteBank* icons, int size)
             list->setItemHeight( item_height );
         }
     }
+    else
+    {
+        list->setSpriteBank(NULL);
+    }
 
 }
 
@@ -105,6 +113,7 @@ void ListWidget::add()
         true,
         false);
 
+    list_box->setAlternatingDarkness(m_properties[PROP_ALTERNATE_BG] == "true");
     if (current_skin && current_skin->getSpriteBank())
     {
             list_box->setSpriteBank(current_skin->getSpriteBank());
@@ -121,6 +130,18 @@ void ListWidget::add()
     m_element = list_box;
     m_element->setTabOrder( list_box->getID() );
 
+    createHeader();
+}
+
+// -----------------------------------------------------------------------------
+
+void ListWidget::createHeader()
+{
+    if (m_header_created)
+        return;
+
+    const int header_height = GUIEngine::getFontHeight() + 15;
+
     if (m_header.size() > 0)
     {
         //const int col_size = m_w / m_header.size();
@@ -132,27 +153,49 @@ void ListWidget::add()
         }
 
         int x = m_x;
-        for (unsigned int n=0; n<m_header.size(); n++)
+        int scrollbar_width = GUIEngine::getSkin()->getSize(EGDS_SCROLLBAR_SIZE);
+        for (unsigned int n=0; n<m_header.size()+1; n++)
         {
             std::ostringstream name;
             name << m_properties[PROP_ID];
             name << "_column_";
             name << n;
 
-            ButtonWidget* header = new ButtonWidget();
-
+            Widget* header = NULL;
+            if (n == m_header.size() || m_header[n].m_texture == NULL)
+            {
+                ButtonWidget* button = new ButtonWidget();
+                if (n < m_header.size())
+                    button->setText(m_header[n].m_text);
+                header = button;
+            }
+            else
+            {
+                IconButtonWidget* icon = new IconButtonWidget(
+                    IconButtonWidget::SCALE_MODE_LIST_WIDGET, true, false);
+                icon->setImage(m_header[n].m_texture);
+                header = icon;
+            }
             header->m_reserved_id = getNewNoFocusID();
 
             header->m_y = m_y;
             header->m_h = header_height;
 
             header->m_x = x;
-            header->m_w = (int)(m_w * float(m_header[n].m_proportion)
-                                /float(proportion_total));
+            if (n == m_header.size())
+            {
+                header->m_w = scrollbar_width;
+                header->setActive(false);
+            }
+            else
+            {
+                int header_width = m_w - scrollbar_width;
+                header->m_w = (int)(header_width * float(m_header[n].m_proportion)
+                                    /float(proportion_total));
+            }
 
             x += header->m_w;
 
-            header->setText( m_header[n].m_text );
             header->m_properties[PROP_ID] = name.str();
 
             header->add();
@@ -166,7 +209,8 @@ void ListWidget::add()
 
         m_check_inside_me = true;
     }
-}
+    m_header_created = true;
+} // createHeader
 
 // -----------------------------------------------------------------------------
 
@@ -179,10 +223,25 @@ void ListWidget::clear()
     assert(list != NULL);
 
     list->clear();
-}
+} //clear
 
 // -----------------------------------------------------------------------------
 
+void ListWidget::clearColumns()
+{
+    m_header.clear();
+    for (unsigned int n=0; n<m_header_elements.size(); n++)
+    {
+        m_header_elements[n].elementRemoved();
+        m_children.remove( m_header_elements.get(n) );
+    }
+
+    m_header_elements.clearAndDeleteAll();
+    m_header_created = false;
+} //clearColumns
+
+// -----------------------------------------------------------------------------
+//FIXME : remove the code duplication of the two addItem functions
 void ListWidget::addItem(   const std::string& internal_name,
                             const irr::core::stringw &name,
                             const int icon,
@@ -195,6 +254,11 @@ void ListWidget::addItem(   const std::string& internal_name,
     ListItem newItem;
     newItem.m_internal_name = internal_name;
     newItem.m_contents.push_back(cell);
+    newItem.m_word_wrap = (m_properties[PROP_WORD_WRAP] == "true");
+    newItem.m_line_height_scale = m_properties[PROP_LINE_HEIGHT] == "small"  ? 0.75f :
+                                  m_properties[PROP_LINE_HEIGHT] == "normal" ? 1.0f  :
+                                  m_properties[PROP_LINE_HEIGHT] == "big"    ? 1.25f : 1.0f;
+
 
     CGUISTKListBox* list = getIrrlichtElement<CGUISTKListBox>();
     assert(list != NULL);
@@ -222,6 +286,10 @@ void ListWidget::addItem(const std::string& internal_name,
     {
         newItem.m_contents.push_back(contents[i]);
     }
+    newItem.m_word_wrap = (m_properties[PROP_WORD_WRAP] == "true");
+    newItem.m_line_height_scale = m_properties[PROP_LINE_HEIGHT] == "small"  ? 0.75f :
+                                  m_properties[PROP_LINE_HEIGHT] == "normal" ? 1.0f  :
+                                  m_properties[PROP_LINE_HEIGHT] == "big"    ? 1.25f : 1.0f;
 
     CGUISTKListBox* list = getIrrlichtElement<CGUISTKListBox>();
     assert(list != NULL);
@@ -293,6 +361,9 @@ irr::core::stringw ListWidget::getSelectionLabel(const int cell) const
 
 void ListWidget::selectItemWithLabel(const irr::core::stringw& name)
 {
+    // Disable focusing header for choosing
+    m_choosing_header = false;
+
     CGUISTKListBox* list = getIrrlichtElement<CGUISTKListBox>();
     assert(list != NULL);
     return list->setSelectedByCellText( name.c_str() );
@@ -325,6 +396,9 @@ void ListWidget::setSelectionID(const int index)
 {
     // May only be called AFTER this widget has been add()ed
     assert(m_element != NULL);
+
+    // Disable focusing header for choosing
+    m_choosing_header = false;
 
     CGUISTKListBox* irritem = getIrrlichtElement<CGUISTKListBox>();
 
@@ -387,8 +461,8 @@ void ListWidget::markItemRed(const int id, bool red)
     }
     else
     {
-        irritem->setItemOverrideColor( id, EGUI_LBC_TEXT,           video::SColor(255,0,0,0) );
-        irritem->setItemOverrideColor( id, EGUI_LBC_TEXT_HIGHLIGHT, video::SColor(255,255,255,255) );
+        irritem->setItemOverrideColor( id, EGUI_LBC_TEXT,           GUIEngine::getSkin()->getColor("text::neutral"));
+        irritem->setItemOverrideColor( id, EGUI_LBC_TEXT_HIGHLIGHT, GUIEngine::getSkin()->getColor("text::focused"));
     }
 }
 
@@ -403,15 +477,36 @@ void ListWidget::markItemBlue(const int id, bool blue)
 
     if (blue)
     {
-        irritem->setItemOverrideColor( id, EGUI_LBC_TEXT,           video::SColor(255,0,0,255) );
-        irritem->setItemOverrideColor( id, EGUI_LBC_TEXT_HIGHLIGHT, video::SColor(255,0,0,255) );
+        irritem->setItemOverrideColor( id, EGUI_LBC_TEXT,           GUIEngine::getSkin()->getColor("list_blue::neutral"));
+        irritem->setItemOverrideColor( id, EGUI_LBC_TEXT_HIGHLIGHT, GUIEngine::getSkin()->getColor("list_blue::focused"));
     }
     else
     {
-        irritem->setItemOverrideColor( id, EGUI_LBC_TEXT,           video::SColor(255,0,0,0) );
-        irritem->setItemOverrideColor( id, EGUI_LBC_TEXT_HIGHLIGHT, video::SColor(255,255,255,255) );
+        irritem->setItemOverrideColor( id, EGUI_LBC_TEXT,           GUIEngine::getSkin()->getColor("text::neutral"));
+        irritem->setItemOverrideColor( id, EGUI_LBC_TEXT_HIGHLIGHT, GUIEngine::getSkin()->getColor("text::focused"));
     }
 }
+
+// -----------------------------------------------------------------------------
+
+void ListWidget::emphasisItem(const int id, bool enable)
+{
+    // May only be called AFTER this widget has been add()ed
+    assert(m_element != NULL);
+
+    CGUISTKListBox* irritem = getIrrlichtElement<CGUISTKListBox>();
+
+    if (enable)
+    {
+        irritem->setItemOverrideColor( id, EGUI_LBC_TEXT,           GUIEngine::getSkin()->getColor("emphasis_text::neutral"));
+        irritem->setItemOverrideColor( id, EGUI_LBC_TEXT_HIGHLIGHT, GUIEngine::getSkin()->getColor("emphasis_text::focused"));
+    }
+    else
+    {
+        irritem->setItemOverrideColor( id, EGUI_LBC_TEXT,           GUIEngine::getSkin()->getColor("text::neutral"));
+        irritem->setItemOverrideColor( id, EGUI_LBC_TEXT_HIGHLIGHT, GUIEngine::getSkin()->getColor("text::focused"));
+    }
+} // emphasisItem
 
 // -----------------------------------------------------------------------------
 
@@ -439,7 +534,7 @@ EventPropagation ListWidget::transmitEvent(Widget* w,
 
         m_sort_col = originator[(m_properties[PROP_ID] + "_column_").size()] - '0';
         m_selected_column = m_header_elements.get(m_sort_col);
-
+        m_choosing_header = true;
         /** \brief Allows sort icon to change depending on sort order **/
 
         /*
@@ -450,13 +545,117 @@ EventPropagation ListWidget::transmitEvent(Widget* w,
         m_header_elements[col].getIrrlichtElement<IGUIButton>()->setPressed(true);
         */
 
-        if (m_listener) m_listener->onColumnClicked(m_sort_col);
+        if (m_listener) m_listener->onColumnClicked(m_sort_col, m_sort_desc, m_sort_default);
 
         return EVENT_BLOCK;
     }
 
     return EVENT_LET;
 }
+
+// -----------------------------------------------------------------------------
+
+EventPropagation ListWidget::upPressed(const int playerID)
+{
+    return moveToNextItem(/*reverse*/ true);
+} // upPressed
+
+// -----------------------------------------------------------------------------
+
+EventPropagation ListWidget::downPressed(const int playerID)
+{
+    return moveToNextItem(/*reverse*/ false);
+} // downPressed
+
+// -----------------------------------------------------------------------------
+
+EventPropagation ListWidget::leftPressed(const int playerID)
+{
+    if (m_deactivated || !m_choosing_header)
+        return EVENT_BLOCK;
+
+    m_sort_col--;
+    repairSortCol();
+    m_sort_default = true;
+    m_selected_column = m_header_elements.get(m_sort_col);
+    m_selected_column->setFocusForPlayer(0);
+
+    return EVENT_LET;
+} // upPressed
+
+// -----------------------------------------------------------------------------
+
+EventPropagation ListWidget::rightPressed(const int playerID)
+{
+    if (m_deactivated || !m_choosing_header)
+        return EVENT_BLOCK;
+
+    m_sort_col++;
+    repairSortCol();
+    m_sort_default = true;
+    m_selected_column = m_header_elements.get(m_sort_col);
+    m_selected_column->setFocusForPlayer(0);
+
+    return EVENT_LET;
+} // downPressed
+
+// -----------------------------------------------------------------------------
+
+void ListWidget::focusHeader(const NavigationDirection nav)
+{
+    if (m_header.empty() || getItemCount() == 0)
+    {
+        setSelectionID(nav == NAV_UP ? getItemCount() - 1 : 0);
+    }
+    else
+    {
+        repairSortCol();
+        m_selected_column = m_header_elements.get(m_sort_col);
+        m_selected_column->setFocusForPlayer(0);
+        m_choosing_header = true;
+    }
+}
+
+// -----------------------------------------------------------------------------
+
+EventPropagation ListWidget::moveToNextItem(const bool reverse)
+{
+    // if widget is deactivated, do nothing
+    if (m_deactivated) return EVENT_BLOCK;
+
+    const bool stay_within_list = reverse ? getSelectionID() > 0 :
+                                            getSelectionID() < getItemCount() - 1;
+
+    if (stay_within_list)
+    {
+        if (m_choosing_header)
+        {
+            m_choosing_header = false;
+            setFocusForPlayer(0);
+        }
+        if (reverse)
+            setSelectionID(getSelectionID() - 1);
+        else
+            setSelectionID(getSelectionID() + 1);
+        return EVENT_BLOCK_BUT_HANDLED;
+    }
+    else
+    {
+        if (reverse && !m_choosing_header &&
+            m_sort_col < (int)m_header_elements.size())
+        {
+            // Up pressed
+            repairSortCol();
+            m_selected_column = m_header_elements.get(m_sort_col);
+            m_selected_column->setFocusForPlayer(0);
+            setSelectionID(-1); // select nothing
+            m_choosing_header = true;
+            return EVENT_LET;
+        }
+        setSelectionID(-1); // select nothing
+    }
+    return EVENT_BLOCK;
+} // moveToNextItem
 
 // -----------------------------------------------------------------------------
 int ListWidget::getItemID(const std::string &internalName) const

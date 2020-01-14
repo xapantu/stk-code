@@ -18,92 +18,196 @@
 
 #include "karts/rescue_animation.hpp"
 
-#include "graphics/callbacks.hpp"
-#include "graphics/camera.hpp"
+#include "config/user_config.hpp"
 #include "graphics/referee.hpp"
 #include "items/attachment.hpp"
 #include "karts/abstract_kart.hpp"
 #include "karts/kart_properties.hpp"
+#include "modes/follow_the_leader.hpp"
 #include "modes/three_strikes_battle.hpp"
-#include "modes/world.hpp"
-#include "physics/physics.hpp"
+#include "network/network_string.hpp"
+#include "utils/mini_glm.hpp"
 
 #include "ISceneNode.h"
 
+#include <algorithm>
+#include <cmath>
+
+RescueAnimation* RescueAnimation::create(AbstractKart* kart,
+                                         bool is_auto_rescue)
+{
+    // When goal phase is happening karts is made stationary, so no animation
+    // will be created
+    if (World::getWorld()->isGoalPhase())
+        return NULL;
+    return new RescueAnimation(kart, is_auto_rescue);
+}   // create
+
+//-----------------------------------------------------------------------------
 /** The constructor stores a pointer to the kart this object is animating,
  *  and initialised the timer.
  *  \param kart Pointer to the kart which is animated.
  */
-RescueAnimation::RescueAnimation(AbstractKart *kart, bool is_auto_rescue)
+RescueAnimation::RescueAnimation(AbstractKart* kart, bool is_auto_rescue)
                : AbstractKartAnimation(kart, "RescueAnimation")
 {
-    m_referee     = new Referee(*m_kart);
-    m_kart->getNode()->addChild(m_referee->getSceneNode());
-    m_timer       = m_kart->getKartProperties()->getRescueDuration();
-    m_velocity    = m_kart->getKartProperties()->getRescueHeight() / m_timer;
-    m_xyz         = m_kart->getXYZ();
+    m_referee = NULL;
+    btTransform prev_trans = kart->getTrans();
+    // Get the required final physical transform for network, then reset back
+    // to the original transform
+    World::getWorld()->moveKartAfterRescue(kart);
 
+    btTransform rescue_transform = kart->getTrans();
+    MiniGLM::compressbtTransform(rescue_transform,
+        m_rescue_transform_compressed);
+    kart->getBody()->setCenterOfMassTransform(prev_trans);
+    kart->setTrans(prev_trans);
+
+    // Determine maximum rescue height with up-raycast
+    float max_height = m_kart->getKartProperties()->getRescueHeight();
+    Vec3 up_vector = m_kart->getTrans().getBasis().getColumn(1);
+    float hit_dest = getMaximumHeight(up_vector, Referee::getHeight());
+
+    max_height = std::min(hit_dest, max_height);
+    float timer = m_kart->getKartProperties()->getRescueDuration();
+    float velocity = max_height / timer;
+
+    init(rescue_transform, velocity);
     m_kart->getAttachment()->clear();
 
-    m_curr_rotation.setPitch(m_kart->getPitch());
-    m_curr_rotation.setRoll(m_kart->getRoll()  );
-    m_curr_rotation.setHeading(0);
-    m_add_rotation = -m_curr_rotation/m_timer;
-    m_curr_rotation.setHeading(m_kart->getHeading());
-
     // Add a hit unless it was auto-rescue
-    if(race_manager->getMinorMode()==RaceManager::MINOR_MODE_3_STRIKES &&
+    if (race_manager->isBattleMode() &&
         !is_auto_rescue)
     {
-        ThreeStrikesBattle *world=(ThreeStrikesBattle*)World::getWorld();
-        world->kartHit(m_kart->getWorldKartId());
+        World::getWorld()->kartHit(m_kart->getWorldKartId());
+        if (UserConfigParams::m_arena_ai_stats)
+        {
+            ThreeStrikesBattle* tsb = dynamic_cast<ThreeStrikesBattle*>
+                (World::getWorld());
+            if (tsb)
+                tsb->increaseRescueCount();
+        }
     }
-};   // RescueAnimation
+
+    // Allow FTL mode to apply special action when the leader is rescued
+    if (race_manager->isFollowMode())
+    {
+        FollowTheLeaderRace *ftl_world =
+            dynamic_cast<FollowTheLeaderRace*>(World::getWorld());
+        if(ftl_world->isLeader(kart->getWorldKartId()))
+            ftl_world->leaderRescued();
+    }
+
+    // Clear powerups when rescue in CTF
+    if (race_manager->getMinorMode() ==
+        RaceManager::MINOR_MODE_CAPTURE_THE_FLAG)
+        resetPowerUp();
+}   // RescueAnimation
+
+//-----------------------------------------------------------------------------
+RescueAnimation::RescueAnimation(AbstractKart* kart, BareNetworkString* b)
+               : AbstractKartAnimation(kart, "RescueAnimation")
+{
+    m_referee = NULL;
+    restoreBasicState(b);
+    restoreData(b);
+}   // RescueAnimation
+
+//-----------------------------------------------------------------------------
+void RescueAnimation::restoreData(BareNetworkString* b)
+{
+    m_rescue_transform_compressed[0] = b->getInt24();
+    m_rescue_transform_compressed[1] = b->getInt24();
+    m_rescue_transform_compressed[2] = b->getInt24();
+    m_rescue_transform_compressed[3] = b->getUInt32();
+    btTransform rescue_transform =
+        MiniGLM::decompressbtTransform(m_rescue_transform_compressed);
+    float velocity = b->getFloat();
+    init(rescue_transform, velocity);
+}   // restoreData
+
+//-----------------------------------------------------------------------------
+/* When rescue transform and velocity is known, setting up the rest of data.
+ * It is also used for each restoreState to make sure animation end in correct
+ * time.
+ */
+void RescueAnimation::init(const btTransform& rescue_transform,
+                           float velocity)
+{
+    m_rescue_transform = rescue_transform;
+    float timer = m_kart->getKartProperties()->getRescueDuration();
+    m_end_ticks = m_created_ticks + stk_config->time2Ticks(timer);
+    m_rescue_moment = m_created_ticks + stk_config->time2Ticks(timer * 0.4f);
+    m_velocity = velocity;
+}   // init
 
 //-----------------------------------------------------------------------------
 /** This object is automatically destroyed when the timer expires.
  */
 RescueAnimation::~RescueAnimation()
 {
-    // If m_timer >=0, this object is deleted because the kart
-    // is deleted (at the end of a race), which means that
-    // world is in the process of being deleted. In this case
-    // we can't call removeKartAfterRescue() or getPhysics anymore.
-    if(m_timer < 0)
-        World::getWorld()->moveKartAfterRescue(m_kart);
-    m_kart->getNode()->removeChild(m_referee->getSceneNode());
-    delete m_referee;
-    m_referee = NULL;
-    if(m_timer < 0)
+    m_kart->getBody()->setLinearVelocity(btVector3(0, 0, 0));
+    m_kart->getBody()->setAngularVelocity(btVector3(0, 0, 0));
+    if (m_referee)
     {
-        m_kart->getBody()->setLinearVelocity(btVector3(0,0,0));
-        m_kart->getBody()->setAngularVelocity(btVector3(0,0,0));
-        World::getWorld()->getPhysics()->addKart(m_kart);
-        for(unsigned int i=0; i<Camera::getNumCameras(); i++)
-        {
-            Camera *camera = Camera::getCamera(i);
-            if(camera && camera->getKart()==m_kart &&
-                camera->getMode() != Camera::CM_FINAL)
-                camera->setMode(Camera::CM_NORMAL);
-        }
+        m_kart->getNode()->removeChild(m_referee->getSceneNode());
+        delete m_referee;
     }
 }   // ~RescueAnimation
 
 // ----------------------------------------------------------------------------
 /** Updates the kart animation.
- *  \param dt Time step size.
- *  \return True if the explosion is still shown, false if it has finished.
+ *  \param ticks Number of time steps - should be 1.
  */
-void RescueAnimation::update(float dt)
+void RescueAnimation::update(int ticks)
 {
-
-    m_xyz.setY(m_xyz.getY() + dt*m_velocity);
-    m_kart->setXYZ(m_xyz);
-    m_curr_rotation += dt*m_add_rotation;
-    btQuaternion q(m_curr_rotation.getHeading(), m_curr_rotation.getPitch(),
-                   m_curr_rotation.getRoll());
-    m_kart->setRotation(q);
-
-    AbstractKartAnimation::update(dt);
-
+    if (World::getWorld()->getTicksSinceStart() > m_rescue_moment)
+    {
+        float dur = stk_config->ticks2Time(m_end_ticks - m_rescue_moment -
+            (World::getWorld()->getTicksSinceStart() - m_rescue_moment));
+        Vec3 xyz = m_rescue_transform.getOrigin() +
+            dur * m_velocity * m_rescue_transform.getBasis().getColumn(1);
+        m_kart->setXYZ(xyz);
+        m_kart->setRotation(m_rescue_transform.getRotation());
+    }
+    else
+    {
+        float dur = stk_config->ticks2Time(
+            World::getWorld()->getTicksSinceStart() - m_created_ticks);
+        Vec3 xyz = m_created_transform.getOrigin() +
+            dur * m_velocity * m_created_transform.getBasis().getColumn(1);
+        m_kart->setXYZ(xyz);
+        m_kart->setRotation(m_created_transform.getRotation());
+    }
+    AbstractKartAnimation::update(ticks);
 }   // update
+
+// ----------------------------------------------------------------------------
+void RescueAnimation::updateGraphics(float dt)
+{
+    if (m_referee == NULL)
+    {
+        m_referee = new Referee(*m_kart);
+        m_kart->getNode()->addChild(m_referee->getSceneNode());
+    }
+    m_referee->setAnimationFrameWithCreatedTicks(m_created_ticks);
+    AbstractKartAnimation::updateGraphics(dt);
+}   // updateGraphics
+
+// ----------------------------------------------------------------------------
+void RescueAnimation::saveState(BareNetworkString* buffer)
+{
+    AbstractKartAnimation::saveState(buffer);
+    buffer->addInt24(m_rescue_transform_compressed[0])
+        .addInt24(m_rescue_transform_compressed[1])
+        .addInt24(m_rescue_transform_compressed[2])
+        .addUInt32(m_rescue_transform_compressed[3]);
+    buffer->addFloat(m_velocity);
+}   // saveState
+
+// ----------------------------------------------------------------------------
+void RescueAnimation::restoreState(BareNetworkString* buffer)
+{
+    AbstractKartAnimation::restoreState(buffer);
+    restoreData(buffer);
+}   // restoreState

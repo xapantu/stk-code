@@ -21,15 +21,18 @@
 #define HEADER_TRACK_OBJECT_PRESENTATION_HPP
 
 #include "graphics/lod_node.hpp"
-#include "items/item.hpp"
 #include "utils/cpp2011.hpp"
 #include "utils/no_copy.hpp"
 #include "utils/log.hpp"
+#include "utils/leak_check.hpp"
+#include "utils/time.hpp"
 #include "utils/vec3.hpp"
 
 #include <vector3d.h>
 #include <IAnimatedMeshSceneNode.h>
 
+#include <memory>
+#include <limits>
 #include <string>
 
 class SFXBase;
@@ -37,6 +40,7 @@ class ParticleEmitter;
 class PhysicalObject;
 class ThreeDAnimation;
 class ModelDefinitionLoader;
+class RenderInfo;
 class STKInstancedSceneNode;
 class XMLNode;
 class TrackObject;
@@ -85,6 +89,7 @@ public:
     {
         Log::warn("TrackObjectPresentation", "setEnable unimplemented for this presentation type");
     }
+    virtual void updateGraphics(float dt) {}
     virtual void update(float dt) {}
     virtual void move(const core::vector3df& xyz, const core::vector3df& hpr,
         const core::vector3df& scale, bool isAbsoluteCoord) {}
@@ -144,6 +149,7 @@ public:
         TrackObjectPresentation(xyz, hpr, scale)
     {
         m_node = node;
+        m_force_always_hidden = false;
     }   // TrackObjectPresentationSceneNode
 
     // ------------------------------------------------------------------------
@@ -163,6 +169,8 @@ public:
     // ------------------------------------------------------------------------
     /** Returns a pointer to the scene node, const version. */
     const scene::ISceneNode* getNode() const { return m_node; }
+    // ------------------------------------------------------------------------
+    bool isAlwaysHidden() const { return m_force_always_hidden; }
 };   // class TrackObjectPresentationSceneNode
 
 // ============================================================================
@@ -184,13 +192,22 @@ public:
 class TrackObjectPresentationLibraryNode : public TrackObjectPresentationSceneNode
 {
     TrackObject* m_parent;
+    using TrackObjectPresentationSceneNode::move;
+    std::string m_name;
+    bool m_start_executed, m_reset_executed;
 public:
     TrackObjectPresentationLibraryNode(TrackObject* parent,
         const XMLNode& xml_node,
         ModelDefinitionLoader& model_def_loader);
     virtual ~TrackObjectPresentationLibraryNode();
-    void move(const core::vector3df& xyz, const core::vector3df& hpr,
-        const core::vector3df& scale, bool isAbsoluteCoord, bool moveChildrenPhysicalBodies);
+    virtual void update(float dt) OVERRIDE;
+    virtual void reset() OVERRIDE
+    {
+        m_reset_executed = false;
+        TrackObjectPresentationSceneNode::reset();
+    }
+    virtual void move(const core::vector3df& xyz, const core::vector3df& hpr,
+        const core::vector3df& scale, bool isAbsoluteCoord) OVERRIDE;
 };   // TrackObjectPresentationLibraryNode
 
 // ============================================================================
@@ -203,8 +220,10 @@ public:
 
     TrackObjectPresentationLOD(const XMLNode& xml_node,
                                scene::ISceneNode* parent,
-                               ModelDefinitionLoader& model_def_loader);
+                               ModelDefinitionLoader& model_def_loader,
+                               std::shared_ptr<RenderInfo> ri);
     virtual ~TrackObjectPresentationLOD();
+    virtual void reset() OVERRIDE;
 };
 
 // ============================================================================
@@ -224,19 +243,16 @@ private:
     /** True if the object is in the skybox */
     bool                    m_is_in_skybox;
 
-    /** Start frame of the animation to be played. */
-    unsigned int            m_frame_start;
-
-    /** End frame of the animation to be played. */
-    unsigned int            m_frame_end;
-
     std::string             m_model_file;
+
+    std::shared_ptr<RenderInfo> m_render_info;
 
     void init(const XMLNode* xml_node, scene::ISceneNode* parent, bool enabled);
 
 public:
     TrackObjectPresentationMesh(const XMLNode& xml_node, bool enabled,
-                                scene::ISceneNode* parent);
+                                scene::ISceneNode* parent,
+                                std::shared_ptr<RenderInfo> render_info);
 
     TrackObjectPresentationMesh(const std::string& model_file,
                                 const core::vector3df& xyz,
@@ -247,9 +263,6 @@ public:
                                 const core::vector3df& hpr,
                                 const core::vector3df& scale);
     virtual ~TrackObjectPresentationMesh();
-    void setLoop(int start, int end);
-    void setCurrentFrame(int frame);
-    int getCurrentFrame();
     virtual void reset() OVERRIDE;
     // ------------------------------------------------------------------------
     /** Returns the mode file name. */
@@ -260,8 +273,7 @@ public:
 /** \ingroup tracks
  *  A track object representation that consists of a sound emitter
  */
-class TrackObjectPresentationSound : public TrackObjectPresentation,
-                                     public TriggerItemListener
+class TrackObjectPresentationSound : public TrackObjectPresentation
 {
 private:
 
@@ -279,10 +291,11 @@ private:
 public:
 
     TrackObjectPresentationSound(const XMLNode& xml_node,
-                                 scene::ISceneNode* parent);
+                                 scene::ISceneNode* parent,
+                                 bool disable_for_multiplayer);
     virtual ~TrackObjectPresentationSound();
-    virtual void onTriggerItemApproached() OVERRIDE;
-    virtual void update(float dt) OVERRIDE;
+    void onTriggerItemApproached(int kart_id);
+    virtual void updateGraphics(float dt) OVERRIDE;
     virtual void move(const core::vector3df& xyz, const core::vector3df& hpr,
         const core::vector3df& scale, bool isAbsoluteCoord) OVERRIDE;
     void triggerSound(bool loop);
@@ -312,7 +325,7 @@ public:
     TrackObjectPresentationBillboard(const XMLNode& xml_node,
                                      scene::ISceneNode* parent);
     virtual ~TrackObjectPresentationBillboard();
-    virtual void update(float dt) OVERRIDE;
+    virtual void updateGraphics(float dt) OVERRIDE;
 };   // TrackObjectPresentationBillboard
 
 
@@ -334,7 +347,7 @@ public:
                                      scene::ISceneNode* parent);
     virtual ~TrackObjectPresentationParticles();
 
-    virtual void update(float dt) OVERRIDE;
+    virtual void updateGraphics(float dt) OVERRIDE;
     void triggerParticles();
     void stop();
     void stopIn(double delay);
@@ -359,6 +372,7 @@ public:
                                  scene::ISceneNode* parent);
     virtual ~TrackObjectPresentationLight();
     float getEnergy() const { return m_energy; }
+    virtual void setEnable(bool enabled) OVERRIDE;
     void setEnergy(float energy);
 };   // TrackObjectPresentationLight
 
@@ -373,33 +387,48 @@ enum ActionTriggerType
 /** \ingroup tracks
  *  A track object representation that consists of an action trigger
  */
-class TrackObjectPresentationActionTrigger : public TrackObjectPresentation,
-                                             public TriggerItemListener
+class TrackObjectPresentationActionTrigger : public TrackObjectPresentation
 {
 private:
     /** For action trigger objects */
-    std::string m_action;
+    std::string m_action, m_library_id, m_triggered_object, m_library_name;
 
-    bool m_action_active;
+    float m_xml_reenable_timeout;
+
+    uint64_t m_reenable_timeout;
 
     ActionTriggerType m_type;
 
 public:
-    TrackObjectPresentationActionTrigger(const XMLNode& xml_node);
+    TrackObjectPresentationActionTrigger(const XMLNode& xml_node,
+                                         TrackObject* parent);
     TrackObjectPresentationActionTrigger(const core::vector3df& xyz,
                                          const std::string& scriptname,
                                          float distance);
 
     virtual ~TrackObjectPresentationActionTrigger() {}
 
-    virtual void onTriggerItemApproached() OVERRIDE;
+    void onTriggerItemApproached(int kart_id);
     // ------------------------------------------------------------------------
     /** Reset the trigger (i.e. sets it to active again). */
-    virtual void reset() OVERRIDE { m_action_active = true; }
+    virtual void reset() OVERRIDE 
+                             { m_reenable_timeout = StkTime::getMonoTimeMs(); }
     // ------------------------------------------------------------------------
-    /** Sets the trigger to be enabled or disabled. */
-    virtual void setEnable(bool status) OVERRIDE{ m_action_active = status; }
+    /** Sets the trigger to be enabled or disabled. getMonoTimeMs is used to
+     *  to avoid called update which duplicated in network rewinding. */
+    virtual void setEnable(bool status) OVERRIDE
+    {
+        m_reenable_timeout = status ? StkTime::getMonoTimeMs() :
+            std::numeric_limits<uint64_t>::max();
+    }
+    // ------------------------------------------------------------------------
+    void setReenableTimeout(float time)
+    {
+        m_reenable_timeout =
+            StkTime::getMonoTimeMs() + (uint64_t)(time * 1000.0f);
+    }
 };   // class TrackObjectPresentationActionTrigger
 
 
 #endif // TRACKOBJECTPRESENTATION_HPP
+

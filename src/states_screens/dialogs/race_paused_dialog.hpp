@@ -19,21 +19,36 @@
 #define HEADER_RACE_PAUSED_DIALOG_HPP
 
 #include "guiengine/modaldialog.hpp"
+#include "guiengine/widgets/text_box_widget.hpp"
+#include "utils/cpp2011.hpp"
 
 namespace GUIEngine
 {
     class RibbonWidget;
+    class TextBoxWidget;
 }
 
 /**
  * \brief Dialog shown when the race is paused
  * \ingroup states_screens
  */
-class RacePausedDialog : public GUIEngine::ModalDialog
+class RacePausedDialog : public GUIEngine::ModalDialog,
+                         public GUIEngine::ITextBoxWidgetListener
 {
+private:
+    bool m_self_destroy;
+    bool m_from_overworld;
+    int m_touch_controls;
+
+    GUIEngine::TextBoxWidget* m_text_box;
+
+    virtual void onTextUpdated() OVERRIDE {}
+    virtual bool onEnterPressed(const irr::core::stringw& text) OVERRIDE;
     
+    void updateTouchDeviceIcon();
+
 protected:
-    virtual void loadedFromFile();
+    virtual void loadedFromFile() OVERRIDE;
 
 public:
     /**
@@ -41,10 +56,21 @@ public:
      */
     RacePausedDialog(const float percentWidth, const float percentHeight);
     virtual ~RacePausedDialog();
-    
-    void onEnterPressedInternal();
-    GUIEngine::EventPropagation processEvent(const std::string& eventSource);
-    
+    virtual void onEnterPressedInternal() OVERRIDE;
+    GUIEngine::EventPropagation processEvent(const std::string& eventSource)
+        OVERRIDE;
+    virtual void beforeAddingWidgets() OVERRIDE;
+    virtual void init() OVERRIDE;
+    // ------------------------------------------------------------------------
+    virtual void onUpdate(float dt) OVERRIDE
+    {
+        // It's unsafe to delete from inside the event handler so we do it here
+        if (m_self_destroy)
+        {
+            ModalDialog::dismiss();
+            return;
+        }
+    }
 };
 
 #endif

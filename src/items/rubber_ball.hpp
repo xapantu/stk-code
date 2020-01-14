@@ -23,9 +23,9 @@
 
 #include "items/flyable.hpp"
 #include "tracks/track_sector.hpp"
+#include "utils/cpp2011.hpp"
 
 class AbstractKart;
-class QuadGraph;
 class SFXBase;
 
 /**
@@ -80,12 +80,21 @@ private:
     /** If the ball overtakes its target or starts to aim at the kart which
      *  originally shot the rubber ball, after this amount of time the
      *  ball will be deleted. */
-    static float m_st_delete_time;
+    static int16_t m_st_delete_ticks;
 
-    /** Timer before another rubber ball can be picked up. This is to ensure
-     *  that there are not too many rubber balls on the track in races with many
-     *  karts. */
-    static float m_time_between_balls;
+    /** If the ball is closer to its target than min_offset_distance, the speed
+     *  in addition to the difficulty's default max speed. */
+    static float m_st_min_speed_offset;
+
+    /** If the ball is farther to its target than max_offset_distance, the speed
+     *  in addition to the difficulty's default max speed. */
+    static float m_st_max_speed_offset;
+
+    /** The distance to target under which the ball is the slowest */
+    static float m_st_min_offset_distance;
+
+    /** The distance to target over which the ball is the fastest */
+    static float m_st_max_offset_distance;
 
     /** This factor is used to influence how much the rubber ball should aim
      *  at its target early. It used the 'distance to center of track' of its
@@ -149,10 +158,6 @@ private:
     /** How long it takes from one bounce of the ball to the next. */
     float        m_interval;
 
-    /** This flag is set if the target is within the fast ping distance. It
-     *  will cause the rubber ball to decrese the jump height and intervall. */
-    bool         m_fast_ping;
-
     /** Distance to target. This is measured in terms of 'distance along
      *  track', but also takes the 3d distance and height difference into
      *  account (in case that the target is on a different part of the
@@ -163,15 +168,24 @@ private:
      *  It is always between 0 and m_interval. */
     float        m_height_timer;
 
+    /** The current maximum height of the ball. This value will be
+     *  reduced if the ball gets closer to the target. */
+    float        m_current_max_height;
+
     /** If the ball overtakes its target or starts to aim at the kart which
      *  originally shot the rubber ball, after a certain amount of time the
      *  ball will be deleted. This timer tracks this time. If it is < 0
      *  it indicates that the ball is targeting another kart atm. */
-    float        m_delete_timer;
+    int16_t      m_delete_ticks;
 
-    /** The current maximum height of the ball. This value will be
-     *  reduced if the ball gets closer to the target. */
-    float        m_current_max_height;
+    /** This variable counts how often a ball tunneled (in consecutive
+     *  frames). If a ball tunnels a certain number of times, it is
+     *  considered stuck and will be removed. */
+    uint8_t      m_tunnel_count;
+
+    /** This flag is set if the target is within the fast ping distance. It
+     *  will cause the rubber ball to decrese the jump height and intervall. */
+    bool         m_fast_ping;
 
     /** Once the ball is close enough, it will aim for the kart. If the
      *  kart should be able to then increase the distance to the ball,
@@ -179,13 +193,10 @@ private:
      *  used to keep track of the state of this ball. */
     bool         m_aiming_at_target;
 
-    /** This variable counts how often a ball tunneled (in consecutive
-     *  frames). If a ball tunnels a certain number of times, it is
-     *  considered stuck and will be removed. */
-    unsigned int m_tunnel_count;
-
     /** A 'ping' sound effect to be played when the ball hits the ground. */
     SFXBase     *m_ping_sfx;
+
+    bool m_restoring_state;
 
     void         computeTarget();
     void         updateDistanceToTarget();
@@ -193,22 +204,33 @@ private:
                                          float *f=NULL);
     void         getNextControlPoint();
     float        updateHeight();
-    void         interpolate(Vec3 *next_xyz, float dt);
-    void         moveTowardsTarget(Vec3 *next_xyz, float dt);
+    void         interpolate(Vec3 *next_xyz, int ticks);
+    void         moveTowardsTarget(Vec3 *next_xyz, int ticks);
+    void         updateWeightedSpeed(int ticks);
     void         initializeControlPoints(const Vec3 &xyz);
-    float        getMaxTerrainHeight(const Vec3 &vertical_offset) const;
+    float        getTunnelHeight(const Vec3 &next_xyz, 
+                                     const float vertical_offset) const;
     bool         checkTunneling();
+    void removePingSFX();
+
 public:
                  RubberBall  (AbstractKart* kart);
     virtual     ~RubberBall();
     static  void init(const XMLNode &node, scene::IMesh *rubberball);
-    virtual bool updateAndDelete(float dt);
-    virtual bool hit(AbstractKart* kart, PhysicalObject* obj=NULL);
-    static float getTimeBetweenRubberBalls()    {return m_time_between_balls;}
+    virtual bool updateAndDelete(int ticks) OVERRIDE;
+    virtual bool hit(AbstractKart* kart, PhysicalObject* obj=NULL) OVERRIDE;
+    virtual void setAnimation(AbstractKartAnimation *animation) OVERRIDE;
     // ------------------------------------------------------------------------
     /** This object does not create an explosion, all affects on
      *  karts are handled by this hit() function. */
     //virtual HitEffect *getHitEffect() const {return NULL; }
+    // ------------------------------------------------------------------------
+    virtual BareNetworkString* saveState(std::vector<std::string>* ru)
+        OVERRIDE;
+    // ------------------------------------------------------------------------
+    virtual void restoreState(BareNetworkString *buffer, int count) OVERRIDE;
+    // ------------------------------------------------------------------------
+    virtual void onFireFlyable() OVERRIDE;
 
 };   // RubberBall
 

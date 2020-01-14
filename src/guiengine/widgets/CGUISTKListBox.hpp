@@ -12,6 +12,9 @@
 #include "IGUIElement.h"
 #include "irrArray.h"
 #include <string>
+#include <vector>
+
+#include "GlyphLayout.h"
 
 namespace irr
 {
@@ -32,6 +35,7 @@ namespace irr
                     irr::core::stringw m_text;
                     int m_proportion;
                     s32 m_icon;
+                    std::vector<GlyphLayout> m_glyph_layouts;
                     bool m_center;
 
                     ListCell(irr::core::stringw text, s32 icon = -1, int proportion = 1, bool center = false)
@@ -48,6 +52,9 @@ namespace irr
                 // Actually only used in list_widget -- still refactoring FIXME
                 std::string m_internal_name;
                 int m_current_id;
+
+                bool m_word_wrap = false;
+                float m_line_height_scale = 0.0f;
 
                 // A multicolor extension
                 struct ListItemOverrideColor
@@ -163,6 +170,7 @@ namespace irr
             //! Sets whether to draw the background
             virtual void setDrawBackground(bool draw);
 
+            void setAlternatingDarkness(bool val) { m_alternating_darkness = val; }
     private:
 
             void recalculateItemHeight();
@@ -178,16 +186,19 @@ namespace irr
             s32 ItemHeightOverride;
             s32 TotalItemHeight;
             s32 ItemsIconWidth;
+            s32 MousePosY;
             gui::IGUIFont* Font;
             gui::IGUISpriteBank* IconBank;
             gui::IGUIScrollBar* ScrollBar;
             u32 selectTime;
             core::stringw KeyBuffer;
             bool Selecting;
+            bool Moving;
             bool DrawBack;
             bool MoveOverSelect;
             bool AutoScroll;
             bool HighlightWhenNotFocused;
+            bool m_alternating_darkness;
     };
 
 

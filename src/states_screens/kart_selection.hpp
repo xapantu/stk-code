@@ -36,7 +36,9 @@ namespace Online
     class OnlineProfile;
 }
 
+class FocusDispatcher;
 class InputDevice;
+class PlayerProfile;
 class KartHoverListener;
 
 extern int g_root_id;
@@ -79,10 +81,12 @@ protected:
     /** Message shown in multiplayer mode */
     GUIEngine::BubbleWidget* m_multiplayer_message;
 
+    FocusDispatcher  *m_dispatcher;
+
     KartSelectionScreen(const char* filename);
 
     /** Called when all players selected their kart */
-    void allPlayersDone();
+    virtual void allPlayersDone();
 
     /** Called when number/order of karts changed, so that all will keep
      *  an up-to-date ID */
@@ -102,7 +106,7 @@ protected:
     /** Fill the ribbon with the karts from the currently selected group */
     void setKartsFromCurrentGroup();
 
-    virtual void playerConfirm(const int playerID);
+    void playerConfirm(const int playerID);
 
     void updateKartStats(uint8_t widget_id,
                          const std::string& selection);
@@ -111,7 +115,8 @@ protected:
      *  user validates */
     void updateKartWidgetModel(int widget_id,
                 const std::string& selection,
-                const irr::core::stringw& selectionText);
+                const irr::core::stringw& selectionText,
+                float kart_color);
 
     /** Adds a message to the screen which indicates that players must press fire to join. */
     void addMultiplayerMessage();
@@ -119,8 +124,13 @@ protected:
     /** Remove the multiplayer message. */
     void removeMultiplayerMessage();
 
+    virtual bool isIgnored(const std::string& ident) const { return false; }
+
     /** Stores a pointer to the current selection screen */
     static KartSelectionScreen* m_instance_ptr;
+private:
+    PtrVector<const KartProperties, REF> getUsableKarts(
+        const std::string& selected_kart_group);
 public:
     /** Returns the current instance */
     static KartSelectionScreen* getRunningInstance();
@@ -137,14 +147,14 @@ public:
 
     /** \brief Called when a player hits 'fire'/'select' on his device to
      *  join the game */
-    bool joinPlayer(InputDevice* device);
+    bool joinPlayer(InputDevice* device, PlayerProfile* p);
 
     /**
       * \brief Called when a player hits 'rescue'/'cancel' on his device
       *  to leave the game
       * \return true if event was handled succesfully
       */
-    bool playerQuit(StateManager::ActivePlayer* player);
+    virtual bool playerQuit(StateManager::ActivePlayer* player);
 
      /** \brief implement callback from parent class GUIEngine::Screen */
     virtual void init() OVERRIDE;

@@ -26,7 +26,6 @@
 #if defined(WIN32) && defined(_MSC_VER) && _MSC_VER < 1800
 #  include <math.h>
 
-#  define isnan _isnan
 #  define roundf(x) (floorf(x + 0.5f))
 #  define round(x)  (floorf(x + 0.5))
 #endif
@@ -39,6 +38,10 @@
 #if defined(WIN32) && defined(DEBUG)
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
+#endif
+
+#if defined(__linux__) && defined(__GLIBC__) && defined(__GLIBC_MINOR__)
+#  include <pthread.h>
 #endif
 
 namespace VS
@@ -78,6 +81,13 @@ namespace VS
         {
         }
 
+    }   // setThreadName
+#elif defined(__linux__) && defined(__GLIBC__) && defined(__GLIBC_MINOR__)
+    static void setThreadName(const char* name)
+    {
+#if __GLIBC__ > 2 || __GLIBC_MINOR__ > 11
+        pthread_setname_np(pthread_self(), name);
+#endif
     }   // setThreadName
 #else
     static void setThreadName(const char* name)

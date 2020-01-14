@@ -18,191 +18,202 @@
 
 #include "network/game_setup.hpp"
 
-#include "karts/abstract_kart.hpp"
-#include "modes/world.hpp"
+#include "config/player_manager.hpp"
+#include "config/user_config.hpp"
+#ifdef DEBUG
+#include "network/network_config.hpp"
+#endif
 #include "network/network_player_profile.hpp"
-#include "online/online_profile.hpp"
+#include "network/peer_vote.hpp"
+#include "network/protocols/server_lobby.hpp"
+#include "network/server_config.hpp"
+#include "network/stk_host.hpp"
 #include "race/race_manager.hpp"
+#include "utils/file_utils.hpp"
 #include "utils/log.hpp"
+#include "utils/string_utils.hpp"
+
+#include <algorithm>
+#include <fstream>
+#include <random>
 
 //-----------------------------------------------------------------------------
-
 GameSetup::GameSetup()
 {
-    m_race_config       = new RaceConfig();
-    m_num_local_players = 0;
-    m_local_master      = 0;
+    const std::string& motd = ServerConfig::m_motd;
+    if (motd.find(".txt") != std::string::npos)
+    {
+        const std::string& path = ServerConfig::getConfigDirectory() + "/" +
+            motd;
+        std::ifstream message(FileUtils::getPortableReadingPath(path));
+        if (message.is_open())
+        {
+            for (std::string line; std::getline(message, line); )
+            {
+                m_message_of_today += StringUtils::utf8ToWide(line).trim() +
+                    L"\n";
+            }
+            // Remove last newline
+            m_message_of_today.erase(m_message_of_today.size() - 1);
+        }
+    }
+    else if (!motd.empty())
+        m_message_of_today = StringUtils::xmlDecode(motd);
+
+    const std::string& server_name = ServerConfig::m_server_name;
+    m_server_name_utf8 = StringUtils::wideToUtf8
+        (StringUtils::xmlDecode(server_name));
+    m_extra_server_info = -1;
+    m_is_grand_prix.store(false);
+    reset();
 }   // GameSetup
 
 //-----------------------------------------------------------------------------
-
-GameSetup::~GameSetup()
+void GameSetup::loadWorld()
 {
-    // remove all players
-    for (unsigned int i = 0; i < m_players.size(); i++)
+    // Notice: for arena (battle / soccer) lap and reverse will be mapped to
+    // goals / time limit and random item location
+    assert(!m_tracks.empty());
+    // Disable accidentally unlocking of a challenge
+    if (PlayerManager::getCurrentPlayer())
+        PlayerManager::getCurrentPlayer()->setCurrentChallenge("");
+    race_manager->setTimeTarget(0.0f);
+    if (race_manager->isSoccerMode() ||
+        race_manager->isBattleMode())
     {
-        delete m_players[i];
-    };
-    m_players.clear();
-    delete m_race_config;
-}   // ~GameSetup
+        const bool is_ctf = race_manager->getMinorMode() ==
+            RaceManager::MINOR_MODE_CAPTURE_THE_FLAG;
+        bool prev_val = UserConfigParams::m_random_arena_item;
+        if (is_ctf)
+            UserConfigParams::m_random_arena_item = false;
+        else
+            UserConfigParams::m_random_arena_item = m_reverse;
 
-//-----------------------------------------------------------------------------
-
-void GameSetup::addPlayer(NetworkPlayerProfile* profile)
-{
-    m_players.push_back(profile);
-    Log::info("GameSetup", "New player in the game setup. Player id : %d.",
-              profile->getGlobalPlayerId());
-}   // addPlayer
-
-//-----------------------------------------------------------------------------
-/** Removed a player give his NetworkPlayerProfile.
- *  \param profile The NetworkPlayerProfile to remove.
- *  \return True if the player was found and removed, false otherwise.
- */
-bool GameSetup::removePlayer(const NetworkPlayerProfile *profile)
-{
-    for (unsigned int i = 0; i < m_players.size(); i++)
-    {
-        if (m_players[i] == profile)
+        race_manager->setReverseTrack(false);
+        if (race_manager->isSoccerMode())
         {
-            delete m_players[i];
-            m_players.erase(m_players.begin()+i, m_players.begin()+i+1);
-            Log::verbose("GameSetup",
-                         "Removed a player from the game setup. Remains %u.",
-                          m_players.size());
-            return true;
+            if (isSoccerGoalTarget())
+                race_manager->setMaxGoal(m_laps);
+            else
+                race_manager->setTimeTarget((float)m_laps * 60.0f);
+        }
+        else
+        {
+            race_manager->setHitCaptureTime(m_hit_capture_limit,
+                m_battle_time_limit);
+        }
+        race_manager->startSingleRace(m_tracks.back(), -1,
+            false/*from_overworld*/);
+        UserConfigParams::m_random_arena_item = prev_val;
+    }
+    else
+    {
+        race_manager->setReverseTrack(m_reverse);
+        race_manager->startSingleRace(m_tracks.back(), m_laps,
+                                      false/*from_overworld*/);
+    }
+}   // loadWorld
+
+//-----------------------------------------------------------------------------
+void GameSetup::addServerInfo(NetworkString* ns)
+{
+#ifdef DEBUG
+    assert(NetworkConfig::get()->isServer());
+#endif
+    ns->encodeString(m_server_name_utf8);
+    auto sl = LobbyProtocol::get<ServerLobby>();
+    assert(sl);
+    ns->addUInt8((uint8_t)sl->getDifficulty())
+        .addUInt8((uint8_t)ServerConfig::m_server_max_players)
+        // Reserve for extra spectators
+        .addUInt8(0)
+        .addUInt8((uint8_t)sl->getGameMode());
+    if (hasExtraSeverInfo())
+    {
+        if (isGrandPrix())
+        {
+            uint8_t cur_track = (uint8_t)m_tracks.size();
+            if (!isGrandPrixStarted())
+                cur_track = 0;
+            ns->addUInt8((uint8_t)2).addUInt8(cur_track)
+                .addUInt8(getExtraServerInfo());
+        }
+        else
+        {
+            // Soccer mode
+            ns->addUInt8((uint8_t)1).addUInt8(getExtraServerInfo());
         }
     }
-    return false;
-}   // removePlayer
-
-//-----------------------------------------------------------------------------
-/** Sets the player id of the local master.
- *  \param player_id The id of the player who is the local master.
- */
-void GameSetup::setLocalMaster(uint8_t player_id)
-{
-    m_local_master = player_id;
-}   // setLocalMaster
-
-//-----------------------------------------------------------------------------
-/** Returns true if the player id is the local game master (used in the
- *  network game selection.
- *  \param Local player id to test.
- */
-bool GameSetup::isLocalMaster(uint8_t player_id)
-{
-    return m_local_master == player_id;
-}   // isLocalMaster
-
-//-----------------------------------------------------------------------------
-/** Sets the kart the specified player uses.
- *  \param player_id  ID of this player (in this race).
- *  \param kart_name Name of the kart the player picked.
- */
-void GameSetup::setPlayerKart(uint8_t player_id, const std::string &kart_name)
-{
-    bool found = false;
-    for (unsigned int i = 0; i < m_players.size(); i++)
+    else
     {
-        if (m_players[i]->getGlobalPlayerId() == player_id)
+        // No extra server info
+        ns->addUInt8((uint8_t)0);
+    }
+    if (ServerConfig::m_owner_less)
+    {
+        ns->addUInt8(ServerConfig::m_min_start_game_players)
+            .addFloat(ServerConfig::m_start_game_counter);
+    }
+    else
+        ns->addUInt8(0).addFloat(0.0f);
+
+    ns->encodeString16(m_message_of_today);
+    ns->addUInt8((uint8_t)ServerConfig::m_server_configurable);
+    ns->addUInt8(ServerConfig::m_live_players? 1 : 0);
+}   // addServerInfo
+
+//-----------------------------------------------------------------------------
+void GameSetup::sortPlayersForGrandPrix(
+    std::vector<std::shared_ptr<NetworkPlayerProfile> >& players) const
+{
+    if (!isGrandPrix())
+        return;
+
+    if (m_tracks.size() == 1)
+    {
+        std::random_device rd;
+        std::mt19937 g(rd());
+        std::shuffle(players.begin(), players.end(), g);
+        return;
+    }
+
+    std::sort(players.begin(), players.end(),
+        [](const std::shared_ptr<NetworkPlayerProfile>& a,
+        const std::shared_ptr<NetworkPlayerProfile>& b)
         {
-            m_players[i]->setKartName(kart_name);
-            Log::info("GameSetup::setPlayerKart", "Player %d took kart %s",
-                      player_id, kart_name.c_str());
-            found = true;
-        }
-    }
-    if (!found)
+            return (a->getScore() < b->getScore()) ||
+                (a->getScore() == b->getScore() &&
+                a->getOverallTime() > b->getOverallTime());
+        });
+    if (UserConfigParams::m_gp_most_points_first)
     {
-        Log::info("GameSetup::setPlayerKart", "The player %d was unknown.",
-                  player_id);
+        std::reverse(players.begin(), players.end());
     }
-}   // setPlayerKart
+}   // sortPlayersForGrandPrix
 
 //-----------------------------------------------------------------------------
-
-void GameSetup::bindKartsToProfiles()
+void GameSetup::sortPlayersForGame(
+    std::vector<std::shared_ptr<NetworkPlayerProfile> >& players) const
 {
-    World::KartList karts = World::getWorld()->getKarts();
+    if (!isGrandPrix())
+    {
+        std::random_device rd;
+        std::mt19937 g(rd());
+        std::shuffle(players.begin(), players.end(), g);
+    }
+    if (!race_manager->teamEnabled() ||
+        ServerConfig::m_team_choosing)
+        return;
+    for (unsigned i = 0; i < players.size(); i++)
+    {
+        players[i]->setTeam((KartTeam)(i % 2));
+    }
+}   // sortPlayersForGame
 
-    for (unsigned int i = 0; i < m_players.size(); i++)
-    {
-        Log::info("GameSetup", "Player %d has id %d and kart %s", i,
-                  m_players[i]->getGlobalPlayerId(),
-                  m_players[i]->getKartName().c_str());
-    }
-    for (unsigned int i = 0; i < karts.size(); i++)
-    {
-        Log::info("GameSetup", "Kart %d has id %d and kart %s", i,
-                   karts[i]->getWorldKartId(), karts[i]->getIdent().c_str());
-    }
-    for (unsigned int j = 0; j < m_players.size(); j++)
-    {
-        bool found = false;
-        for (unsigned int i = 0 ; i < karts.size(); i++)
-        {
-            if (karts[i]->getIdent() == m_players[j]->getKartName())
-            {
-                m_players[j]->setWorldKartID(karts[i]->getWorldKartId());
-                found = true;
-                break;
-            }
-        }
-        if (!found)
-        {
-            Log::error("GameSetup", "Error while binding world kart ids to players profiles.");
-        }
-    }
-}   // bindKartsToProfiles
-
-//-----------------------------------------------------------------------------
-/** \brief Get a network player profile with the specified player id.
- *  \param player_id : Player id in this race.
- *  \return The profile of the player having the specified player id, or
- *          NULL if no such player exists.
- */
-const NetworkPlayerProfile* GameSetup::getProfile(uint8_t player_id)
+// ----------------------------------------------------------------------------
+void GameSetup::setRace(const PeerVote &vote)
 {
-    for (unsigned int i = 0; i < m_players.size(); i++)
-    {
-        if (m_players[i]->getGlobalPlayerId()== player_id)
-        {
-            return m_players[i];
-        }
-    }
-    return NULL;
-}   // getProfile
-
-//-----------------------------------------------------------------------------
-/** \brief Get a network player profile matching a kart name.
- *  \param kart_name : Name of the kart used by the player.
- *  \return The profile of the player having the kart kart_name, or NULL
- *           if no such network profile exists.
- */
-
-const NetworkPlayerProfile* GameSetup::getProfile(const std::string &kart_name)
-{
-    for (unsigned int i = 0; i < m_players.size(); i++)
-    {
-        if (m_players[i]->getKartName() == kart_name)
-        {
-            return m_players[i];
-        }
-    }
-    return NULL;
-}   // getProfile(kart_name)
-
-//-----------------------------------------------------------------------------
-
-bool GameSetup::isKartAvailable(std::string kart_name)
-{
-    for (unsigned int i = 0; i < m_players.size(); i++)
-    {
-        if (m_players[i]->getKartName() == kart_name)
-            return false;
-    }
-    return true;
-}
+    m_tracks.push_back(vote.m_track_name);
+    m_laps = vote.m_num_laps;
+    m_reverse = vote.m_reverse;
+}   // setRace

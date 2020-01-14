@@ -20,6 +20,11 @@
 
 #include "config/user_config.hpp"
 #include "utils/log.hpp"
+#include "utils/string_utils.hpp"
+
+#if defined(WIN32)
+#include <windows.h>
+#endif
 
 std::vector<std::string>  CommandLine::m_argv;
 std::string               CommandLine::m_exec_name="";
@@ -31,14 +36,33 @@ std::string               CommandLine::m_exec_name="";
  */
 void CommandLine::init(unsigned int argc, char *argv[])
 {
-#ifdef ANDROID
-	m_exec_name = "";
+#if defined(WIN32)
+    wchar_t path[MAX_PATH] = {0};
+    GetModuleFileName(NULL, path, MAX_PATH);
+    m_exec_name = StringUtils::wideToUtf8(path);
 #else
-    m_exec_name = argv[0];
-    for(unsigned int i=1; i<argc; i++)
-        m_argv.push_back(argv[i]);
+    if (argc > 0)
+    {
+        m_exec_name = argv[0];
+    }
 #endif
+    for (unsigned int i = 1; i < argc; i++)
+    {
+        m_argv.push_back(argv[i]);
+    }
 }   // CommandLine
+
+// ----------------------------------------------------------------------------
+void CommandLine::addArgsFromUserConfig()
+{
+    std::vector<std::string> config_args;
+    config_args = StringUtils::split(UserConfigParams::m_commandline, ' ');
+    
+    for (std::string config_arg : config_args)
+    {
+        m_argv.push_back(config_arg);
+    }
+}
 
 // ----------------------------------------------------------------------------
 bool CommandLine::has(const std::string &option)
@@ -63,9 +87,6 @@ void CommandLine::reportInvalidParameters()
 {
     for(unsigned int i=0; i<m_argv.size(); i++)
     {
-        // invalid param needs to go to console
-        UserConfigParams::m_log_errors_to_console = true;
-
         Log::error("CommandLine", "Invalid parameter: %s.", m_argv[i].c_str() );
     }
 }   // reportInvalidParameters

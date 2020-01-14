@@ -59,21 +59,20 @@ public:
     void add(const XMLNode &xml_node, scene::ISceneNode* parent,
              ModelDefinitionLoader& model_def_loader,
              TrackObject* parent_library);
+    void updateGraphics(float dt);
     void update(float dt);
+    void resetAfterRewind();
     void handleExplosion(const Vec3 &pos, const PhysicalObject *mp,
                          bool secondary_hits=true);
-    void castRay(const btVector3 &from,
+    bool castRay(const btVector3 &from,
                  const btVector3 &to, btVector3 *hit_point,
                  const Material **material, btVector3 *normal = NULL,
                  bool interpolate_normal = false) const;
 
-    /** Enable or disable fog on objects */
-    void enableFog(bool enable);
-
     void insertObject(TrackObject* object);
 
     void removeObject(TrackObject* who);
-
+    void removeDriveableObject(TrackObject* obj) { m_driveable_objects.remove(obj); }
     TrackObject* getTrackObject(const std::string& libraryInstance, const std::string& name);
 
           PtrVector<TrackObject>& getObjects()       { return m_all_objects; }

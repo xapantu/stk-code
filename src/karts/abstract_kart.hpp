@@ -40,12 +40,19 @@ class btKart;
 class btQuaternion;
 class Controller;
 class Item;
+class ItemState;
+class KartGFX;
 class KartModel;
 class KartProperties;
 class Material;
 class Powerup;
+class RenderInfo;
+class SFXBuffer;
 class Skidding;
 class SlipStream;
+class Stars;
+class TerrainInfo;
+
 
 /** An abstract interface for the actual karts. Some functions are actually
  *  implemented here in order to allow inlining.
@@ -68,21 +75,31 @@ private:
     /** Index of kart in world. */
     unsigned int m_world_kart_id;
 
+    /** Name of the kart with translation. */
+    core::stringw m_name;
 
+    // ------------------------------------------------------------------------
+    void loadKartProperties(const std::string& new_ident,
+                            HandicapLevel handicap,
+                            std::shared_ptr<RenderInfo> ri);
 protected:
+    btTransform m_starting_transform;
+
+    int m_live_join_util;
+
     /** The kart properties. */
     std::unique_ptr<KartProperties> m_kart_properties;
 
-    /** The per-player difficulty. */
-    PerPlayerDifficulty m_difficulty;
+    /** The handicap level of this kart. */
+    HandicapLevel m_handicap;
 
     /** This stores a copy of the kart model. It has to be a copy
      *  since otherwise incosistencies can happen if the same kart
      *  is used more than once. */
-    KartModel*   m_kart_model;
+    std::unique_ptr<KartModel> m_kart_model;
 
     /** Handles the attachment the kart might have. */
-    Attachment  *m_attachment;
+    std::unique_ptr<Attachment> m_attachment;
 
     /** The kart controls (e.g. steering, fire, ...). */
     KartControl  m_controls;
@@ -96,25 +113,26 @@ public:
                    AbstractKart(const std::string& ident,
                                 int world_kart_id,
                                 int position, const btTransform& init_transform,
-                                PerPlayerDifficulty difficulty);
+                                HandicapLevel handicap,
+                                std::shared_ptr<RenderInfo> ri);
     virtual       ~AbstractKart();
-    virtual core::stringw getName() const;
+    // ------------------------------------------------------------------------
+    /** Returns a name to be displayed for this kart. */
+    const core::stringw& getName() const                     { return m_name; }
+    // ------------------------------------------------------------------------
     virtual void   reset();
     virtual void   init(RaceManager::KartType type) = 0;
     // ========================================================================
     // Functions related to controlling the kart
     // ------------------------------------------------------------------------
     /** Returns the current steering value for this kart. */
-    float getSteerPercent() const { return m_controls.m_steer;  }
+    virtual float getSteerPercent() const { return m_controls.getSteer(); }
     // ------------------------------------------------------------------------
     /** Returns all controls of this kart. */
     KartControl&  getControls() { return m_controls; }
     // ------------------------------------------------------------------------
     /** Returns all controls of this kart - const version. */
     const KartControl& getControls() const { return m_controls; }
-    // ------------------------------------------------------------------------
-    /** Sets the kart controls. Used e.g. by replaying history. */
-    void setControls(const KartControl &c) { m_controls = c; }
 
     // ========================================================================
     // Access to the kart properties.
@@ -122,21 +140,24 @@ public:
     /** Returns the kart properties of this kart. */
     const KartProperties* getKartProperties() const
                             { return m_kart_properties.get(); }
-
     // ========================================================================
-    // Access to the per-player difficulty.
+    /** Change to new kart instancely (used in network live join). */
+    virtual void changeKart(const std::string& new_ident,
+                            HandicapLevel handicap,
+                            std::shared_ptr<RenderInfo> ri);
+    // ========================================================================
+    // Access to the handicap.
     // ------------------------------------------------------------------------
-    /** Returns the per-player difficulty of this kart. */
-    const PerPlayerDifficulty getPerPlayerDifficulty() const
-                            { return m_difficulty; }
+    /** Returns the handicap of this kart. */
+    const HandicapLevel getHandicap() const { return m_handicap; }
     // ------------------------------------------------------------------------
-    /** Sets the per-player difficulty. */
-    void setPerPlayerDifficulty(const PerPlayerDifficulty d) { m_difficulty=d; }
+    /** Sets the handicap. */
+    void setHandicap(const HandicapLevel h) { m_handicap=h; }
 
     // ------------------------------------------------------------------------
     /** Returns a unique identifier for this kart (name of the directory the
      *  kart was loaded from). */
-    const std::string& getIdent() const;
+    virtual const std::string& getIdent() const;
     // ------------------------------------------------------------------------
     /** Returns the maximum steering angle for this kart, which depends on the
      *  speed. */
@@ -155,19 +176,16 @@ public:
     // Attachment related functions.
     // ------------------------------------------------------------------------
     /** Returns the current attachment. */
-    const Attachment* getAttachment() const {return m_attachment; }
+    const Attachment* getAttachment() const {return m_attachment.get(); }
     // ------------------------------------------------------------------------
     /** Returns the current attachment, non-const version. */
-    Attachment*    getAttachment() {return m_attachment; }
+    Attachment*    getAttachment() {return m_attachment.get(); }
 
     // ========================================================================
     // Access to the graphical kart model.
     // ------------------------------------------------------------------------
     /** Returns this kart's kart model. */
-    KartModel* getKartModel() { return m_kart_model;      }
-    // ------------------------------------------------------------------------
-    /** Returns this kart's kart model. */
-    const KartModel* getKartModel() const { return m_kart_model;      }
+    KartModel* getKartModel() const { return m_kart_model.get();      }
     // ------------------------------------------------------------------------
     /** Returns the length of the kart. */
     float getKartLength() const { return m_kart_length; }
@@ -186,6 +204,11 @@ public:
      *  overwriting this function is possible, but this implementation must
      *  be called. */
     virtual void kartIsInRestNow();
+
+    // ------------------------------------------------------------------------
+    /** Returns the time at which the kart was at a given distance.
+      * Returns -1.0f if none */
+    virtual float getTimeForDistance(float distance);
     // ------------------------------------------------------------------------
     /** Returns true if this kart has no wheels. */
     bool isWheeless() const;
@@ -253,7 +276,7 @@ public:
     virtual float getFinishTime() const = 0;
     // ------------------------------------------------------------------------
     /** Returns true if the kart has a plunger attached to its face. */
-    virtual float getBlockedByPlungerTime() const = 0;
+    virtual int getBlockedByPlungerTicks() const = 0;
     // ------------------------------------------------------------------------
     /** Sets that the view is blocked by a plunger. The duration depends on
      *  the difficulty, see KartPorperties getPlungerInFaceTime. */
@@ -264,9 +287,13 @@ public:
     // ------------------------------------------------------------------------
     /** Squashes this kart: it will scale the kart in up direction, and causes
      *  a slowdown while this kart is squashed.
+     *  Returns true if the squash is successful, false otherwise.
      *  \param time How long the kart will be squashed.
      *  \param slowdown Reduction of max speed.    */
-    virtual void setSquash(float time, float slowdown) = 0;
+    virtual bool setSquash(float time, float slowdown) = 0;
+    // ------------------------------------------------------------------------
+    /** Makes the kart unsquashed again. */
+    virtual void unsetSquash() = 0;
     // ------------------------------------------------------------------------
     /** Returns the speed of the kart in meters/second. This is not declared
      *  pure abstract, since this function is not needed for certain classes,
@@ -278,11 +305,23 @@ public:
     virtual float getCurrentMaxSpeed() const = 0;
     // ------------------------------------------------------------------------
     /** Returns how much increased speed time is left over in the given
-     *  category. Not pure abstract, since there is no need to implement this
-     *  e.g. in Ghost.
+     *  category.
      *  \param category Which category to report on. */
-    virtual float getSpeedIncreaseTimeLeft(unsigned int category) const = 0;
+    virtual int getSpeedIncreaseTicksLeft(unsigned int category) const = 0;
+    
     // ------------------------------------------------------------------------
+    /** Sets the kart AI boost state.
+     *  Not pure abstract, since there is no need to implement this e.g. in Ghost.
+     *  \param boosted True if a boost should be applied. */
+    virtual void setBoostAI(bool boosted) = 0;
+    
+    // ------------------------------------------------------------------------
+    /** Returns the kart AI boost state.
+     *  Not pure abstract, since there is no need to implement this e.g. in Ghost. */
+    virtual bool getBoostAI() const = 0;
+    
+    // ------------------------------------------------------------------------
+    
     /** Sets an increased maximum speed for a category.
      *  \param category The category for which to set the higher maximum speed.
      *  \param add_speed How much speed (in m/s) is added to the maximum speed.
@@ -291,26 +330,40 @@ public:
      *  \param fade_out_time How long the maximum speed will fade out linearly.
      */
     virtual void increaseMaxSpeed(unsigned int category, float add_speed,
-                                  float engine_force, float duration,
-                                  float fade_out_time) = 0;
+                                  float engine_force, int duration,
+                                  int fade_out_time) = 0;
+
+    // ----------------------------------------------------------------------------
+    /** This adjusts the top speed using increaseMaxSpeed, but additionally
+     *  causes an instant speed boost, which can be smaller than add-max-speed.
+     *  (e.g. a zipper can give an instant boost of 5 m/s, but over time would
+     *  allow the speed to go up by 10 m/s).
+     *  \param category The category for which the speed is increased.
+     *  \param add_max_speed Increase of the maximum allowed speed.
+     *  \param speed_boost An instant speed increase for this kart.
+     *  \param engine_force Additional engine force.
+     *  \param duration Duration of the increased speed.
+     *  \param fade_out_time How long the maximum speed will fade out linearly.
+     */
+    virtual void instantSpeedIncrease(unsigned int category, float add_max_speed,
+                                    float speed_boost, float engine_force,
+                                    int duration, int fade_out_time) = 0;
+
     // ------------------------------------------------------------------------
     /** Defines a slowdown, which is in fraction of top speed.
      *  \param category The category for which the speed is increased.
      *  \param max_speed_fraction Fraction of top speed to allow only.
      *  \param fade_in_time How long till maximum speed is capped. */
     virtual void setSlowdown(unsigned int category, float max_speed_fraction,
-                             float fade_in_time) = 0;
+                             int fade_in_time) = 0;
     // ------------------------------------------------------------------------
     /** Returns the remaining collected energy. */
     virtual float getEnergy() const = 0;
     // ------------------------------------------------------------------------
     /** Called when an item is collected. It will either adjust the collected
      *  energy, or update the attachment or powerup for this kart.
-     *  \param item The item that was hit.
-     *  \param add_info Additional info, used in networking games to force
-     *         a specific item to be used (instead of a random item) to keep
-     *         all karts in synch. */
-    virtual void  collectedItem(Item *item, int add_info) = 0;
+     *  \param item The item that was hit. */
+    virtual void  collectedItem(ItemState *item_state) = 0;
     // ------------------------------------------------------------------------
     /** Returns the current position of this kart in the race. */
     virtual int getPosition() const = 0;
@@ -360,7 +413,7 @@ public:
     /** Return whether nitro is being used despite the nitro button not being
      *  pressed due to minimal use time requirements
      */
-    virtual float isOnMinNitroTime() const = 0;
+    virtual bool isOnMinNitroTime() const = 0;
     // ------------------------------------------------------------------------
     /** Returns the current material the kart is on. */
     virtual const Material *getMaterial() const = 0;
@@ -374,6 +427,15 @@ public:
     // ------------------------------------------------------------------------
     /** Returns the current powerup. */
     virtual Powerup *getPowerup() = 0;
+    // ------------------------------------------------------------------------
+    /** Returns the last used powerup type. */
+    virtual PowerupManager::PowerupType getLastUsedPowerup() = 0;
+    // ------------------------------------------------------------------------
+    /** Returns the number of powerups. */
+    virtual int getNumPowerup() const = 0;
+    // ------------------------------------------------------------------------
+    /** Returns a points to this kart's graphical effects. */
+    virtual KartGFX* getKartGFX() = 0;
     // ------------------------------------------------------------------------
     virtual void setPowerup (PowerupManager::PowerupType t, int n) = 0;
     // ------------------------------------------------------------------------
@@ -389,10 +451,6 @@ public:
      *  over. */
     virtual void startEngineSFX() = 0;
     // ------------------------------------------------------------------------
-    /** This method is to be called every time the mass of the kart is updated,
-     *  which includes attaching an anvil to the kart (and detaching). */
-    virtual void updateWeight() = 0;
-    // ------------------------------------------------------------------------
     /** Multiplies the velocity of the kart by a factor f (both linear
      *  and angular). This is used by anvils, which suddenly slow down the kart
      *  when they are attached. */
@@ -405,7 +463,7 @@ public:
     /** Returns if the kart is invulnerable. */
     virtual bool isInvulnerable() const = 0;
     // ------------------------------------------------------------------------
-    virtual void setInvulnerableTime(float t) = 0;
+    virtual void setInvulnerableTicks(int ticks) = 0;
     // ------------------------------------------------------------------------
     /** Returns if the kart is protected by a shield. */
     virtual bool isShielded() const = 0;
@@ -421,6 +479,9 @@ public:
     /** Shows the star effect for a certain time. */
     virtual void showStarEffect(float t) = 0;
     // ------------------------------------------------------------------------
+    /** Returns the terrain info oject. */
+    virtual const TerrainInfo *getTerrainInfo() const = 0;
+    // ------------------------------------------------------------------------
     /** Called when the kart crashes against another kart.
      *  \param k The kart that was hit.
      *  \param update_attachments If true the attachment of this kart and the
@@ -428,6 +489,19 @@ public:
     virtual void crashed(AbstractKart *k, bool update_attachments) = 0;
     // ------------------------------------------------------------------------
     virtual void crashed(const Material *m, const Vec3 &normal) = 0;
+    // ------------------------------------------------------------------------
+    /** Returns the normal of the terrain the kart is over atm. This is
+     *  defined even if the kart is flying. */
+    virtual const Vec3& getNormal() const = 0;
+    // ------------------------------------------------------------------------
+    /** Returns the position 0.25s before */
+    virtual const Vec3& getPreviousXYZ() const = 0;
+    // ------------------------------------------------------------------------
+    /** Returns the most recent different previous position */
+    virtual const Vec3& getRecentPreviousXYZ() const = 0;
+    // ------------------------------------------------------------------------
+    /** Returns the time at which the recent previous position occured */
+    virtual const float getRecentPreviousXYZTime() const = 0;
     // ------------------------------------------------------------------------
     /** Returns the height of the terrain. we're currently above */
     virtual float getHoT() const = 0;
@@ -442,19 +516,41 @@ public:
     // -------------------------------------------------------------------------
     /** Set a text that is displayed on top of a kart.
      */
-    virtual void setOnScreenText(const wchar_t *text) = 0;
-    // ------------------------------------------------------------------------- 
-    /** Counter which is used for displaying wrong way message after a delay */
-    virtual float getWrongwayCounter() = 0;
-    virtual void setWrongwayCounter(float counter) = 0;
+    virtual void setOnScreenText(const core::stringw& text) = 0;
     // ------------------------------------------------------------------------
     /** Returns whether this kart wins or loses. */
     virtual bool getRaceResult() const = 0;
-
+    // ------------------------------------------------------------------------
+    /** Returns whether this kart is a ghost (replay) kart. */
+    virtual bool isGhostKart() const = 0;
+    // ------------------------------------------------------------------------
+    /** Returns whether this kart is jumping. */
+    virtual bool isJumping() const = 0;
+    // ------------------------------------------------------------------------
+    virtual void playSound(SFXBuffer* buffer) = 0;
+    // ------------------------------------------------------------------------
+    virtual bool isVisible() const = 0;
+    // ------------------------------------------------------------------------
+    virtual void makeKartRest();
+    // ------------------------------------------------------------------------
+    virtual void setStartupBoost(float val) = 0;
+    // ------------------------------------------------------------------------
+    virtual float getStartupBoost() const = 0;
+    // ------------------------------------------------------------------------
+    virtual float getStartupBoostFromStartTicks(int ticks) const = 0;
+    // ------------------------------------------------------------------------
+    virtual Stars* getStarsEffect() const = 0;
+    // ------------------------------------------------------------------------
+    int getLiveJoinUntilTicks() const              { return m_live_join_util; }
+    // ------------------------------------------------------------------------
+    void setLiveJoinKart(int util_ticks)     { m_live_join_util = util_ticks; }
+    // ------------------------------------------------------------------------
+    /** Return the confirmed finish ticks (sent by the server)
+     *  indicating that this kart has really finished the race. */
+    virtual int getNetworkConfirmedFinishTicks() const = 0;
 };   // AbstractKart
 
 
 #endif
 
 /* EOF */
-

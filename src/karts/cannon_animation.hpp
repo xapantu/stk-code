@@ -22,18 +22,44 @@
 #include "karts/abstract_kart_animation.hpp"
 #include "utils/vec3.hpp"
 
+#include "LinearMath/btQuaternion.h"
+
+class AbstractKart;
+class AnimationBase;
+class CheckCannon;
+class Flyable;
+class Ipo;
+
 /** This animation shoots the kart to a specified point on the track.
  *
  * \ingroup karts
  */
 
-class AbstractKart;
-class AnimationBase;
-class Ipo;
-
 class CannonAnimation: public AbstractKartAnimation
 {
 protected:
+friend class KartRewinder;
+friend class Flyable;
+    // ------------------------------------------------------------------------
+    CannonAnimation(AbstractKart* kart, BareNetworkString* buffer);
+    // ------------------------------------------------------------------------
+    CannonAnimation(Flyable* flyable, BareNetworkString* buffer);
+    // ------------------------------------------------------------------------
+    void init(Ipo *ipo, const Vec3 &start_left, const Vec3 &start_right,
+              const Vec3 &end_left, const Vec3 &end_right, float skid_rot);
+    // ------------------------------------------------------------------------
+    void initDeltaHeading(float skidding_rotation);
+    // ------------------------------------------------------------------------
+    void restoreData(BareNetworkString* buffer);
+
+private:
+    /** The \ref CheckCannon which created this animation. */
+    CheckCannon*   m_check_cannon;
+
+    /* Skidding rotation by the time the kart enter this cannon,
+     * will be restored during rewind, */
+    float m_skid_rot;
+
     /** This is the difference between the position of the kart when the
      *  cannon line is crossed and the curve interpolation at t=0. This
      *  is added to each interpolated curve value to give the final
@@ -43,14 +69,41 @@ protected:
     /** Stores the curve interpolation for the cannon. */
     AnimationBase *m_curve;
 
-    /** This stores the original (unmodified) interpolated curve value. THis
-     *  is used to determine the orientation of the kart. */
-    Vec3           m_previous_orig_xyz;
+    /** If this animation is used for a flyable (e.g. basket ball) instead
+     *  of a kart, m_flyable is defined and m_kart is NULL. */
+    Flyable *m_flyable;
+
+    /** Length of the (adjusted, i.e. taking kart width into account)
+     *  start line. */
+    float m_start_line_length;
+
+    /** Length of the (adjusted, i.e. taking kart width into account) 
+     *  end line. */
+    float m_end_line_length;
+
+    /** Stores the position of the kart relative to the line width
+     *  at the current location. */
+    float m_fraction_of_line;
+
+    /** The initial heading of the kart when crossing the line. This is
+     *  used to smoothly orient the kart towards the normal of the curve. */
+    btQuaternion m_delta_heading;
+
+    /** Current rotation of the object, saved for rewinding usage if needed,
+     *  it will be compressed by MiniGLM. */
+    uint32_t m_current_rotation;
 
 public:
-             CannonAnimation(AbstractKart *kart, Ipo *ipo);
-    virtual ~CannonAnimation();
-    virtual void  update(float dt);
-
+             CannonAnimation(AbstractKart *kart, CheckCannon* cc,
+                             float skid_rot);
+             CannonAnimation(Flyable *flyable, CheckCannon* cc);
+             virtual ~CannonAnimation();
+    virtual void  update(int ticks);
+    // ------------------------------------------------------------------------
+    virtual KartAnimationType getAnimationType() const   { return KAT_CANNON; }
+    // ------------------------------------------------------------------------
+    virtual void saveState(BareNetworkString* buffer);
+    // ------------------------------------------------------------------------
+    virtual void restoreState(BareNetworkString* buffer);
 };   // CannonAnimation
 #endif

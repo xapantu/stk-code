@@ -34,13 +34,13 @@ namespace irr
     namespace video { class IVideoDriver; class ITexture;        }
 }
 
+#include <functional>
 #include <string>
 
 #include "utils/constants.hpp"
 #include "utils/ptr_vector.hpp"
 
-#include "guiengine/ft_environment.hpp"
-#include "guiengine/glyph_page_creator.hpp"
+#include "irrString.h"
 
 /**
  * \ingroup guiengine
@@ -57,21 +57,21 @@ namespace GUIEngine
 
     /** \brief Returns the widget currently focused by given player, or NULL if none.
       * \note Do NOT use irrLicht's GUI focus facilities; it's too limited for our
-      *       needs, so we use ours. (i.e. always call these functions are never those
+      *       needs, so we use ours. (i.e. always call these functions, never those
       *       in IGUIEnvironment)
       */
     Widget* getFocusForPlayer(const unsigned int playerID);
 
     /** \brief Focuses nothing for given player (removes any selection for this player).
       * \note Do NOT use irrLicht's GUI focus facilities; it's too limited for our
-      *       needs, so we use ours. (i.e. always call these functions are never those
+      *       needs, so we use ours. (i.e. always call these functions, never those
       *       in IGUIEnvironment)
       */
     void focusNothingForPlayer(const unsigned int playerID);
 
     /** \brief Returns whether given the widget is currently focused by given player.
       * \note  Do NOT use irrLicht's GUI focus facilities; it's too limited for our
-      *        needs, so we use ours. (i.e. always call these functions are never those
+      *        needs, so we use ours. (i.e. always call these functions, never those
       *        in IGUIEnvironment)
       */
     bool isFocusedForPlayer(const Widget*w, const unsigned int playerID);
@@ -84,8 +84,6 @@ namespace GUIEngine
     {
         extern irr::gui::IGUIEnvironment* g_env;
         extern Skin* g_skin;
-        extern FTEnvironment*  g_ft_env;
-        extern GlyphPageCreator*  g_gp_creator;
         extern irr::gui::ScalableFont* g_small_font;
         extern irr::gui::ScalableFont* g_font;
         extern irr::gui::ScalableFont* g_outline_font;
@@ -109,13 +107,16 @@ namespace GUIEngine
       * \param device        An initialized irrlicht device object
       * \param driver        An initialized irrlicht driver object
       * \param state_manager An instance of a class derived from abstract base AbstractStateManager
+      * \param loading if it's (re-)loading the GUIEngine
       */
-    void init(irr::IrrlichtDevice* device, irr::video::IVideoDriver* driver, AbstractStateManager* state_manager);
+    void init(irr::IrrlichtDevice* device, irr::video::IVideoDriver* driver,
+              AbstractStateManager* state_manager, bool loading = true);
 
     void cleanUp();
 
     void deallocate();
 
+    void resetGlobalVariables();
 
     /**
       * \return the irrlicht device object
@@ -177,18 +178,7 @@ namespace GUIEngine
       */
     inline Skin*                      getSkin()          { return Private::g_skin;           }
 
-    /**
-      * \pre GUIEngine::init must have been called first
-      * \return       the freetype and library with face
-      */
-    inline FTEnvironment*             getFreetype()      { return Private::g_ft_env;         }
-
-    /**
-      * \pre GUIEngine::init must have been called first
-      * \return       the glyph page creator, useful to create a glyph page from individual char
-      */
-    inline GlyphPageCreator*          getGlyphPageCreator() { return Private::g_gp_creator;  }
-
+    inline void                       setSkin(Skin* skin) { Private::g_skin = skin;          }
     Screen*                           getScreenNamed(const char* name);
 
     /** \return the height of the title font in pixels */
@@ -211,17 +201,17 @@ namespace GUIEngine
       * \param message  the message to display
       * \param time     the time to display the message, in seconds
       */
-    void showMessage(const wchar_t* message, const float time=5.0f);
+    void showMessage(const irr::core::stringw& message, const float time=5.0f);
 
     /** \brief Add a screen to the list of screens known by the gui engine */
     void  addScreenToList(Screen* screen);
     /** \brief Remove a screen from the list of screens known by the gui engine */
-    void  removeScreen(const char* name);
+    void  removeScreen(Screen* screen);
 
     /** \brief Low-level mean to change current screen.
       * \note Do not use directly. Use a state manager instead to get higher-level functionnality.
       */
-    void switchToScreen(const char* );
+    void switchToScreen(Screen* screen);
 
     /** \brief erases the currently displayed screen, removing all added irrLicht widgets
       * \note Do not use directly. Use a state manager instead to get higher-level functionnality.
@@ -239,10 +229,12 @@ namespace GUIEngine
     /**
       * \brief called on every frame to trigger the rendering of the GUI
       */
-    void render(float dt);
+    void render(float dt, bool is_loading = false);
+
+    void clearLoadingTips();
 
     /** \brief renders a "loading" screen */
-    void renderLoading(bool clearIcons = true);
+    void renderLoading(bool clearIcons = true, bool launching = false, bool update_tips = true);
 
     /** \brief to spice up a bit the loading icon : add icons to the loading screen */
     void addLoadingIcon(irr::video::ITexture* icon);
@@ -266,10 +258,9 @@ namespace GUIEngine
     void reloadSkin();
 
     /**
-      * \brief call when translation in user config was updated for freetype rendering STK
+      * \brief Add gui-related function before rendering GUI (from other thread)
       */
-    void cleanHollowCopyFont();
-    void reloadHollowCopyFont(irr::gui::ScalableFont*);
+    void addGUIFunctionBeforeRendering(std::function<void()> func);
 }
 
 #endif

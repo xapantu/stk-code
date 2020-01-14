@@ -28,6 +28,7 @@
 #include <irrString.h>
 
 #include <cstddef>  // NULL
+#include <memory>
 
 class AchievementsStatus;
 
@@ -82,7 +83,6 @@ public:
     // ------------------------------------------------------------------------
     static void destroy()
     {
-        assert(m_player_manager);
         delete m_player_manager;
         m_player_manager = NULL;
     }   // destroy
@@ -98,7 +98,7 @@ public:
     const PlayerProfile *getPlayerById(unsigned int id);
     void enforceCurrentPlayer();
     unsigned int getNumNonGuestPlayers() const;
-    static void setUserDetails(Online::HTTPRequest *request,
+    static void setUserDetails(std::shared_ptr<Online::HTTPRequest> request,
                                const std::string &action,
                                const std::string &php_name = "");
     static unsigned int getCurrentOnlineId();
@@ -106,13 +106,12 @@ public:
     static Online::OnlineProfile* getCurrentOnlineProfile();
 
     static PlayerProfile::OnlineState getCurrentOnlineState();
-    static const irr::core::stringw& getCurrentOnlineUserName();
     static void requestOnlinePoll();
     static void resumeSavedSession();
     static void onSTKQuit();
     static void requestSignOut();
-    static Online::XMLRequest *requestSignIn(const irr::core::stringw &username,
-                                             const irr::core::stringw &password);
+    static void requestSignIn(const irr::core::stringw &username,
+                              const irr::core::stringw &password);
 
     // ------------------------------------------------------------------------
     /** Returns the current player. */
@@ -141,30 +140,61 @@ public:
     {
         return PlayerManager::getCurrentPlayer()->getAchievementsStatus();
     }   // getCurrentAchievementsStatus
-    // ------------------------------------------------------------------------
-    /** A handy shortcut to increase points for an achievement key of the
-     *  current player.
-     *  \param achievement_id The achievement id.
-     *  \param key The key of the current value to increase.
-     *  \param increase How much to increase the current value.
-     *  \param goal_key Optional: The goal key to compare the current value
-     *         with. If not set, defaults to key.
-     */
-    static void increaseAchievement(unsigned int achievement_id,
-                                    const std::string &key,
-                                    int increase = 1, 
-                                    const std::string &goal_key="")
-    {
-        Achievement *a = getCurrentAchievementsStatus()
-                       ->getAchievement(achievement_id);
-        if (!a)
-        {
-            Log::fatal("PlayerManager", "Achievement '%d' not found.",
-                        achievement_id);
-        }
-        a->increase(key, goal_key.empty() ? key : goal_key, increase);
 
+    // ------------------------------------------------------------------------
+    /** A handy shortcut to increase points for an achievement data of the
+     *  current player.
+     *  \param achievement_data_id The achievement data id
+     *  \param increase How much to increase the current value.
+     */
+    static void increaseAchievement(unsigned int achievement_data_id,
+                                    int increase = 1)
+    {
+        getCurrentAchievementsStatus()
+            ->increaseDataVar(achievement_data_id, increase);
     }   // increaseAchievement
+
+    // ------------------------------------------------------------------------
+    /** Reset an achievement data for current player.
+     *  \param achievement_data_id The achievement data id
+     */
+    static void resetAchievementData(unsigned int achievement_data_id)
+    {
+        getCurrentAchievementsStatus()
+            ->resetDataVar(achievement_data_id);
+    }   // resetAchievementData
+
+    // ------------------------------------------------------------------------
+    /** Reset achievements which have to be done in one race
+     *  \param restart - if the race has been restarted
+     */
+    static void onRaceEnd(bool restart)
+    {
+        getCurrentAchievementsStatus()->onRaceEnd(restart);
+    }   // onRaceEnd
+
+
+    // ----------------------------------------------------------------------------
+    /** Transmit an incrementation request of one of the track event counters
+     *  \param track_ident - the internal name of the track
+     *  \param event - the type of counter to increment */
+    static void trackEvent(std::string track_ident, AchievementsStatus::TrackData event)
+    {
+        getCurrentAchievementsStatus()->trackEvent(track_ident, event);
+    } // trackEvent
+
+    // ----------------------------------------------------------------------------
+    static void resetKartHits(int num_karts)
+    {
+        getCurrentAchievementsStatus()->resetKartHits(num_karts);
+    } // resetKartHits
+
+    // ----------------------------------------------------------------------------
+    static void addKartHit(int kart_id)
+    {
+        getCurrentAchievementsStatus()->addKartHit(kart_id);
+    } // addKartHit
+
     // ------------------------------------------------------------------------
 };   // PlayerManager
 #endif

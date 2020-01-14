@@ -28,6 +28,7 @@
 #include "tracks/track_manager.hpp"
 #include "tracks/track.hpp"
 #include "utils/string_utils.hpp"
+#include "utils/translation.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -270,7 +271,7 @@ void GrandPrixData::reload()
         throw std::runtime_error("Wrong root node name");
     }
 
-    if (!root->get("name", &m_name))
+    if (!root->getAndDecode("name", &m_name))
     {
          Log::error("GrandPrixData",
                     "Error while trying to read grandprix file '%s': "
@@ -329,7 +330,7 @@ void GrandPrixData::reload()
             throw std::runtime_error("Missing track id");
         }
 
-        if (number_of_laps < 1)
+        if (number_of_laps < 1 && !UserConfigParams::m_artist_debug_mode)
         {
             Log::error("GrandPrixData",
                        "Track '%s' in the Grand Prix file '%s' should be raced "
@@ -361,20 +362,20 @@ bool GrandPrixData::writeToFile()
 {
     try
     {
-        UTFWriter file(m_filename.c_str());
+        UTFWriter file(m_filename.c_str(), false);
         if (file.is_open())
         {
-            file << L"\n<supertuxkart_grand_prix name=\"" << m_name
-                 << L"\">\n\n";
+            file << "\n<supertuxkart_grand_prix name=\"" << StringUtils::xmlEncode(m_name)
+                 << "\">\n\n";
             for (unsigned int i = 0; i < m_tracks.size(); i++)
             {
                 file <<
-                    L"\t<track id=\"" << m_tracks[i] <<
-                    L"\" laps=\""     << m_laps[i] <<
-                    L"\" reverse=\""  << (m_reversed[i] ? L"true" : L"false")
-                                      <<  L"\" />\n";
+                    "\t<track id=\"" << m_tracks[i] <<
+                    "\" laps=\""     << m_laps[i] <<
+                    "\" reverse=\""  << (m_reversed[i] ? L"true" : L"false")
+                                      <<  "\" />\n";
             }
-            file << L"\n</supertuxkart_grand_prix>\n";
+            file << "\n</supertuxkart_grand_prix>\n";
 
             file.close();
 
@@ -499,9 +500,9 @@ bool GrandPrixData::isEditable() const
 unsigned int GrandPrixData::getNumberOfTracks(bool includeLocked) const
 {
     if (includeLocked)
-        return m_tracks.size();
+        return (unsigned int)m_tracks.size();
     else
-        return getTrackNames(false).size();
+        return (unsigned int)getTrackNames(false).size();
 }   // getNumberOfTracks
 
 // ----------------------------------------------------------------------------
@@ -607,6 +608,20 @@ void GrandPrixData::remove(const unsigned int track)
     m_tracks.erase(m_tracks.begin() + track);
     m_laps.erase(m_laps.begin() + track);
     m_reversed.erase(m_reversed.begin() + track);
+}
+
+// ----------------------------------------------------------------------------
+irr::core::stringw GrandPrixData::getRandomGPName()
+{
+    return _("Random Grand Prix");
+}
+
+// ----------------------------------------------------------------------------
+/** @return the (potentially translated) user-visible name of the Grand
+ *  Prix, m_editable is true if it's custom GP name. */
+irr::core::stringw GrandPrixData::getName() const
+{
+    return m_editable ? m_name.c_str() : _(m_name.c_str());
 }
 
 /* EOF */

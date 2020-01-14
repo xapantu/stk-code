@@ -1,10 +1,11 @@
 bld*/
 build*/
-cmake_build/
 cmake_build*/
-dependencies/
+dependencies*/
 CMakeFiles/
 stk-editor/
+.vscode/
+tags.*
 
 .config/
 supertuxkart-64
@@ -53,7 +54,28 @@ history.dat
 README.dependencies
 xx
 
-android/android-ndk-r10e
-android/jni/jpeglib
-android/jni/freetype
-android/jni/ifaddrs
+android/android-ndk*
+android/android-sdk*
+android/assets
+android/bin
+android/build
+android/libs
+android/obj
+android/res
+android/.gradle
+android-*
+*.apk
+*.keystore
+
+lib/curl
+lib/freetype
+lib/ifaddrs
+lib/libogg
+lib/libvorbis
+lib/openal
+lib/openssl
+lib/fribidi
+lib/harfbuzz
+
+.DS_Store
+supertuxkart/

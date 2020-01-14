@@ -22,7 +22,7 @@
 #include "challenges/unlock_manager.hpp"
 #include "config/player_manager.hpp"
 #include "config/saved_grand_prix.hpp"
-#include "graphics/irr_driver.hpp"
+#include "graphics/stk_tex_manager.hpp"
 #include "guiengine/engine.hpp"
 #include "guiengine/screen.hpp"
 #include "guiengine/widgets/icon_button_widget.hpp"
@@ -35,9 +35,9 @@
 #include "race/grand_prix_data.hpp"
 #include "race/race_manager.hpp"
 #include "states_screens/state_manager.hpp"
-#include "states_screens/tracks_screen.hpp"
 #include "tracks/track.hpp"
 #include "tracks/track_manager.hpp"
+#include "utils/string_utils.hpp"
 #include "utils/translation.hpp"
 
 #include <IGUIEnvironment.h>
@@ -47,8 +47,6 @@
 
 using irr::gui::IGUIStaticText;
 using namespace GUIEngine;
-
-DEFINE_SCREEN_SINGLETON( GPInfoScreen );
 
 /** Constructor, initialised some variables which might be used before
  *  loadedFromFile is called.
@@ -137,7 +135,7 @@ void GPInfoScreen::beforeAddingWidget()
             race_manager->getMinorMode(),
             race_manager->getNumLocalPlayers());
             
-        int tracks = m_gp.getTrackNames().size();
+        int tracks = (int)m_gp.getTrackNames().size();
         bool continue_visible = saved_gp && saved_gp->getNextTrack() > 0 &&
                                             saved_gp->getNextTrack() < tracks;
 
@@ -145,6 +143,7 @@ void GPInfoScreen::beforeAddingWidget()
         int id_continue_button = ribbonButtons->findItemNamed("continue");
         ribbonButtons->setItemVisible(id_continue_button, continue_visible);
         ribbonButtons->setLabel(id_continue_button, _("Continue saved GP"));
+        getWidget<IconButtonWidget>("continue")->setImage("gui/icons/green_check.png");
     }
     else
     {
@@ -152,6 +151,7 @@ void GPInfoScreen::beforeAddingWidget()
         int id_continue_button = ribbonButtons->findItemNamed("continue");
         ribbonButtons->setItemVisible(id_continue_button, true);
         ribbonButtons->setLabel(id_continue_button, _("Reload"));
+        getWidget<IconButtonWidget>("continue")->setImage("gui/icons/restart.png");
     }
 }
 
@@ -177,7 +177,7 @@ void GPInfoScreen::init()
     {
         RibbonWidget *rb = getWidget<RibbonWidget>("buttons");
         rb->setLabel(1,_(L"Reload") );
-        std::string restart = file_manager->getAsset(FileManager::GUI, "restart.png");
+        std::string restart = file_manager->getAsset(FileManager::GUI_ICON, "restart.png");
 
         // We have to recreate the group spinner, but a new group might have
         // been added or deleted since the last time this screen was shown.
@@ -216,11 +216,11 @@ void GPInfoScreen::init()
         m_gp.createRandomGP(m_num_tracks_spinner->getValue(),
                             m_group_name, getReverse(), true);
 
-        getWidget<LabelWidget>("name")->setText(translations->fribidize(m_gp.getName()), false);
+        getWidget<LabelWidget>("name")->setText(m_gp.getName(), false);
     }
     else
     {
-        getWidget<LabelWidget>("name")->setText(translations->fribidize(m_gp.getName()), false);
+        getWidget<LabelWidget>("name")->setText(m_gp.getName(), false);
         m_gp.checkConsistency();
     }
 
@@ -229,25 +229,26 @@ void GPInfoScreen::init()
     const bool has_AI = race_manager->hasAI();
     m_ai_kart_spinner->setVisible(has_AI);
     getWidget<LabelWidget>("ai-text")->setVisible(has_AI);
+
     if (has_AI)
     {
-        m_ai_kart_spinner->setActive(true);
+        const int local_players = race_manager->getNumLocalPlayers();
+        int min_ai = 0;
+        int num_ai = int(UserConfigParams::m_num_karts_per_gamemode
+            [RaceManager::MAJOR_MODE_GRAND_PRIX]) - local_players;
 
-        // Avoid negative numbers (which can happen if e.g. the number of karts
-        // in a previous race was lower than the number of players now.
-        int num_ai = UserConfigParams::m_num_karts - race_manager->getNumLocalPlayers();
-        if (num_ai < 0) num_ai = 0;
-        m_ai_kart_spinner->setValue(num_ai);
-        race_manager->setNumKarts(num_ai + race_manager->getNumLocalPlayers());
-        m_ai_kart_spinner->setMax(stk_config->m_max_karts - race_manager->getNumLocalPlayers());
         // A ftl reace needs at least three karts to make any sense
-        if(race_manager->getMinorMode()==RaceManager::MINOR_MODE_FOLLOW_LEADER)
+        if (race_manager->getMinorMode()==RaceManager::MINOR_MODE_FOLLOW_LEADER)
         {
-            m_ai_kart_spinner->setMin(3-race_manager->getNumLocalPlayers());
+            min_ai = std::max(0, 3 - local_players);
         }
-        else
-            m_ai_kart_spinner->setMin(0);
-
+        
+        num_ai = std::max(min_ai, num_ai);
+        
+        m_ai_kart_spinner->setActive(true);
+        m_ai_kart_spinner->setValue(num_ai);
+        m_ai_kart_spinner->setMax(stk_config->m_max_karts - local_players);
+        m_ai_kart_spinner->setMin(min_ai);
     }   // has_AI
 
     addTracks();
@@ -270,7 +271,7 @@ void GPInfoScreen::addTracks()
     {
         const Track *track = track_manager->getTrack(tracks[i]);
         std::string s = StringUtils::toString(i);
-        list->addItem(s, translations->fribidize(track->getName()));
+        list->addItem(s, track->getName());
     }
 }   // addTracks
 
@@ -283,12 +284,12 @@ void GPInfoScreen::addScreenshot()
 
     // Temporary icon, will replace it just after
     // (but it will be shown if the given icon is not found)
-    screenshot->m_properties[PROP_ICON] = "gui/main_help.png";
+    screenshot->m_properties[PROP_ICON] = "gui/icons/main_help.png";
 
     const Track *track = track_manager->getTrack(m_gp.getTrackId(0));
-    video::ITexture* image = irr_driver->getTexture(track->getScreenshotFile(),
-                                    "While loading screenshot for track '%s':",
-                                           track->getFilename()            );
+    video::ITexture* image = STKTexManager::getInstance()
+        ->getTexture(track->getScreenshotFile(),
+        "While loading screenshot for track '%s':", track->getFilename());
     if (image != NULL)
         screenshot->setImage(image);
 }   // addScreenShot
@@ -313,11 +314,24 @@ void GPInfoScreen::eventCallback(Widget *, const std::string &name,
                                 /*new tracks*/ true );
             addTracks();
         }
-        else if (button == "start" || button == "continue")
+        else if (button == "start")
         {
-            // Normal GP: start/continue a saved GP
+            // Normal GP: start GP
+            const int local_players = race_manager->getNumLocalPlayers();
+            const bool has_AI = race_manager->hasAI();
+            const int num_ai = has_AI ? m_ai_kart_spinner->getValue() : 0;
+            
+            race_manager->setNumKarts(local_players + num_ai);
+            UserConfigParams::m_num_karts_per_gamemode[RaceManager::MAJOR_MODE_GRAND_PRIX] = local_players + num_ai;
+            
             m_gp.changeReverse(getReverse());
-            race_manager->startGP(m_gp, false, (button == "continue"));
+            race_manager->startGP(m_gp, false, false);
+        }
+        else if (button == "continue")
+        {
+            // Normal GP: continue a saved GP
+            m_gp.changeReverse(getReverse());
+            race_manager->startGP(m_gp, false, true);
         }
     }   // name=="buttons"
     else if (name=="group-spinner")
@@ -345,7 +359,7 @@ void GPInfoScreen::eventCallback(Widget *, const std::string &name,
     {
         const int num_ai = m_ai_kart_spinner->getValue();
         race_manager->setNumKarts( race_manager->getNumLocalPlayers() + num_ai );
-        UserConfigParams::m_num_karts = race_manager->getNumLocalPlayers() + num_ai;
+        UserConfigParams::m_num_karts_per_gamemode[RaceManager::MAJOR_MODE_GRAND_PRIX] = race_manager->getNumLocalPlayers() + num_ai;
     }
     else if(name=="back")
     {

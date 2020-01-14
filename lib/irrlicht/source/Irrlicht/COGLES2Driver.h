@@ -10,31 +10,24 @@
 
 #include "IrrCompileConfig.h"
 
-#if defined(_IRR_WINDOWS_API_)
-// include windows headers for HWND
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#elif defined(_IRR_COMPILE_WITH_OSX_DEVICE_)
+#if defined(_IRR_COMPILE_WITH_OSX_DEVICE_)
 #include "MacOSX/CIrrDeviceMacOSX.h"
-#elif defined(_IRR_COMPILE_WITH_IPHONE_DEVICE_)
-#include "iOS/CIrrDeviceiOS.h"
+#elif defined(_IRR_COMPILE_WITH_IOS_DEVICE_)
+#include "CIrrDeviceiOS.h"
+#elif _IRR_COMPILE_WITH_WAYLAND_DEVICE_
+#include "CIrrDeviceWayland.h"
 #endif
 
 #include "SIrrCreationParameters.h"
 
 #ifdef _IRR_COMPILE_WITH_OGLES2_
 
-#if defined(_IRR_COMPILE_WITH_IPHONE_DEVICE_)
+#if defined(_IRR_COMPILE_WITH_IOS_DEVICE_)
 #include <OpenGLES/ES2/gl.h>
 #include <OpenGLES/ES2/glext.h>
 #elif defined(_IRR_COMPILE_WITH_ANDROID_DEVICE_)
-#include <EGL/egl.h>
 #include <GLES2/gl2.h>
-#include "android_native_app_glue.h"
-#else
-#include <EGL/eglplatform.h>
+#include "stk_android_native_app_glue.h"
 #endif
 
 #include "CNullDriver.h"
@@ -43,10 +36,11 @@
 #include "fast_atof.h"
 
 #ifdef _MSC_VER
-#pragma comment(lib, "libEGL.lib")
 #pragma comment(lib, "libGLESv2.lib")
 #endif
 #include "COGLES2ExtensionHandler.h"
+
+class ContextManagerEGL;
 
 namespace irr
 {
@@ -58,17 +52,22 @@ namespace video
 	class COGLES2Renderer2D;
 	class COGLES2NormalMapRenderer;
 	class COGLES2ParallaxMapRenderer;
-
+	class IContextManager;
 	class COGLES2Driver : public CNullDriver, public IMaterialRendererServices, public COGLES2ExtensionHandler
 	{
 		friend class COGLES2CallBridge;
 		friend class COGLES2Texture;
 
 	public:
-#if defined(_IRR_COMPILE_WITH_X11_DEVICE_) || defined(_IRR_COMPILE_WITH_SDL_DEVICE_) || defined(_IRR_WINDOWS_API_) || defined(_IRR_COMPILE_WITH_CONSOLE_DEVICE_)
+#if defined(_IRR_COMPILE_WITH_X11_DEVICE_) || defined(_IRR_COMPILE_WITH_SDL_DEVICE_) || defined(_IRR_WINDOWS_API_) || defined(_IRR_COMPILE_WITH_ANDROID_DEVICE_)
 		COGLES2Driver(const SIrrlichtCreationParameters& params,
 					const SExposedVideoData& data,
-					io::IFileSystem* io);
+					io::IFileSystem* io, IrrlichtDevice* device);
+#endif
+
+#ifdef _IRR_COMPILE_WITH_WAYLAND_DEVICE_
+		COGLES2Driver(const SIrrlichtCreationParameters& params, 
+					io::IFileSystem* io, CIrrDeviceWayland* device);
 #endif
 
 #ifdef _IRR_COMPILE_WITH_OSX_DEVICE_
@@ -76,10 +75,10 @@ namespace video
 					io::IFileSystem* io, CIrrDeviceMacOSX *device);
 #endif
 
-#if defined(_IRR_COMPILE_WITH_IPHONE_DEVICE_)
-		COGLES2Driver(const SIrrlichtCreationParameters& params,
-					const SExposedVideoData& data,
-					io::IFileSystem* io, CIrrDeviceIPhone* device);
+#if defined(_IRR_COMPILE_WITH_IOS_DEVICE_)
+		COGLES2Driver(const SIrrlichtCreationParameters& params, io::IFileSystem* io,
+					IrrlichtDevice* device, u32 default_fb);
+		virtual u32 getDefaultFramebuffer() const { return m_default_fb; }
 #endif
 
 		//! destructor
@@ -127,6 +126,10 @@ namespace video
 		virtual void drawVertexPrimitiveList(const void* vertices, u32 vertexCount,
 				const void* indexList, u32 primitiveCount,
 				E_VERTEX_TYPE vType, scene::E_PRIMITIVE_TYPE pType, E_INDEX_TYPE iType);
+
+		virtual void draw2DVertexPrimitiveList(const void* vertices, u32 vertexCount,
+				const void* indexList, u32 primitiveCount,
+				E_VERTEX_TYPE vType=EVT_STANDARD, scene::E_PRIMITIVE_TYPE pType=scene::EPT_TRIANGLES, E_INDEX_TYPE iType=EIT_16BIT);
 
 		void drawVertexPrimitiveList2d3d(const void* vertices, u32 vertexCount,
 				const void* indexList, u32 primitiveCount,
@@ -247,7 +250,7 @@ namespace video
 
 		//! Can be called by an IMaterialRenderer to make its work easier.
 		virtual void setBasicRenderStates(const SMaterial& material, const SMaterial& lastmaterial, bool resetAllRenderstates);
-        
+
         //! Compare in SMaterial doesn't check texture parameters, so we should call this on each OnRender call.
         virtual void setTextureRenderStates(const SMaterial& material, bool resetAllRenderstates);
 
@@ -317,7 +320,8 @@ namespace video
 		virtual u32 getMaximalPrimitiveCount() const;
 
 		virtual ITexture* addRenderTargetTexture(const core::dimension2d<u32>& size,
-				const io::path& name, const ECOLOR_FORMAT format = ECF_UNKNOWN);
+				const io::path& name, const ECOLOR_FORMAT format = ECF_UNKNOWN,
+				const bool useStencil = false);
 
 		virtual bool setRenderTarget(video::ITexture* texture, bool clearBackBuffer,
 				bool clearZBuffer, SColor color);
@@ -336,11 +340,8 @@ namespace video
 		//! Returns an image created from the last rendered frame.
 		virtual IImage* createScreenShot(video::ECOLOR_FORMAT format=video::ECF_UNKNOWN, video::E_RENDER_TARGET target=video::ERT_FRAME_BUFFER);
 
-		//! checks if an OpenGL error has happend and prints it
+		//! checks if an OpenGL error has happened and prints it
 		bool testGLError();
-
-		//! checks if an OGLES1 error has happend and prints it
-		bool testEGLError();
 
 		//! Set/unset a clipping plane.
 		virtual bool setClipPlane(u32 index, const core::plane3df& plane, bool enable = false);
@@ -380,6 +381,10 @@ namespace video
 
 		//! Get bridge calls.
         COGLES2CallBridge* getBridgeCalls() const;
+
+#if defined(_IRR_COMPILE_WITH_EGL_)
+		ContextManagerEGL* getEGLContext() {return EglContext;}
+#endif
 
 	private:
 		// Bridge calls.
@@ -463,26 +468,24 @@ namespace video
 		SColorf AmbientLight;
 
 		COGLES2Renderer2D* MaterialRenderer2D;
-
+		
+#if defined(_IRR_COMPILE_WITH_EGL_)
+		ContextManagerEGL* EglContext;
+		bool EglContextExternal;
+#endif
+#if defined(_IRR_COMPILE_WITH_IOS_DEVICE_)
+		u32 m_default_fb;
+#endif
 #ifdef _IRR_COMPILE_WITH_WINDOWS_DEVICE_
 		HDC HDc;
 #endif
-#if defined(_IRR_COMPILE_WITH_IPHONE_DEVICE_)
-		CIrrDeviceIPhone* Device;
-		GLuint ViewFramebuffer;
-		GLuint ViewRenderbuffer;
-		GLuint ViewDepthRenderbuffer;
-#else
-		NativeWindowType EglWindow;
-		void* EglDisplay;
-		void* EglSurface;
-		void* EglContext;
-#endif
+
+		SIrrlichtCreationParameters Params;
 	};
 
     //! This bridge between Irlicht pseudo OpenGL calls
     //! and true OpenGL calls.
-    
+
     class COGLES2CallBridge
     {
     public:
@@ -499,7 +502,7 @@ namespace video
 		void setCullFaceFunc(GLenum mode);
 
 		void setCullFace(bool enable);
-        
+
         // Depth calls.
 
 		void setDepthFunc(GLenum mode);
@@ -511,17 +514,17 @@ namespace video
 		// Program calls.
 
 		void setProgram(GLuint program);
-        
+
         // Texture calls.
-        
+
         void setActiveTexture(GLenum texture);
-        
+
         void setTexture(u32 stage);
 
 		// Viewport calls.
 
 		void setViewport(const core::rect<s32>& viewport);
-        
+
     private:
         COGLES2Driver* Driver;
 
@@ -531,13 +534,13 @@ namespace video
 
 		GLenum CullFaceMode;
 		bool CullFace;
-        
+
 		GLenum DepthFunc;
         bool DepthMask;
         bool DepthTest;
 
 		GLuint Program;
-        
+
 		GLenum ActiveTexture;
 
         const ITexture* Texture[MATERIAL_MAX_TEXTURES];

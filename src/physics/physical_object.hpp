@@ -23,6 +23,8 @@
 
 #include "btBulletDynamicsCommon.h"
 
+#include "network/rewinder.hpp"
+#include "network/smooth_network_body.hpp"
 #include "physics/user_pointer.hpp"
 #include "utils/vec3.hpp"
 #include "utils/leak_check.hpp"
@@ -35,7 +37,8 @@ class XMLNode;
 /**
   * \ingroup physics
   */
-class PhysicalObject
+class PhysicalObject : public Rewinder,
+                       public SmoothNetworkBody
 {
 public:
     /** The supported collision shapes. */
@@ -51,10 +54,25 @@ public:
         std::string               m_id;
         /** Mass of the object. */
         float                     m_mass;
-        /** Radius of the object. */
+        /** Radius of the object, to overwrite the graphical dimension. */
         float                     m_radius;
+        /** Height of an object, to overwrite the graphical dimension. */
+        float                     m_height;
         /** Shape of the object. */
         PhysicalObject::BodyTypes m_body_type;
+        /** Restitution of the physical object. */
+        float                     m_restitution;
+        /** Friction for this object. */
+        float                     m_friction;
+        /** Bullet's linear factor. */
+        Vec3                      m_linear_factor;
+        /** Bullet angular factor. */
+        Vec3                      m_angular_factor;
+        /** Bullet's linear damping factor. */
+        float                     m_linear_damping;
+        /** Bullet's angular damping factor. */
+        float                     m_angular_damping;
+
         /** Trigger a reset in karts touching it? */
         bool                      m_crash_reset;
         /** Knock the kart around. */
@@ -122,6 +140,10 @@ private:
     /** This is the initial position of the object for the physics. */
     btTransform           m_init_pos;
 
+    /** Save current transform to avoid frequent lookup from 
+     * world transform. */
+    btTransform           m_current_transform;
+
     /** The mesh might not have the same center as bullet does. This
      *  offset is used to offset the location of the graphical mesh
      *  so that the graphics are aligned with the bullet collision shape. */
@@ -166,18 +188,28 @@ private:
     /** Non-null only if the shape is exact */
     TriangleMesh         *m_triangle_mesh;
 
+    /* Last transform and velocities recieved or saved for networking */
+    btTransform           m_last_transform;
+    Vec3                  m_last_lv;
+    Vec3                  m_last_av;
+
+    /* Used to determine if local state should be used, which is true
+     * when the object is not moving */
+    bool                  m_no_server_state;
+
 public:
                     PhysicalObject(bool is_dynamic, const Settings& settings,
                                    TrackObject* object);
 
-    static PhysicalObject* fromXML(bool is_dynamic, const XMLNode &node,
-                                   TrackObject* object);
+    static std::shared_ptr<PhysicalObject> fromXML
+        (bool is_dynamic, const XMLNode &node, TrackObject* object);
 
     virtual     ~PhysicalObject ();
     virtual void reset          ();
     virtual void handleExplosion(const Vec3& pos, bool directHit);
     void         update         (float dt);
-    void         init           ();
+    void         updateGraphics (float dt);
+    void         init           (const Settings &settings);
     void         move           (const Vec3& xyz, const core::vector3df& hpr);
     void         hit            (const Material *m, const Vec3 &normal);
     bool         isSoccerBall   () const;
@@ -187,12 +219,15 @@ public:
                  bool interpolate_normal) const;
 
     // ------------------------------------------------------------------------
+    bool isDynamic() const { return m_is_dynamic; }
+    // ------------------------------------------------------------------------
     /** Returns the ID of this physical object. */
     std::string getID()          { return m_id; }
     // ------------------------------------------------------------------------
+    btDefaultMotionState* getMotionState() const { return m_motion_state; }
     // ------------------------------------------------------------------------
     /** Returns the rigid body of this physical object. */
-    btRigidBody *getBody        ()          { return m_body; }
+    btRigidBody* getBody() const  { return m_body; }
     // ------------------------------------------------------------------------
     /** Returns true if this object should trigger a rescue in a kart that
      *  hits it. */
@@ -210,6 +245,8 @@ public:
     // ------------------------------------------------------------------------
     /** Add body to dynamic world */
     void addBody();
+    // ------------------------------------------------------------------------
+    float getRadius() const { return m_radius; }
     // ------------------------------------------------------------------------
     const std::string& getOnKartCollisionFunction() const { return m_on_kart_collision; }
     // ------------------------------------------------------------------------
@@ -245,6 +282,17 @@ public:
     /** @} */
     /** @} */
 
+    void addForRewind();
+    virtual void saveTransform();
+    virtual void computeError();
+    virtual BareNetworkString* saveState(std::vector<std::string>* ru);
+    virtual void undoEvent(BareNetworkString *buffer) {}
+    virtual void rewindToEvent(BareNetworkString *buffer) {}
+    virtual void restoreState(BareNetworkString *buffer, int count);
+    virtual void undoState(BareNetworkString *buffer) {}
+    virtual std::function<void()> getLocalStateRestoreFunction();
+    bool hasTriangleMesh() const { return m_triangle_mesh != NULL; }
+    void joinToMainTrack();
     LEAK_CHECK()
 };  // PhysicalObject
 

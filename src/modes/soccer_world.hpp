@@ -22,91 +22,287 @@
 #include "modes/world_with_rank.hpp"
 #include "states_screens/race_gui_base.hpp"
 #include "karts/abstract_kart.hpp"
+#include "tracks/check_goal.hpp"
+#include "tracks/check_manager.hpp"
 
 #include <IMesh.h>
 #include <string>
 
 class AbstractKart;
 class Controller;
+class NetworkString;
 class TrackObject;
+class TrackSector;
 
-/** An implementation of World, to provide the soccer game mode
+/** \brief An implementation of WorldWithRank, to provide the soccer game mode
  *  Notice: In soccer world, true goal means blue, false means red.
  * \ingroup modes
  */
 class SoccerWorld : public WorldWithRank
 {
 public:
-    class ScorerData
+    struct ScorerData
     {
-    public:
         /** World ID of kart which scores. */
-        unsigned int    m_id;
+        unsigned int  m_id;
         /** Whether this goal is socred correctly (identify for own goal). */
-        bool            m_correct_goal;
+        bool          m_correct_goal;
+        /** Time goal. */
+        float         m_time;
+        /** Kart ident which scores. */
+        std::string   m_kart;
+        /** Player name which scores. */
+        core::stringw m_player;
+        /** Country code of player. */
+        std::string m_country_code;
+        /** Handicap of player. */
+        HandicapLevel m_handicap_level;
     };   // ScorerData
 
-protected:
-    virtual AbstractKart *createKart(const std::string &kart_ident, int index,
-                             int local_player_id, int global_player_id,
-                             RaceManager::KartType type,
-                             PerPlayerDifficulty difficulty) OVERRIDE;
-
 private:
+    class KartDistanceMap
+    {
+    public:
+        /** World ID of kart. */
+        unsigned int    m_kart_id;
+        /** Distance to ball from kart */
+        float           m_distance;
+
+        bool operator < (const KartDistanceMap& r) const
+        {
+            return m_distance < r.m_distance;
+        }
+        KartDistanceMap(unsigned int kart_id = 0, float distance = 0.0f)
+        {
+            m_kart_id = kart_id;
+            m_distance = distance;
+        }
+    };   // KartDistanceMap
+
+    class BallGoalData
+    {
+    // These data are used by AI to determine ball aiming angle
+    private:
+        // Radius of the ball
+        float m_radius;
+
+        // Slope of the line from ball to the center point of goals
+        float m_red_goal_slope;
+        float m_blue_goal_slope;
+
+        // The transform only takes the ball heading into account,
+        // ie no hpr of ball which allowing setting aim point easier
+        btTransform m_trans;
+
+        // Two goals
+        CheckGoal* m_blue_check_goal;
+        CheckGoal* m_red_check_goal;
+
+        // Location to red/blue goal points from the ball heading point of view
+        Vec3 m_red_goal_1;
+        Vec3 m_red_goal_2;
+        Vec3 m_red_goal_3;
+        Vec3 m_blue_goal_1;
+        Vec3 m_blue_goal_2;
+        Vec3 m_blue_goal_3;
+    public:
+        void reset()
+        {
+            m_red_goal_1 = Vec3(0, 0, 0);
+            m_red_goal_2 = Vec3(0, 0, 0);
+            m_red_goal_3 = Vec3(0, 0, 0);
+            m_blue_goal_1 = Vec3(0, 0, 0);
+            m_blue_goal_2 = Vec3(0, 0, 0);
+            m_blue_goal_3 = Vec3(0, 0, 0);
+            m_red_goal_slope = 1.0f;
+            m_blue_goal_slope = 1.0f;
+            m_trans = btTransform(btQuaternion(0, 0, 0, 1), Vec3(0, 0, 0));
+        }   // reset
+
+        float getDiameter() const
+        {
+            return m_radius * 2;
+        }   // getDiameter
+
+        void init(float ball_radius)
+        {
+            m_radius = ball_radius;
+            assert(m_radius > 0.0f);
+
+            // Save two goals
+            unsigned int n = CheckManager::get()->getCheckStructureCount();
+            for (unsigned int i = 0; i < n; i++)
+            {
+                CheckGoal* goal = dynamic_cast<CheckGoal*>
+                    (CheckManager::get()->getCheckStructure(i));
+                if (goal)
+                {
+                    if (goal->getTeam())
+                        m_blue_check_goal = goal;
+                    else
+                        m_red_check_goal = goal;
+                }
+            }
+            if (m_blue_check_goal == NULL || m_red_check_goal == NULL)
+            {
+                Log::error("SoccerWorld", "Goal(s) is missing!");
+            }
+        }   // init
+
+        void updateBallAndGoal(const Vec3& ball_pos, float heading)
+        {
+            btQuaternion quat(Vec3(0, 1, 0), -heading);
+            m_trans = btTransform(btQuaternion(Vec3(0, 1, 0), heading),
+                ball_pos);
+
+            // Red goal
+            m_red_goal_1 = quatRotate(quat, m_red_check_goal
+                ->getPoint(CheckGoal::POINT_FIRST) - ball_pos);
+            m_red_goal_2 = quatRotate(quat, m_red_check_goal
+                ->getPoint(CheckGoal::POINT_CENTER) - ball_pos);
+            m_red_goal_3 = quatRotate(quat, m_red_check_goal
+                ->getPoint(CheckGoal::POINT_LAST) - ball_pos);
+
+            // Blue goal
+            m_blue_goal_1 = quatRotate(quat, m_blue_check_goal
+                ->getPoint(CheckGoal::POINT_FIRST) - ball_pos);
+            m_blue_goal_2 = quatRotate(quat, m_blue_check_goal
+                ->getPoint(CheckGoal::POINT_CENTER) - ball_pos);
+            m_blue_goal_3 = quatRotate(quat, m_blue_check_goal
+                ->getPoint(CheckGoal::POINT_LAST) - ball_pos);
+
+            // Update the slope:
+            // Use y = mx + c as an equation from goal center to ball
+            // As the line always intercept in (0,0) which is the ball location,
+            // so y(z)/x is the slope , it is used for determine aiming position
+            // of ball later
+            m_red_goal_slope = m_red_goal_2.z() / m_red_goal_2.x();
+            m_blue_goal_slope = m_blue_goal_2.z() / m_blue_goal_2.x();
+        }   // updateBallAndGoal
+
+        bool isApproachingGoal(KartTeam team) const
+        {
+            // If the ball lies between the first and last pos, and faces
+            // in front of either of them, (inside angular size of goal)
+            // than it's likely to goal
+            if (team == KART_TEAM_BLUE)
+            {
+                if ((m_blue_goal_1.z() > 0.0f || m_blue_goal_3.z() > 0.0f) &&
+                    ((m_blue_goal_1.x() < 0.0f && m_blue_goal_3.x() > 0.0f) ||
+                    (m_blue_goal_3.x() < 0.0f && m_blue_goal_1.x() > 0.0f)))
+                    return true;
+            }
+            else
+            {
+                if ((m_red_goal_1.z() > 0.0f || m_red_goal_3.z() > 0.0f) &&
+                    ((m_red_goal_1.x() < 0.0f && m_red_goal_3.x() > 0.0f) ||
+                    (m_red_goal_3.x() < 0.0f && m_red_goal_1.x() > 0.0f)))
+                    return true;
+            }
+            return false;
+        }   // isApproachingGoal
+
+        Vec3 getAimPosition(KartTeam team, bool reverse) const
+        {
+            // If it's likely to goal already, aim the ball straight behind
+            // should do the job
+            if (isApproachingGoal(team))
+                return m_trans(Vec3(0, 0, reverse ? m_radius*2 : -m_radius*2));
+
+            // Otherwise do the below:
+            // This is done by using Pythagorean Theorem and solving the
+            // equation from ball to goal center (y = (m_***_goal_slope) x)
+
+            // We aim behind the ball from the center of the ball to its
+            // diameter, so 2*m_radius = sqrt (x2 + y2),
+            // which is next x = sqrt (2*m_radius - y2)
+            // And than we have x = y / m(m_***_goal_slope)
+            // After put that in the slope equation, we have
+            // y = sqrt(2*m_radius*m2 / (1+m2))
+            float x = 0.0f;
+            float y = 0.0f;
+            if (team == KART_TEAM_BLUE)
+            {
+                y = sqrt((m_blue_goal_slope * m_blue_goal_slope * m_radius*2) /
+                    (1 + (m_blue_goal_slope * m_blue_goal_slope)));
+                if (m_blue_goal_2.x() == 0.0f ||
+                    (m_blue_goal_2.x() > 0.0f && m_blue_goal_2.z() > 0.0f) ||
+                    (m_blue_goal_2.x() < 0.0f && m_blue_goal_2.z() > 0.0f))
+                {
+                    // Determine when y should be negative
+                    y = -y;
+                }
+                x = y / m_blue_goal_slope;
+            }
+            else
+            {
+                y = sqrt((m_red_goal_slope * m_red_goal_slope * m_radius*2) /
+                    (1 + (m_red_goal_slope * m_red_goal_slope)));
+                if (m_red_goal_2.x() == 0.0f ||
+                    (m_red_goal_2.x() > 0.0f && m_red_goal_2.z() > 0.0f) ||
+                    (m_red_goal_2.x() < 0.0f && m_red_goal_2.z() > 0.0f))
+                {
+                    y = -y;
+                }
+                x = y / m_red_goal_slope;
+            }
+            assert (!std::isnan(x));
+            assert (!std::isnan(y));
+            // Return the world coordinates
+            return (reverse ? m_trans(Vec3(-x, 0, -y)) :
+                m_trans(Vec3(x, 0, y)));
+        }   // getAimPosition
+        void resetCheckGoal(const Track* t)
+        {
+            m_red_check_goal->reset(*t);
+            m_blue_check_goal->reset(*t);
+        }
+    };   // BallGoalData
+
+    std::vector<KartDistanceMap> m_red_kdm;
+    std::vector<KartDistanceMap> m_blue_kdm;
+    BallGoalData m_bgd;
+
     /** Keep a pointer to the track object of soccer ball */
     TrackObject* m_ball;
+    btRigidBody* m_ball_body;
 
     /** Number of goals needed to win */
     int m_goal_target;
     bool m_count_down_reached_zero;
 
-    /** Whether or not goals can be scored (they are disabled when a point is scored
-    and re-enabled when the next game can be played)*/
-    bool m_can_score_points;
     SFXBase *m_goal_sound;
 
-    /** Timer for displaying goal text*/
-    float m_goal_timer;
-    float m_ball_invalid_timer;
+    /** Counts ticks when the ball is off track, so a reset can be
+     *  triggered if the ball is off for more than 2 seconds. */
+    int m_ball_invalid_timer;
     int m_ball_hitter;
 
     /** Goals data of each team scored */
-    int m_red_goal;
-    int m_blue_goal;
     std::vector<ScorerData> m_red_scorers;
-    std::vector<float> m_red_score_times;
     std::vector<ScorerData> m_blue_scorers;
-    std::vector<float> m_blue_score_times;
-
-    std::map<int, SoccerTeam> m_kart_team_map;
-    std::map<int, unsigned int> m_kart_position_map;
 
     /** Data generated from navmesh */
-    std::vector<int> m_kart_on_node;
-    int m_ball_on_node;
-    Vec3 m_ball_position;
-    int m_red_goal_node;
-    int m_blue_goal_node;
+    TrackSector* m_ball_track_sector;
 
-    int m_red_defender;
-    int m_blue_defender;
+    float m_ball_heading;
 
-    /** Set the team for the karts */
-    void initKartList();
-    /** Function to init the locations of two goals on the polygon map */
-    void initGoalNodes();
-    /** Function to update the locations of all karts on the polygon map */
-    void updateKartNodes();
+    std::vector<btTransform> m_goal_transforms;
     /** Function to update the location the ball on the polygon map */
-    void updateBallPosition(float dt);
-    /** Clean up */
-    void resetAllNodes();
-    /** Reset the ball to original starting position. */
-    void resetBall();
-    /** Function to update the AI which is the closest to its goal to defend. */
-    void updateDefenders();
+    void updateBallPosition(int ticks);
+    /** Function to update data for AI usage. */
+    void updateAIData();
     /** Get number of teammates in a team, used by starting position assign. */
-    int getTeamNum(SoccerTeam team) const;
+    int getTeamNum(KartTeam team) const;
+
+    /** Profiling usage */
+    int m_frame_count;
+    std::vector<int> m_goal_frame;
+
+    int m_reset_ball_ticks;
+    int m_ticks_back_to_own_goal;
+
+    void resetKartsToSelfGoals();
 
 public:
 
@@ -114,26 +310,32 @@ public:
     virtual ~SoccerWorld();
 
     virtual void init() OVERRIDE;
+    virtual void onGo() OVERRIDE;
 
     // clock events
     virtual bool isRaceOver() OVERRIDE;
-    virtual void terminateRace() OVERRIDE;
     virtual void countdownReachedZero() OVERRIDE;
+    virtual void terminateRace() OVERRIDE;
 
     // overriding World methods
-    virtual void reset() OVERRIDE;
+    virtual void reset(bool restart=false) OVERRIDE;
 
     virtual unsigned int getRescuePositionIndex(AbstractKart *kart) OVERRIDE;
-
+    virtual btTransform getRescueTransform(unsigned int rescue_pos) const
+        OVERRIDE;
     virtual bool useFastMusicNearEnd() const OVERRIDE { return false; }
     virtual void getKartsDisplayInfo(
-                 std::vector<RaceGUIBase::KartIconDisplayInfo> *info) OVERRIDE {}
+               std::vector<RaceGUIBase::KartIconDisplayInfo> *info) OVERRIDE {}
 
     virtual bool raceHasLaps() OVERRIDE { return false; }
 
+    virtual void enterRaceOverState() OVERRIDE;
+
     virtual const std::string& getIdent() const OVERRIDE;
 
-    virtual void update(float dt) OVERRIDE;
+    virtual void update(int ticks) OVERRIDE;
+
+    bool shouldDrawTimer() const OVERRIDE { return !isStartPhase(); }
     // ------------------------------------------------------------------------
     void onCheckGoalTriggered(bool first_goal);
     // ------------------------------------------------------------------------
@@ -142,42 +344,90 @@ public:
     /** Get the soccer result of kart in soccer world (including AIs) */
     bool getKartSoccerResult(unsigned int kart_id) const;
     // ------------------------------------------------------------------------
-    /** Get the team of kart in soccer world (including AIs) */
-    SoccerTeam getKartTeam(unsigned int kart_id) const;
-    // ------------------------------------------------------------------------
-    const int getScore(SoccerTeam team) const
-             { return (team == SOCCER_TEAM_BLUE ? m_blue_goal : m_red_goal); }
-    // ------------------------------------------------------------------------
-    const std::vector<ScorerData>& getScorers(SoccerTeam team) const
-       { return (team == SOCCER_TEAM_BLUE ? m_blue_scorers : m_red_scorers); }
-    // ------------------------------------------------------------------------
-    const std::vector<float>& getScoreTimes(SoccerTeam team) const
+    int getScore(KartTeam team) const
     {
-        return (team == SOCCER_TEAM_BLUE ?
-            m_blue_score_times : m_red_score_times);
+        return (int)(team == KART_TEAM_BLUE ? m_blue_scorers.size()
+                                              : m_red_scorers.size());
     }
     // ------------------------------------------------------------------------
-    const int& getKartNode(unsigned int kart_id) const
-                                          {  return m_kart_on_node[kart_id]; }
+    const std::vector<ScorerData>& getScorers(KartTeam team) const
+       { return (team == KART_TEAM_BLUE ? m_blue_scorers : m_red_scorers); }
     // ------------------------------------------------------------------------
-    const int& getBallNode() const
-                                          {  return m_ball_on_node;          }
+    int getBallNode() const;
     // ------------------------------------------------------------------------
     const Vec3& getBallPosition() const
-                                          {  return m_ball_position;         }
+        { return (Vec3&)m_ball_body->getCenterOfMassTransform().getOrigin(); }
     // ------------------------------------------------------------------------
-    const int& getGoalNode(SoccerTeam team) const
+    bool ballNotMoving() const
     {
-        return (team == SOCCER_TEAM_BLUE ? m_blue_goal_node : m_red_goal_node);
+        return (m_ball_body->getLinearVelocity().x() == 0.0f ||
+            m_ball_body->getLinearVelocity().z() == 0.0f);
     }
+    // ------------------------------------------------------------------------
+    float getBallHeading() const
+                                                    { return m_ball_heading; }
+    // ------------------------------------------------------------------------
+    float getBallDiameter() const
+                                               { return m_bgd.getDiameter(); }
+    // ------------------------------------------------------------------------
+    bool ballApproachingGoal(KartTeam team) const
+                                     { return m_bgd.isApproachingGoal(team); }
+    // ------------------------------------------------------------------------
+    Vec3 getBallAimPosition(KartTeam team, bool reverse = false) const
+                               { return m_bgd.getAimPosition(team, reverse); }
     // ------------------------------------------------------------------------
     bool isCorrectGoal(unsigned int kart_id, bool first_goal) const;
     // ------------------------------------------------------------------------
-    const int& getDefender(SoccerTeam team) const
+    int getBallChaser(KartTeam team) const
     {
-        return (team == SOCCER_TEAM_BLUE ? m_blue_defender : m_red_defender);
+        // Only AI call this function, so each team should have at least a kart
+        assert(m_blue_kdm.size() > 0 && m_red_kdm.size() > 0);
+        return (team == KART_TEAM_BLUE ? m_blue_kdm[0].m_kart_id :
+            m_red_kdm[0].m_kart_id);
     }
-
+    // ------------------------------------------------------------------------
+    /** Get the AI who will attack the other team ball chaser. */
+    int getAttacker(KartTeam team) const;
+    // ------------------------------------------------------------------------
+    void handlePlayerGoalFromServer(const NetworkString& ns);
+    // ------------------------------------------------------------------------
+    void handleResetBallFromServer(const NetworkString& ns);
+    // ------------------------------------------------------------------------
+    virtual bool hasTeam() const OVERRIDE                      { return true; }
+    // ------------------------------------------------------------------------
+    virtual std::pair<uint32_t, uint32_t> getGameStartedProgress() const
+        OVERRIDE
+    {
+        std::pair<uint32_t, uint32_t> progress(
+            std::numeric_limits<uint32_t>::max(),
+            std::numeric_limits<uint32_t>::max());
+        if (race_manager->hasTimeTarget())
+        {
+            progress.first = (uint32_t)m_time;
+        }
+        else if (m_red_scorers.size() > m_blue_scorers.size())
+        {
+            progress.second = (uint32_t)((float)m_red_scorers.size() /
+                (float)race_manager->getMaxGoal() * 100.0f);
+        }
+        else
+        {
+            progress.second = (uint32_t)((float)m_blue_scorers.size() /
+                (float)race_manager->getMaxGoal() * 100.0f);
+        }
+        return progress;
+    }
+    // ------------------------------------------------------------------------
+    virtual void saveCompleteState(BareNetworkString* bns,
+                                   STKPeer* peer) OVERRIDE;
+    // ------------------------------------------------------------------------
+    virtual void restoreCompleteState(const BareNetworkString& b) OVERRIDE;
+    // ------------------------------------------------------------------------
+    virtual bool isGoalPhase() const OVERRIDE
+    {
+        int diff = m_ticks_back_to_own_goal - getTicksSinceStart();
+        return diff > 0 && diff < stk_config->time2Ticks(3.0f);
+    }
 };   // SoccerWorld
 
 

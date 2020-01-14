@@ -18,6 +18,8 @@
   \page addons Addons
   */
 
+#ifndef SERVER_ONLY
+
 #include "addons/addons_manager.hpp"
 
 #include "addons/news_manager.hpp"
@@ -29,11 +31,13 @@
 #include "karts/kart_properties_manager.hpp"
 #include "online/http_request.hpp"
 #include "online/request_manager.hpp"
+#include "states_screens/dialogs/addons_pack.hpp"
 #include "states_screens/kart_selection.hpp"
 #include "tracks/track.hpp"
 #include "tracks/track_manager.hpp"
+#include "utils/file_utils.hpp"
 #include "utils/string_utils.hpp"
-
+#include "utils/translation.hpp"
 
 #include <fstream>
 #include <iostream>
@@ -55,6 +59,12 @@ AddonsManager* addons_manager = 0;
 AddonsManager::AddonsManager() : m_addons_list(std::vector<Addon>() ),
                                  m_state(STATE_INIT)
 {
+    m_downloaded_icons = false;
+    // Clean .part file which may be left behind
+    std::string addons_part = file_manager->getAddonsFile("addons.xml.part");
+    if (file_manager->fileExists(addons_part))
+        file_manager->removeFile(addons_part);
+
     m_file_installed = file_manager->getAddonsFile("addons_installed.xml");
 
     // Load the addons list (even if internet is disabled)
@@ -90,11 +100,13 @@ void AddonsManager::init(const XMLNode *xml,
     StkTime::TimeType mtime(0);
     const XMLNode *include = xml->getNode("include");
     std::string filename=file_manager->getAddonsFile("addons.xml");
+    // Prevent downloading when .part file created, which is already downloaded
+    std::string filename_part=file_manager->getAddonsFile("addons.xml.part");
     if(!include)
     {
         file_manager->removeFile(filename);
         setErrorState();
-        NewsManager::get()->addNewsMessage(_("Can't access stkaddons server..."));
+        NewsManager::get()->addNewsMessage(_("Failed to connect to the SuperTuxKart add-ons server."));
         return;
     }
 
@@ -110,28 +122,37 @@ void AddonsManager::init(const XMLNode *xml,
         ( mtime > UserConfigParams::m_addons_last_updated +frequency ||
           force_refresh                                              ||
           !file_manager->fileExists(filename)                          )
-       && UserConfigParams::m_internet_status == RequestManager::IPERM_ALLOWED;
-    
+       && UserConfigParams::m_internet_status == RequestManager::IPERM_ALLOWED
+       && !file_manager->fileExists(filename_part);
+
     if (download)
     {
         Log::info("addons", "Downloading updated addons.xml.");
-        Online::HTTPRequest *download_request = new Online::HTTPRequest("addons.xml");
+        auto download_request = std::make_shared<Online::HTTPRequest>("addons.xml");
         download_request->setURL(addon_list_url);
         download_request->executeNow();
         if(download_request->hadDownloadError())
         {
             Log::error("addons", "Error on download addons.xml: %s.",
                        download_request->getDownloadErrorMessage());
-            delete download_request;
             return;
         }
-        delete download_request;
         UserConfigParams::m_addons_last_updated=StkTime::getTimeSinceEpoch();
     }
     else
         Log::info("addons", "Using cached addons.xml.");
-        
-    const XMLNode *xml_addons = new XMLNode(filename);
+
+    const XMLNode* xml_addons = NULL;
+    try
+    {
+        xml_addons = new XMLNode(filename);
+    }
+    catch (std::exception& e)
+    {
+        Log::error("addons", "Error %s", e.what());
+    }
+    if (!xml_addons)
+        return;
     addons_manager->initAddons(xml_addons);   // will free xml_addons
     if(UserConfigParams::logAddons())
         Log::info("addons", "Addons manager list downloaded.");
@@ -269,10 +290,9 @@ void AddonsManager::initAddons(const XMLNode *xml)
     }
     m_addons_list.unlock();
 
-    m_state.setAtomic(STATE_READY);
-
     if (UserConfigParams::m_internet_status == RequestManager::IPERM_ALLOWED)
         downloadIcons();
+    m_state.setAtomic(STATE_READY);
 }   // initAddons
 
 // ----------------------------------------------------------------------------
@@ -370,19 +390,21 @@ void AddonsManager::downloadIcons()
             class IconRequest : public Online::HTTPRequest
             {
                 Addon *m_addon;  // stores this addon object
-                void afterOperation()
+                void callback()
                 {
                     m_addon->setIconReady();
+                    if (!hadDownloadError())
+                        addons_manager->m_downloaded_icons = true;
                 }   // callback
             public:
                 IconRequest(const std::string &filename,
                             const std::string &url,
-                            Addon *addon     ) : HTTPRequest(filename, true, 1)
+                            Addon *addon     ) : HTTPRequest(filename,/*priority*/1)
                 {
                     m_addon = addon;  setURL(url);
                 }   // IconRequest
             };
-            IconRequest *r = new IconRequest("icons/"+icon, url, &addon);
+            auto r = std::make_shared<IconRequest>("icons/"+icon, url, &addon);
             r->queue();
         }
         else
@@ -426,7 +448,7 @@ void AddonsManager::loadInstalledAddons()
  *  found!
  *  \param id The id to search for.
  */
-const Addon* AddonsManager::getAddon(const std::string &id) const
+Addon* AddonsManager::getAddon(const std::string &id)
 {
     int i = getAddonIndex(id);
     return (i<0) ? NULL : &(m_addons_list.getData()[i]);
@@ -458,29 +480,33 @@ bool AddonsManager::anyAddonsInstalled() const
 }   // anyAddonsInstalled
 
 // ----------------------------------------------------------------------------
-/** Installs or updates (i.e. = install on top of an existing installation) an
- *  addon. It checks for the directories and then unzips the file (which must
- *  already have been downloaded).
+/** Installs or updates (i.e. remove old and then install a new) an addon.
+ *  It checks for the directories and then unzips the file (which must already
+ *  have been downloaded).
  *  \param addon Addon data for the addon to install.
  *  \return true if installation was successful.
  */
 bool AddonsManager::install(const Addon &addon)
 {
-    file_manager->checkAndCreateDirForAddons(addon.getDataDir());
 
     //extract the zip in the addons folder called like the addons name
     std::string base_name = StringUtils::getBasename(addon.getZipFileName());
     std::string from      = file_manager->getAddonsFile("tmp/"+base_name);
     std::string to        = addon.getDataDir();
 
-    bool success = extract_zip(from, to);
+    // Remove old addon first (including non official way to install addons)
+    AddonsPack::uninstallByName(addon.getDirName(), true/*force_clear*/);
+    if (file_manager->isDirectory(to))
+        file_manager->removeDirectory(to);
+
+    file_manager->checkAndCreateDirForAddons(to);
+
+    bool success = extract_zip(from, to, true/*recursive*/);
     if (!success)
     {
         // TODO: show a message in the interface
         Log::error("addons", "Failed to unzip '%s' to '%s'.",
                     from.c_str(), to.c_str());
-        Log::error("addons", "Zip file will not be removed.");
-        return false;
     }
 
     if(!file_manager->removeFile(from))
@@ -488,6 +514,8 @@ bool AddonsManager::install(const Addon &addon)
         Log::error("addons", "Problems removing temporary file '%s'.",
                     from.c_str());
     }
+    if (!success)
+        return false;
 
     int index = getAddonIndex(addon.getId());
     assert(index>=0 && index < (int)m_addons_list.getData().size());
@@ -585,13 +613,15 @@ void AddonsManager::saveInstalled()
 {
     // Put the addons in the xml file
     // Manually because the irrlicht xml writer doesn't seem finished, FIXME ?
-    std::ofstream xml_installed(m_file_installed.c_str());
+    std::ofstream xml_installed(
+        FileUtils::getPortableWritingPath(m_file_installed));
 
     // Write the header of the xml file
     xml_installed << "<?xml version=\"1.0\"?>" << std::endl;
 
     // Get server address from config
-    std::string server = UserConfigParams::m_server_addons;
+    const std::string server = stk_config->m_server_addons;
+
     // Find the third slash (end of the domain)
     std::string::size_type index = server.find('/');
     index = server.find('/', index + 2) + 1; // Omit one slash
@@ -604,5 +634,7 @@ void AddonsManager::saveInstalled()
     }
     xml_installed << "</addons>" << std::endl;
     xml_installed.close();
+    m_downloaded_icons = false;
 }   // saveInstalled
 
+#endif

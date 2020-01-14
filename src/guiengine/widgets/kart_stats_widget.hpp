@@ -30,6 +30,8 @@
 #include "guiengine/widgets/progress_bar_widget.hpp"
 #include "guiengine/widgets/skill_level_widget.hpp"
 
+class KartProperties;
+enum HandicapLevel : uint8_t;
 
 namespace GUIEngine
 {
@@ -39,6 +41,18 @@ namespace GUIEngine
       */
     class KartStatsWidget : public Widget
     {
+    public:
+
+        enum Stats
+        {
+            SKILL_MASS,
+            SKILL_SPEED,
+            SKILL_ACCELERATION,
+            SKILL_NITRO_EFFICIENCY,
+            SKILL_COUNT
+        };
+
+    private:
         /** When inferring widget size from its label length, this method will be called to
          * if/how much space must be added to the raw label's size for the widget to be large enough */
         virtual int getWidthNeededAroundLabel()  const { return 35; }
@@ -47,29 +61,26 @@ namespace GUIEngine
          * if/how much space must be added to the raw label's size for the widget to be large enough */
         virtual int getHeightNeededAroundLabel() const { return 4; }
 
-        /** widget coordinates */
+        /** widget coordinates 
+            These are not the actual coordinates of any of the skill bars
+            but only (badly named) intermediate values*/
         int m_skill_bar_x, m_skill_bar_y, m_skill_bar_h, m_skill_bar_w;
 
         int m_player_id;
 
         std::vector<SkillLevelWidget*> m_skills;
 
+        void setSkillValues(Stats skill_type, float value, const std::string icon_name,
+                            const std::string skillbar_propID, const irr::core::stringw icon_tooltip);
+
 
     public:
-
-        enum Stats
-        {
-            SKILL_MASS,
-            SKILL_SPEED,
-            SKILL_POWER,
-            SKILL_COUNT
-        };
 
         LEAK_CHECK()
 
         KartStatsWidget(core::recti area, const int player_id,
                         std::string kart_group, bool multiplayer,
-                        bool display_text);
+                        bool display_icons);
         virtual ~KartStatsWidget() {};
 
         // ------------------------------------------------------------------------
@@ -91,14 +102,18 @@ namespace GUIEngine
          * inside itself */
         void setSize(const int x, const int y, const int w, const int h);
 
+        void setValues(const KartProperties* props, HandicapLevel h);
+
+        void hideAll();
+
         /** Change the value of the widget, it must be a percent. */
-        void setValue(Stats type, int value);
+        void setValue(Stats type, float value);
 
         /** Get the current values of the widget. */
-        int getValue(Stats type);
+        float getValue(Stats type);
 
-        /** If the labels should be displayed. */
-        void setDisplayText(bool display_text);
+        /** If the icons should be displayed. */
+        void setDisplayIcons(bool display_icons);
     };
 }
 

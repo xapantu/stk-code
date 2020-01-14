@@ -18,15 +18,20 @@
 
 #include "script_track.hpp"
 
-#include "animations/three_d_animation.hpp"
+#include "config/user_config.hpp"
 #include "input/device_manager.hpp"
 #include "input/input_device.hpp"
 #include "input/input_manager.hpp"
 #include "modes/world.hpp"
+#include "scriptengine/aswrappedcall.hpp"
+#include "scriptengine/script_track.hpp"
 #include "states_screens/dialogs/tutorial_message_dialog.hpp"
 #include "tracks/track.hpp"
 #include "tracks/track_object.hpp"
 #include "tracks/track_object_manager.hpp"
+#include "utils/string_utils.hpp"
+#include "utils/translation.hpp"
+#include "guiengine/message_queue.hpp"
 
 #include <angelscript.h>
 #include "scriptarray.hpp"
@@ -41,6 +46,23 @@ namespace Scripting
 
     namespace GUI
     {
+        enum RaceGUIType
+        {
+            RGT_KEYBOARD_GAMEPAD = 0,
+            RGT_STEERING_WHEEL = 1,
+            RGT_ACCELEROMETER = 2,
+            RGT_GYROSCOPE = 3,
+        };
+
+        enum MsgType
+        {
+
+            MSG_FRIEND = 0,
+            MSG_ACHIEVEMENT = 1,
+            MSG_GENERIC = 2,
+            MSG_ERROR = 3
+        };
+
         /** \addtogroup Scripting
         * @{
         */
@@ -64,6 +86,62 @@ namespace Scripting
         {
             irr::core::stringw out = StringUtils::utf8ToWide(*input);
             new TutorialMessageDialog((out), true);
+        }
+
+        /** Display a Message using MessageQueue (enum GUI::MsgType)*/
+        void displayMessage(std::string* input, int Enum_value)
+        {
+            irr::core::stringw msg = StringUtils::utf8ToWide(*input);
+            MsgType msg_type = (MsgType)Enum_value;
+            MessageQueue::MessageType type;
+            switch (msg_type)
+            {
+                case MSG_ERROR:
+                    type = MessageQueue::MT_ERROR;
+                    break;
+                case MSG_FRIEND:
+                    type = MessageQueue::MT_FRIEND;
+                    break;
+                case MSG_ACHIEVEMENT:
+                    type = MessageQueue::MT_ACHIEVEMENT;
+                    break;
+                default:
+                    type = MessageQueue::MT_GENERIC;
+                    break;
+            }
+            MessageQueue::add(type, msg);
+        }
+
+        /** Displays an static Message. (enum GUI::MsgType)
+         *  This Message has to be discarded by discardStaticMessage() manually.
+         *  Otherwise it can be overridden.
+         */
+        void displayStaticMessage(std::string* input, int Enum_value)
+        {
+            irr::core::stringw msg = StringUtils::utf8ToWide(*input);
+            MsgType msg_type = (MsgType)Enum_value;
+            MessageQueue::MessageType type;
+            switch (msg_type)
+            {
+                case MSG_ERROR:
+                    type = MessageQueue::MT_ERROR;
+                    break;
+                case MSG_FRIEND:
+                    type = MessageQueue::MT_FRIEND;
+                    break;
+                case MSG_ACHIEVEMENT:
+                    type = MessageQueue::MT_ACHIEVEMENT;
+                    break;
+                default:
+                    type = MessageQueue::MT_GENERIC;
+                    break;
+            }
+            MessageQueue::addStatic(type, msg);
+        }
+
+        void discardStaticMessage()
+        {
+            MessageQueue::discardStatic();
         }
 
         void clearOverlayMessages()
@@ -90,7 +168,7 @@ namespace Scripting
         /** Get translated version of string */
         std::string translate(std::string* input)
         {
-            irr::core::stringw out = translations->fribidize(translations->w_gettext(input->c_str()));
+            irr::core::stringw out = translations->w_gettext(input->c_str());
 
             return StringUtils::wideToUtf8(out);
         }
@@ -103,8 +181,6 @@ namespace Scripting
             out = StringUtils::insertValues(out,
                                             StringUtils::utf8ToWide(*arg1));
 
-            out = translations->fribidize(out);
-
             return StringUtils::wideToUtf8(out);
         }
 
@@ -116,8 +192,6 @@ namespace Scripting
             out = StringUtils::insertValues(out,
                                             StringUtils::utf8ToWide(*arg1),
                                             StringUtils::utf8ToWide(*arg2));
-
-            out = translations->fribidize(out);
 
             return StringUtils::wideToUtf8(out);
         }
@@ -133,8 +207,6 @@ namespace Scripting
                                             StringUtils::utf8ToWide(*arg2),
                                             StringUtils::utf8ToWide(*arg3));
 
-            out = translations->fribidize(out);
-
             return StringUtils::wideToUtf8(out);
         }
         /** @}*/
@@ -144,6 +216,31 @@ namespace Scripting
         // documented function whose name is exposed in angelscript (these proxies exist so that
         // angelscript can properly resolve overloads, but doxygen can still generate the right docs
         /** \cond DOXYGEN_IGNORE */
+        void proxy_displayMessage(std::string* msgString)
+        {
+            return displayMessage(msgString, MSG_GENERIC);
+        }
+
+        void proxy_displayMessageAndInsertValues1(std::string* msgString, int msgType)
+        {
+            return displayMessage(msgString, msgType);
+        }
+
+        void proxy_displayStaticMessage(std::string* msgString)
+        {
+            return displayStaticMessage(msgString, MSG_GENERIC);
+        }
+
+        void proxy_displayStaticMessageAndInsertValues1(std::string* msgString, int msgType)
+        {
+            return displayStaticMessage(msgString, msgType);
+        }
+
+        void proxy_discardStaticMessage()
+        {
+            return discardStaticMessage();
+        }
+
         std::string proxy_translate(std::string* formatString)
         {
             return translate(formatString);
@@ -164,20 +261,91 @@ namespace Scripting
         {
             return translate(formatString, arg1, arg2, arg3);
         }
-        /** \endcond */
 
+        RaceGUIType getRaceGUIType()
+        {
+            if (UserConfigParams::m_multitouch_draw_gui)
+            {
+                if (UserConfigParams::m_multitouch_controls == 1)
+                    return RGT_STEERING_WHEEL;
+                else if (UserConfigParams::m_multitouch_controls == 2)
+                    return RGT_ACCELEROMETER;
+                else if (UserConfigParams::m_multitouch_controls == 3)
+                    return RGT_GYROSCOPE;
+            }
+            return RGT_KEYBOARD_GAMEPAD;
+        }
+        /** \endcond */
+        
         void registerScriptFunctions(asIScriptEngine *engine)
         {
-            int r; // of type asERetCodes
             engine->SetDefaultNamespace("GUI");
-            r = engine->RegisterGlobalFunction("void displayModalMessage(const string &in)", asFUNCTION(displayModalMessage), asCALL_CDECL); assert(r >= 0);
-            r = engine->RegisterGlobalFunction("void displayOverlayMessage(const string &in)", asFUNCTION(displayOverlayMessage), asCALL_CDECL); assert(r >= 0);
-            r = engine->RegisterGlobalFunction("void clearOverlayMessages()", asFUNCTION(clearOverlayMessages), asCALL_CDECL); assert(r >= 0);
-            r = engine->RegisterGlobalFunction("string getKeyBinding(int input)", asFUNCTION(getKeyBinding), asCALL_CDECL); assert(r >= 0);
-            r = engine->RegisterGlobalFunction("string translate(const string &in)", asFUNCTION(proxy_translate), asCALL_CDECL); assert(r >= 0);
-            r = engine->RegisterGlobalFunction("string translate(const string &in, const string &in)", asFUNCTION(proxy_translateAndInsertValues1), asCALL_CDECL); assert(r >= 0);
-            r = engine->RegisterGlobalFunction("string translate(const string &in, const string &in, const string &in)", asFUNCTION(proxy_translateAndInsertValues2), asCALL_CDECL); assert(r >= 0);
-            r = engine->RegisterGlobalFunction("string translate(const string &in, const string &in, const string &in, const string &in)", asFUNCTION(proxy_translateAndInsertValues3), asCALL_CDECL); assert(r >= 0);
+            
+            bool mp = strstr(asGetLibraryOptions(), "AS_MAX_PORTABILITY");
+            asDWORD call_conv = mp ? asCALL_GENERIC : asCALL_CDECL;
+            int r; // of type asERetCodes
+
+            r = engine->RegisterGlobalFunction("void displayMessage(const string &in)",
+                                               mp ? WRAP_FN(proxy_displayMessage) : asFUNCTION(proxy_displayMessage),
+                                               call_conv); assert(r >= 0);
+
+            r = engine->RegisterGlobalFunction("void displayMessage(const string &in, int MessageType)",
+                                               mp ? WRAP_FN(proxy_displayMessageAndInsertValues1)
+                                                  : asFUNCTION(proxy_displayMessageAndInsertValues1),
+                                               call_conv); assert(r >= 0);
+
+            r = engine->RegisterGlobalFunction("void displayStaticMessage(const string &in)",
+                                               mp ? WRAP_FN(proxy_displayStaticMessage) : asFUNCTION(proxy_displayStaticMessage),
+                                               call_conv); assert(r >= 0);
+
+            r = engine->RegisterGlobalFunction("void displayStaticMessage(const string &in, int MessageType)",
+                                               mp ? WRAP_FN(proxy_displayStaticMessageAndInsertValues1)
+                                                  : asFUNCTION(proxy_displayStaticMessageAndInsertValues1),
+                                               call_conv); assert(r >= 0);
+
+            r = engine->RegisterGlobalFunction("void discardStaticMessage()",
+                                               mp ? WRAP_FN(discardStaticMessage) : asFUNCTION(discardStaticMessage),
+                                               call_conv); assert(r >= 0);
+
+            r = engine->RegisterGlobalFunction("void displayModalMessage(const string &in)",
+                                               mp ? WRAP_FN(displayModalMessage) : asFUNCTION(displayModalMessage),
+                                               call_conv); assert(r >= 0);
+                                               
+            r = engine->RegisterGlobalFunction("void displayOverlayMessage(const string &in)", 
+                                               mp ? WRAP_FN(displayOverlayMessage) : asFUNCTION(displayOverlayMessage), 
+                                               call_conv); assert(r >= 0);
+                                               
+            r = engine->RegisterGlobalFunction("void clearOverlayMessages()", 
+                                               mp ? WRAP_FN(clearOverlayMessages) : asFUNCTION(clearOverlayMessages), 
+                                               call_conv); assert(r >= 0);
+
+            r = engine->RegisterGlobalFunction("RaceGUIType getRaceGUIType()",
+                                               mp ? WRAP_FN(getRaceGUIType) : asFUNCTION(getRaceGUIType),
+                                               call_conv); assert(r >= 0);
+
+            r = engine->RegisterGlobalFunction("string getKeyBinding(int input)", 
+                                               mp ? WRAP_FN(getKeyBinding) : asFUNCTION(getKeyBinding), 
+                                               call_conv); assert(r >= 0);
+                                               
+            r = engine->RegisterGlobalFunction("string translate(const string &in)", 
+                                               mp ? WRAP_FN(proxy_translate) : asFUNCTION(proxy_translate), 
+                                               call_conv); assert(r >= 0);
+                                               
+            r = engine->RegisterGlobalFunction("string translate(const string &in, const string &in)", 
+                                               mp ? WRAP_FN(proxy_translateAndInsertValues1) 
+                                                  : asFUNCTION(proxy_translateAndInsertValues1), 
+                                               call_conv); assert(r >= 0);
+                                               
+            r = engine->RegisterGlobalFunction("string translate(const string &in, const string &in, const string &in)", 
+                                               mp ? WRAP_FN(proxy_translateAndInsertValues2) 
+                                                  : asFUNCTION(proxy_translateAndInsertValues2), 
+                                               call_conv); assert(r >= 0);
+                                               
+            r = engine->RegisterGlobalFunction("string translate(const string &in, const string &in, const string &in, const string &in)", 
+                                               mp ? WRAP_FN(proxy_translateAndInsertValues3) 
+                                                  : asFUNCTION(proxy_translateAndInsertValues3), 
+                                               call_conv); assert(r >= 0);
+
         }
 
         void registerScriptEnums(asIScriptEngine *engine)
@@ -201,6 +369,16 @@ namespace Scripting
             engine->RegisterEnumValue("PlayerAction", "MENU_RIGHT", PA_MENU_RIGHT);
             engine->RegisterEnumValue("PlayerAction", "MENU_SELECT", PA_MENU_SELECT);
             engine->RegisterEnumValue("PlayerAction", "MENU_CANCEL", PA_MENU_CANCEL);
+            engine->RegisterEnum("RaceGUIType");
+            engine->RegisterEnumValue("RaceGUIType", "KEYBOARD_GAMEPAD", RGT_KEYBOARD_GAMEPAD);
+            engine->RegisterEnumValue("RaceGUIType", "STEERING_WHEEL", RGT_STEERING_WHEEL);
+            engine->RegisterEnumValue("RaceGUIType", "ACCELEROMETER", RGT_ACCELEROMETER);
+            engine->RegisterEnumValue("RaceGUIType", "GYROSCOPE", RGT_GYROSCOPE);
+            engine->RegisterEnum("MsgType");
+            engine->RegisterEnumValue("MsgType", "GENERIC", MSG_GENERIC);
+            engine->RegisterEnumValue("MsgType", "ERROR", MSG_ERROR);
+            engine->RegisterEnumValue("MsgType", "ACHIEVEMENT", MSG_ACHIEVEMENT);
+            engine->RegisterEnumValue("MsgType", "FRIEND", MSG_FRIEND);
         }
     }
 

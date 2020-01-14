@@ -23,12 +23,16 @@
 #include "challenges/unlock_manager.hpp"
 #include "config/player_manager.hpp"
 #include "graphics/irr_driver.hpp"
+#include "graphics/lod_node.hpp"
+#include "graphics/lod_node.hpp"
+#include "graphics/render_info.hpp"
 #include "guiengine/engine.hpp"
 #include "guiengine/scalable_font.hpp"
 #include "guiengine/widgets/button_widget.hpp"
 #include "guiengine/widgets/label_widget.hpp"
 #include "io/file_manager.hpp"
 #include "items/item_manager.hpp"
+#include "karts/kart_model.hpp"
 #include "karts/kart_properties.hpp"
 #include "karts/kart_properties_manager.hpp"
 #include "modes/cutscene_world.hpp"
@@ -41,6 +45,7 @@
 #include "tracks/track.hpp"
 #include "tracks/track_object.hpp"
 #include "tracks/track_object_manager.hpp"
+#include "utils/string_utils.hpp"
 #include "utils/translation.hpp"
 
 #include <ISceneManager.h>
@@ -52,6 +57,7 @@
 using namespace irr::core;
 using namespace irr::gui;
 using namespace irr::video;
+using namespace GUIEngine;
 
 const float DURATION = 15.0f;
 
@@ -65,8 +71,6 @@ const float KART_Y = 0.0f;
 const float KART_Z = 0.0f;
 
 const int MAX_KART_COUNT = 4;
-
-DEFINE_SCREEN_SINGLETON( GrandPrixLose );
 
 // -------------------------------------------------------------------------------------
 
@@ -112,6 +116,8 @@ void GrandPrixLose::init()
 
     m_phase = 1;
     m_global_time = 0.0f;
+
+    getWidget<ButtonWidget>("continue")->setFocusForPlayer(PLAYER_ID_GAME_MASTER);
 }   // init
 
 // -------------------------------------------------------------------------------------
@@ -155,9 +161,9 @@ void GrandPrixLose::onUpdate(float dt)
 
 // -------------------------------------------------------------------------------------
 
-void GrandPrixLose::setKarts(std::vector<std::string> ident_arg)
+void GrandPrixLose::setKarts(std::vector<std::pair<std::string, float> > ident_arg)
 {
-    TrackObjectManager* tobjman = World::getWorld()->getTrack()->getTrackObjectManager();
+    TrackObjectManager* tobjman = Track::getCurrentTrack()->getTrackObjectManager();
 
     assert(ident_arg.size() > 0);
     if ((int)ident_arg.size() > MAX_KART_COUNT)
@@ -175,12 +181,31 @@ void GrandPrixLose::setKarts(std::vector<std::string> ident_arg)
     const int count = (int)ident_arg.size();
     for (int n=0; n<count; n++)
     {
-        const KartProperties* kart = kart_properties_manager->getKart(ident_arg[n]);
+        const KartProperties* kart = kart_properties_manager->getKart(ident_arg[n].first);
         if (kart != NULL)
         {
-            KartModel* kart_model = kart->getKartModelCopy();
+            KartModel* kart_model = kart->getKartModelCopy(std::make_shared<RenderInfo>(ident_arg[n].second));
             m_all_kart_models.push_back(kart_model);
-            scene::ISceneNode* kart_main_node = kart_model->attachModel(false, false);
+            scene::ISceneNode* kart_main_node = kart_model->attachModel(true, false);
+            LODNode* lnode = dynamic_cast<LODNode*>(kart_main_node);
+            if (lnode)
+            {
+                // Lod node has to be animated
+                auto* a_node = static_cast<scene::IAnimatedMeshSceneNode*>
+                    (lnode->getAllNodes()[0]);
+                const unsigned start_frame =
+                    kart_model->getFrame(KartModel::AF_LOSE_LOOP_START) > -1 ?
+                    kart_model->getFrame(KartModel::AF_LOSE_LOOP_START) :
+                    kart_model->getFrame(KartModel::AF_LOSE_START) > -1 ?
+                    kart_model->getFrame(KartModel::AF_LOSE_START) :
+                    kart_model->getFrame(KartModel::AF_STRAIGHT);
+                const unsigned end_frame =
+                    kart_model->getFrame(KartModel::AF_LOSE_END) > -1 ?
+                    kart_model->getFrame(KartModel::AF_LOSE_END) :
+                    kart_model->getFrame(KartModel::AF_STRAIGHT);
+                a_node->setLoopMode(true);
+                a_node->setFrameLoop(start_frame, end_frame);
+            }
 
             core::vector3df kart_pos(m_kart_x + n*DISTANCE_BETWEEN_KARTS,
                 m_kart_y,
@@ -202,7 +227,7 @@ void GrandPrixLose::setKarts(std::vector<std::string> ident_arg)
         else
         {
             Log::warn("GrandPrixLose", "A kart named '%s' could not be found\n",
-                      ident_arg[n].c_str());
+                      ident_arg[n].first.c_str());
             m_kart_node[n] = NULL;
         } // if kart != NULL
     }

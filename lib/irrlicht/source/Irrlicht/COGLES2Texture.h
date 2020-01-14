@@ -12,7 +12,7 @@
 
 #ifdef _IRR_COMPILE_WITH_OGLES2_
 
-#if defined(_IRR_COMPILE_WITH_IPHONE_DEVICE_)
+#if defined(_IRR_COMPILE_WITH_IOS_DEVICE_)
 #include <OpenGLES/ES2/gl.h>
 #else
 #include <GLES2/gl2.h>
@@ -38,7 +38,7 @@ public:
 	struct SStatesCache
 	{
 		SStatesCache() : WrapU(ETC_REPEAT), WrapV(ETC_REPEAT), BilinearFilter(false),
-			TrilinearFilter(false), AnisotropicFilter(0), MipMapStatus(false), IsCached(false), LODBias(0)
+			TrilinearFilter(false), AnisotropicFilter(0), MipMapStatus(false), LODBias(0), IsCached(false)
 		{
 		}
 
@@ -81,7 +81,9 @@ public:
 	virtual u32 getPitch() const;
 
 	//! return open gl texture name
-	GLuint getOpenGLTextureName() const;
+	virtual u32 getOpenGLTextureName() const;
+
+	virtual u64 getHandle() { return 0; }
 
 	//! return whether this texture has mipmaps
 	virtual bool hasMipMaps() const;
@@ -108,6 +110,13 @@ public:
 
 	//! Get an access to texture states cache.
 	SStatesCache& getStatesCache() const;
+
+	void setImage(IImage* new_image)
+	{
+		if (Image)
+			Image->drop();
+		Image = new_image;
+	}
 
 protected:
 
@@ -170,6 +179,7 @@ public:
 	virtual void unbindRTT();
 
 	ITexture* DepthTexture;
+	GLuint DepthBufferTexture;
 protected:
 	GLuint ColorFrameBuffer;
 };

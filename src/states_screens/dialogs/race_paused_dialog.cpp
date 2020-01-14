@@ -19,20 +19,33 @@
 
 #include <string>
 
+#include "audio/music_manager.hpp"
+#include "audio/sfx_manager.hpp"
+#include "challenges/story_mode_timer.hpp"
+#include "config/user_config.hpp"
+#include "graphics/irr_driver.hpp"
+#include "guiengine/emoji_keyboard.hpp"
 #include "guiengine/engine.hpp"
 #include "guiengine/scalable_font.hpp"
+#include "guiengine/widgets/CGUIEditBox.hpp"
 #include "guiengine/widgets/icon_button_widget.hpp"
 #include "guiengine/widgets/ribbon_widget.hpp"
-#include "input/input_manager.hpp"
 #include "io/file_manager.hpp"
 #include "modes/overworld.hpp"
 #include "modes/world.hpp"
+#include "network/protocols/client_lobby.hpp"
+#include "network/network_config.hpp"
+#include "network/network_string.hpp"
+#include "network/stk_host.hpp"
 #include "race/race_manager.hpp"
 #include "states_screens/help_screen_1.hpp"
 #include "states_screens/main_menu_screen.hpp"
+#include "states_screens/race_gui_base.hpp"
+#include "states_screens/race_gui_multitouch.hpp"
 #include "states_screens/race_setup_screen.hpp"
-#include "states_screens/options_screen_video.hpp"
+#include "states_screens/options/options_screen_general.hpp"
 #include "states_screens/state_manager.hpp"
+#include "utils/string_utils.hpp"
 #include "utils/translation.hpp"
 
 using namespace GUIEngine;
@@ -45,25 +58,94 @@ RacePausedDialog::RacePausedDialog(const float percentWidth,
                                    const float percentHeight) :
     ModalDialog(percentWidth, percentHeight)
 {
+    m_self_destroy = false;
+    m_from_overworld = false;
+
     if (dynamic_cast<OverWorld*>(World::getWorld()) != NULL)
     {
         loadFromFile("overworld_dialog.stkgui");
+        m_from_overworld = true;
     }
-    else
+    else if (!NetworkConfig::get()->isNetworking())
     {
         loadFromFile("race_paused_dialog.stkgui");
     }
+    else
+    {
+        loadFromFile("online/network_ingame_dialog.stkgui");
+    }
 
-    World::getWorld()->schedulePause(WorldStatus::IN_GAME_MENU_PHASE);
-
-    IconButtonWidget* back_btn = getWidget<IconButtonWidget>("backbtn");
+    GUIEngine::RibbonWidget* back_btn = getWidget<RibbonWidget>("backbtnribbon");
     back_btn->setFocusForPlayer( PLAYER_ID_GAME_MASTER );
+
+    if (NetworkConfig::get()->isNetworking())
+    {
+        music_manager->pauseMusic();
+        SFXManager::get()->pauseAll();
+        m_text_box->clearListeners();
+        m_text_box->setTextBoxType(TBT_CAP_SENTENCES);
+        // Unicode enter arrow
+        getWidget("send")->setText(L"\u21B2");
+        // Unicode smile emoji
+        getWidget("emoji")->setText(L"\u263A");
+        if (UserConfigParams::m_lobby_chat && UserConfigParams::m_race_chat)
+        {
+            m_text_box->setActive(true);
+            getWidget("send")->setVisible(true);
+            getWidget("emoji")->setVisible(true);
+            m_text_box->addListener(this);
+            auto cl = LobbyProtocol::get<ClientLobby>();
+            if (cl && !cl->serverEnabledChat())
+            {
+                m_text_box->setActive(false);
+                getWidget("send")->setActive(false);
+                getWidget("emoji")->setActive(false);
+            }
+        }
+        else
+        {
+            m_text_box->setActive(false);
+            m_text_box->setText(
+                _("Chat is disabled, enable in options menu."));
+            getWidget("send")->setVisible(false);
+            getWidget("emoji")->setVisible(false);
+        }
+    }
+    else
+    {
+        World::getWorld()->schedulePause(WorldStatus::IN_GAME_MENU_PHASE);
+    }
+
+#ifndef MOBILE_STK
+    if (m_text_box && UserConfigParams::m_lobby_chat)
+        m_text_box->setFocusForPlayer(PLAYER_ID_GAME_MASTER);
+#endif
 }   // RacePausedDialog
 
 // ----------------------------------------------------------------------------
 RacePausedDialog::~RacePausedDialog()
 {
-    World::getWorld()->scheduleUnpause();
+    if (NetworkConfig::get()->isNetworking())
+    {
+        music_manager->resumeMusic();
+        SFXManager::get()->resumeAll();
+    }
+    else
+    {
+        World::getWorld()->scheduleUnpause();
+    }
+    
+    if (m_touch_controls != UserConfigParams::m_multitouch_controls)
+    {
+        UserConfigParams::m_multitouch_controls = m_touch_controls;
+        
+        if (World::getWorld() && World::getWorld()->getRaceGUI())
+        {
+            World::getWorld()->getRaceGUI()->recreateMultitouchGUI();
+        }
+
+        user_config->saveConfig();
+    }
 }   // ~RacePausedDialog
 
 // ----------------------------------------------------------------------------
@@ -75,19 +157,29 @@ void RacePausedDialog::loadedFromFile()
     {
         GUIEngine::RibbonWidget* choice_ribbon =
             getWidget<GUIEngine::RibbonWidget>("choiceribbon");
+#ifdef DEBUG
         const bool success = choice_ribbon->deleteChild("restart");
         assert(success);
+#else
+        choice_ribbon->deleteChild("restart");
+#endif
     }
     // Remove "endrace" button for types not (yet?) implemented
     // Also don't show it unless the race has started. Prevents finishing in
     // a time of 0:00:00.
     if ((race_manager->getMinorMode() != RaceManager::MINOR_MODE_NORMAL_RACE  &&
          race_manager->getMinorMode() != RaceManager::MINOR_MODE_TIME_TRIAL ) ||
-         World::getWorld()->isStartPhase())
+         World::getWorld()->isStartPhase() ||
+         NetworkConfig::get()->isNetworking())
     {
         GUIEngine::RibbonWidget* choice_ribbon =
             getWidget<GUIEngine::RibbonWidget>("choiceribbon");
         choice_ribbon->deleteChild("endrace");
+        // No restart in network game
+        if (NetworkConfig::get()->isNetworking())
+        {
+            choice_ribbon->deleteChild("restart");
+        }
     }
 }
 
@@ -104,12 +196,68 @@ GUIEngine::EventPropagation
 {
     GUIEngine::RibbonWidget* choice_ribbon =
             getWidget<GUIEngine::RibbonWidget>("choiceribbon");
+    GUIEngine::RibbonWidget* backbtn_ribbon =
+            getWidget<GUIEngine::RibbonWidget>("backbtnribbon");
 
-    if (eventSource == "backbtn")
+    if (eventSource == "send" && m_text_box)
     {
-        // unpausing is done in the destructor so nothing more to do here
-        ModalDialog::dismiss();
+        onEnterPressed(m_text_box->getText());
         return GUIEngine::EVENT_BLOCK;
+    }
+    else if (eventSource == "emoji" && m_text_box &&
+        !ScreenKeyboard::isActive())
+    {
+        EmojiKeyboard* ek = new EmojiKeyboard(1.0f, 0.40f,
+            m_text_box->getIrrlichtElement<CGUIEditBox>());
+        ek->init();
+        return GUIEngine::EVENT_BLOCK;
+    }
+    else if (eventSource == "backbtnribbon")
+    {
+        const std::string& selection =
+            backbtn_ribbon->getSelectionIDString(PLAYER_ID_GAME_MASTER);
+            
+        if (selection == "backbtn")
+        {
+            // unpausing is done in the destructor so nothing more to do here
+            ModalDialog::dismiss();
+            return GUIEngine::EVENT_BLOCK;
+        }
+        else if (selection == "touch_device")
+        {
+            IrrlichtDevice* irrlicht_device = irr_driver->getDevice();
+            assert(irrlicht_device != NULL);
+            bool accelerometer_available = irrlicht_device->isAccelerometerAvailable();
+            bool gyroscope_available = irrlicht_device->isGyroscopeAvailable() && accelerometer_available;
+    
+            if (m_touch_controls == MULTITOUCH_CONTROLS_STEERING_WHEEL)
+            {
+                m_touch_controls = MULTITOUCH_CONTROLS_ACCELEROMETER;
+            }
+            else if (m_touch_controls == MULTITOUCH_CONTROLS_ACCELEROMETER)
+            {
+                m_touch_controls = MULTITOUCH_CONTROLS_GYROSCOPE;
+            }
+            else if (m_touch_controls == MULTITOUCH_CONTROLS_GYROSCOPE)
+            {
+                m_touch_controls = MULTITOUCH_CONTROLS_STEERING_WHEEL;
+            }
+            
+            if (m_touch_controls == MULTITOUCH_CONTROLS_ACCELEROMETER && 
+                !accelerometer_available)
+            {
+                m_touch_controls = MULTITOUCH_CONTROLS_STEERING_WHEEL;
+            }
+            else if (m_touch_controls == MULTITOUCH_CONTROLS_GYROSCOPE && 
+                !gyroscope_available)
+            {
+                m_touch_controls = MULTITOUCH_CONTROLS_STEERING_WHEEL;
+            }
+            
+            updateTouchDeviceIcon();
+            
+            return GUIEngine::EVENT_BLOCK;
+        }
     }
     else if (eventSource == "choiceribbon")
     {
@@ -118,16 +266,34 @@ GUIEngine::EventPropagation
 
         if (selection == "exit")
         {
+            bool from_overworld = m_from_overworld;
             ModalDialog::dismiss();
+            if (STKHost::existHost())
+            {
+                STKHost::get()->shutdown();
+            }
             race_manager->exitRace();
             race_manager->setAIKartOverride("");
-            StateManager::get()->resetAndGoToScreen(MainMenuScreen::getInstance());
 
-            if (race_manager->raceWasStartedFromOverworld())
+            if (NetworkConfig::get()->isNetworking())
             {
-                OverWorld::enterOverWorld();
+                StateManager::get()->resetAndSetStack(
+                    NetworkConfig::get()->getResetScreens().data());
+                NetworkConfig::get()->unsetNetworking();
             }
+            else
+            {
+                StateManager::get()->resetAndGoToScreen(MainMenuScreen::getInstance());
 
+                // Pause story mode timer when quitting story mode
+                if (from_overworld)
+                    story_mode_timer->pauseTimer(/*loading screen*/ false);
+
+                if (race_manager->raceWasStartedFromOverworld())
+                {
+                    OverWorld::enterOverWorld();
+                }
+            }
             return GUIEngine::EVENT_BLOCK;
         }
         else if (selection == "help")
@@ -139,13 +305,12 @@ GUIEngine::EventPropagation
         else if (selection == "options")
         {
             dismiss();
-            OptionsScreenVideo::getInstance()->push();
+            OptionsScreenGeneral::getInstance()->push();
             return GUIEngine::EVENT_BLOCK;
         }
         else if (selection == "restart")
         {
             ModalDialog::dismiss();
-//            network_manager->setState(NetworkManager::NS_MAIN_MENU);
             World::getWorld()->scheduleUnpause();
             race_manager->rerunRace();
             return GUIEngine::EVENT_BLOCK;
@@ -153,16 +318,32 @@ GUIEngine::EventPropagation
         else if (selection == "newrace")
         {
             ModalDialog::dismiss();
-            World::getWorld()->scheduleUnpause();
-            race_manager->exitRace();
-            Screen* newStack[] = {MainMenuScreen::getInstance(),
-                                  RaceSetupScreen::getInstance(), NULL};
-            StateManager::get()->resetAndSetStack( newStack );
+            if (NetworkConfig::get()->isNetworking())
+            {
+                // back lobby
+                NetworkString back(PROTOCOL_LOBBY_ROOM);
+                back.setSynchronous(true);
+                back.addUInt8(LobbyProtocol::LE_CLIENT_BACK_LOBBY);
+                STKHost::get()->sendToServer(&back, true);
+            }
+            else
+            {
+                World::getWorld()->scheduleUnpause();
+                race_manager->exitRace();
+                Screen* new_stack[] =
+                    {
+                        MainMenuScreen::getInstance(),
+                        RaceSetupScreen::getInstance(),
+                        NULL
+                    };
+                StateManager::get()->resetAndSetStack(new_stack);
+            }
             return GUIEngine::EVENT_BLOCK;
         }
         else if (selection == "endrace")
         {
             ModalDialog::dismiss();
+            World::getWorld()->getRaceGUI()->removeReferee();
             World::getWorld()->endRaceEarly();
             return GUIEngine::EVENT_BLOCK;
         }
@@ -177,5 +358,115 @@ GUIEngine::EventPropagation
 }   // processEvent
 
 // ----------------------------------------------------------------------------
+void RacePausedDialog::beforeAddingWidgets()
+{
+    GUIEngine::RibbonWidget* choice_ribbon =
+        getWidget<GUIEngine::RibbonWidget>("choiceribbon");
 
+    bool showSetupNewRace = race_manager->raceWasStartedFromOverworld();
+    int index = choice_ribbon->findItemNamed("newrace");
+    if (index != -1)
+        choice_ribbon->setItemVisible(index, !showSetupNewRace);
 
+    // Disable in game menu to avoid timer desync if not racing in network
+    // game
+    if (NetworkConfig::get()->isNetworking() &&
+        !(World::getWorld()->getPhase() == WorldStatus::MUSIC_PHASE ||
+        World::getWorld()->getPhase() == WorldStatus::RACE_PHASE))
+    {
+        index = choice_ribbon->findItemNamed("help");
+        if (index != -1)
+            choice_ribbon->setItemVisible(index, false);
+        index = choice_ribbon->findItemNamed("options");
+        if (index != -1)
+            choice_ribbon->setItemVisible(index, false);
+        index = choice_ribbon->findItemNamed("newrace");
+        if (index != -1)
+            choice_ribbon->setItemVisible(index, false);
+    }
+    if (NetworkConfig::get()->isNetworking())
+        m_text_box = getWidget<TextBoxWidget>("chat");
+    else
+        m_text_box = NULL;
+        
+    bool has_multitouch_gui = false;
+    
+    if (World::getWorld() && World::getWorld()->getRaceGUI() && 
+        World::getWorld()->getRaceGUI()->getMultitouchGUI() &&
+        !World::getWorld()->getRaceGUI()->getMultitouchGUI()->isSpectatorMode())
+    {
+        has_multitouch_gui = true;
+    }
+    
+    IrrlichtDevice* irrlicht_device = irr_driver->getDevice();
+    assert(irrlicht_device != NULL);
+    bool accelerometer_available = irrlicht_device->isAccelerometerAvailable();
+    
+    if (!has_multitouch_gui || !accelerometer_available)
+    {
+        GUIEngine::RibbonWidget* backbtn_ribbon =
+                            getWidget<GUIEngine::RibbonWidget>("backbtnribbon");
+        backbtn_ribbon->removeChildNamed("touch_device");
+    }
+
+}   // beforeAddingWidgets
+
+// ----------------------------------------------------------------------------
+void RacePausedDialog::init()
+{
+    m_touch_controls = UserConfigParams::m_multitouch_controls;
+    updateTouchDeviceIcon();
+    
+}   // init
+
+// ----------------------------------------------------------------------------
+bool RacePausedDialog::onEnterPressed(const irr::core::stringw& text)
+{
+    if (auto cl = LobbyProtocol::get<ClientLobby>())
+    {
+        if (!text.empty())
+        {
+            if (text[0] == L'/' && text.size() > 1)
+            {
+                std::string cmd = StringUtils::wideToUtf8(text);
+                cl->handleClientCommand(cmd.erase(0, 1));
+            }
+            else
+                cl->sendChat(text);
+        }
+    }
+    m_self_destroy = true;
+    return true;
+}   // onEnterPressed
+
+void RacePausedDialog::updateTouchDeviceIcon()
+{
+    GUIEngine::RibbonWidget* backbtn_ribbon =
+                            getWidget<GUIEngine::RibbonWidget>("backbtnribbon");
+    GUIEngine::IconButtonWidget* widget = (IconButtonWidget*)backbtn_ribbon->
+                                                findWidgetNamed("touch_device");
+    if (!widget)
+        return;
+                                                  
+    switch (m_touch_controls)
+    {
+    case MULTITOUCH_CONTROLS_UNDEFINED:
+    case MULTITOUCH_CONTROLS_STEERING_WHEEL:
+        widget->setLabel(_("Steering wheel"));
+        widget->setImage(irr_driver->getTexture(FileManager::GUI_ICON, 
+                                                  "android/steering_wheel.png"));
+        break;
+    case MULTITOUCH_CONTROLS_ACCELEROMETER:
+        widget->setLabel(_("Accelerometer"));
+        widget->setImage(irr_driver->getTexture(FileManager::GUI_ICON, 
+                                                  "android/accelerator.png"));
+        break;
+    case MULTITOUCH_CONTROLS_GYROSCOPE:
+        widget->setLabel(_("Gyroscope"));
+        widget->setImage(irr_driver->getTexture(FileManager::GUI_ICON, 
+                                                  "android/gyroscope_icon.png"));
+        break;
+    default:
+        break;
+    }
+}

@@ -76,10 +76,13 @@ namespace GUIEngine
         /** \brief Whether to wrap back to the first value when going "beyond" the last value */
         bool m_wrap_around;
 
+        /** \brief Whether the right or left arrow is the currently selected one  */
+        bool m_right_selected;
+
         /** \brief Keeps track of the custom text in spinner (a text which isn't related to a value)
         *   to remember it and set it back (example : when we deactivate the widget)
         */
-        core::stringw m_customText;
+        core::stringw m_custom_text;
         
         /** \brief implementing method from base class Widget */
         virtual EventPropagation transmitEvent(Widget* w,
@@ -93,7 +96,7 @@ namespace GUIEngine
         virtual EventPropagation leftPressed(const int playerID);
 
         /** \brief implementing method from base class Widget */
-        virtual void onClick();
+        virtual EventPropagation onClick();
         
         /** When inferring widget size from its label length, this method will be called to
          * if/how much space must be added to the raw label's size for the widget to be large enough */
@@ -123,6 +126,11 @@ namespace GUIEngine
         void setSpinnerWidgetPlayerID(int playerID) {m_spinner_widget_player_id=playerID;}
         int getSpinnerWidgetPlayerID()              {return m_spinner_widget_player_id;  }
         void unsetUseBackgroundColor()              {m_use_background_color=false;       }
+
+        void activateSelectedButton();
+        void setSelectedButton(bool right)          {m_right_selected = right;           }
+        bool isRightButtonSelected()                {return m_right_selected;            }
+
 
 
 
@@ -162,6 +170,17 @@ namespace GUIEngine
         irr::core::stringw getStringValue() const;
 
         /**
+          * \brief retrieve the value of the spinner from id
+          * \return the value of the spinner from id, in a string form
+          */
+        irr::core::stringw getStringValueFromID(unsigned id) const
+        {
+            if (id > m_labels.size())
+                return L"";
+            return m_labels[id];
+        }
+
+        /**
           * \return the maximum value the spinner can take
           */
         // --------------------------------------------------------------------
@@ -197,6 +216,7 @@ namespace GUIEngine
 
         /** Display custom text in spinner */
         void setCustomText(const core::stringw& text);
+        const core::stringw& getCustomText() const { return m_custom_text; }
     };
 
 }

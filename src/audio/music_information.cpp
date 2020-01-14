@@ -23,6 +23,7 @@
 
 #include "audio/music_dummy.hpp"
 #include "audio/music_ogg.hpp"
+#include "config/user_config.hpp"
 #include "io/file_manager.hpp"
 #include "tracks/track.hpp"
 #include "tracks/track_manager.hpp"
@@ -72,33 +73,37 @@ MusicInformation *MusicInformation::create(const std::string &filename)
 MusicInformation::MusicInformation(const XMLNode *root,
                                    const std::string &filename)
 {
-    m_title           = "";
-    m_mode            = SOUND_NORMAL;
-    m_composer        = "";
-    //m_numLoops        = LOOP_FOREVER;
-    m_normal_filename = "";
-    m_fast_filename   = "";
-    m_normal_music    = NULL;
-    m_fast_music      = NULL;
-    m_enable_fast     = false;
-    m_music_waiting   = false;
-    m_faster_time     = 1.0f;
-    m_max_pitch       = 0.1f;
-    m_gain            = 1.0f;
+    m_title             = "";
+    m_mode              = SOUND_NORMAL;
+    m_composer          = "";
+    //m_numLoops          = LOOP_FOREVER;
+    m_normal_filename   = "";
+    m_fast_filename     = "";
+    m_normal_music      = NULL;
+    m_fast_music        = NULL;
+    m_normal_loop_start = 0.0f;
+    m_fast_loop_start   = 0.0f;
+    m_enable_fast       = false;
+    m_music_waiting     = false;
+    m_faster_time       = 1.0f;
+    m_max_pitch         = 0.1f;
+    m_gain              = 1.0f;
 
 
     // Otherwise read config file
     // --------------------------
     std::string s;
-    root->get("title",         &s                );
+    root->get("title",           &s                  );
     m_title = StringUtils::xmlDecode(s);
-    root->get("composer",      &s                );
+    root->get("composer",        &s                  );
     m_composer = StringUtils::xmlDecode(s);
-    root->get("file",          &m_normal_filename);
-    root->get("gain",          &m_gain           );
-    root->get("tracks",        &m_all_tracks     );
-    root->get("fast",          &m_enable_fast    );
-    root->get("fast-filename", &m_fast_filename  );
+    root->get("file",            &m_normal_filename  );
+    root->get("gain",            &m_gain             );
+    root->get("tracks",          &m_all_tracks       );
+    root->get("fast",            &m_enable_fast      );
+    root->get("fast-filename",   &m_fast_filename    );
+    root->get("loop-start",      &m_normal_loop_start);
+    root->get("fast-loop-start", &m_fast_loop_start  );
 
     // Get the path from the filename and add it to the ogg filename
     std::string path  = StringUtils::getPath(filename);
@@ -118,6 +123,7 @@ MusicInformation::MusicInformation(const XMLNode *root,
 
 MusicInformation::~MusicInformation()
 {
+    std::lock_guard<std::mutex> lock(m_music_mutex);
     if(m_normal_music) delete m_normal_music;
     if(m_fast_music)   delete m_fast_music;
 }   // ~MusicInformation
@@ -141,10 +147,24 @@ void MusicInformation::startMusic()
     m_time_since_faster  = 0.0f;
     m_mode               = SOUND_NORMAL;
 
-    if (m_normal_filename== "") return;
-
+    std::unique_lock<std::mutex> lock(m_music_mutex);
+    if (m_normal_music)
+    {
+        delete m_normal_music;
+        m_normal_music = NULL;
+    }
+    
+    if (m_fast_music)
+    {
+        delete m_fast_music;
+        m_fast_music = NULL;
+    }
+    
     // First load the 'normal' music
     // -----------------------------
+    if (m_normal_filename.empty())
+        return;
+    
     if (StringUtils::getExtension(m_normal_filename) != "ogg")
     {
         Log::warn("MusicInformation", "Music file %s is not found or file "
@@ -152,16 +172,21 @@ void MusicInformation::startMusic()
         return;
     }
 
-    if (m_normal_music) delete m_normal_music;
-
-#if HAVE_OGGVORBIS
-    m_normal_music = new MusicOggStream();
-#else
-    m_normal_music = new MusicDummy();
-#endif
-
-    if((m_normal_music->load(m_normal_filename)) == false)
+#ifdef ENABLE_SOUND
+    if (UserConfigParams::m_enable_sound)
     {
+        m_normal_music = new MusicOggStream(m_normal_loop_start);
+    }
+    else
+#endif
+    {
+        m_normal_music = new MusicDummy();
+    }
+    lock.unlock();
+
+    if (m_normal_music->load(m_normal_filename) == false)
+    {
+        lock.lock();
         delete m_normal_music;
         m_normal_music = NULL;
         Log::warn("MusicInformation", "Unable to load music %s, "
@@ -174,31 +199,35 @@ void MusicInformation::startMusic()
 
     // Then (if available) load the music for the last track
     // -----------------------------------------------------
-    if (m_fast_music) delete m_fast_music;
-    if (m_fast_filename == "")
+    if (m_fast_filename.empty())
+        return;
+    
+    if (StringUtils::getExtension(m_fast_filename) != "ogg")
     {
-        m_fast_music = NULL;
-        return;   // no fast music
-    }
-
-    if(StringUtils::getExtension(m_fast_filename)!="ogg")
-    {
-        Log::warn(
-                "Music file %s format not recognized, fast music is ignored",
-                m_fast_filename.c_str());
+        Log::warn("MusicInformation",
+                  "Music file %s format not recognized, fast music is ignored",
+                  m_fast_filename.c_str());
         return;
     }
 
-#if HAVE_OGGVORBIS
-    m_fast_music = new MusicOggStream();
-#else
-    m_fast_music = new MusicDummy();
-#endif
-
-    if((m_fast_music->load(m_fast_filename)) == false)
+    lock.lock();
+#ifdef ENABLE_SOUND
+    if (UserConfigParams::m_enable_sound)
     {
+        m_fast_music = new MusicOggStream(m_fast_loop_start);
+    }
+    else
+#endif
+    {
+        m_fast_music = new MusicDummy();
+    }
+    lock.unlock();
+
+    if (m_fast_music->load(m_fast_filename) == false)
+    {
+        lock.lock();
         delete m_fast_music;
-        m_fast_music=0;
+        m_fast_music = NULL;
         Log::warn("MusicInformation", "Unabled to load fast music %s, not "
                   "supported or not found.\n", m_fast_filename.c_str());
         return;
@@ -225,6 +254,8 @@ void MusicInformation::update(float dt)
         float fraction=m_time_since_faster/m_faster_time;
         m_normal_music->setVolume(1-fraction);
         m_fast_music->setVolume(fraction);
+        m_normal_music->update();
+        m_fast_music->update();
         break;
                        }
     case SOUND_FASTER: {
@@ -259,6 +290,7 @@ void MusicInformation::update(float dt)
 //-----------------------------------------------------------------------------
 void MusicInformation::stopMusic()
 {
+    std::lock_guard<std::mutex> lock(m_music_mutex);
     if (m_normal_music != NULL)
     {
         m_normal_music->stopMusic();
@@ -335,6 +367,7 @@ void MusicInformation::switchToFastMusic()
 
 bool MusicInformation::isPlaying() const
 {
+    std::lock_guard<std::mutex> lock(m_music_mutex);
     return (m_normal_music != NULL && m_normal_music->isPlaying())  ||
            (m_fast_music   != NULL && m_fast_music->isPlaying());
 }

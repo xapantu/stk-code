@@ -23,8 +23,10 @@
 #include "graphics/camera.hpp"
 #include "items/powerup_manager.hpp"
 #include "karts/abstract_kart.hpp"
+#include "karts/controller/controller.hpp"
 #include "states_screens/race_gui_base.hpp"
 #include "tracks/track.hpp"
+#include "utils/string_utils.hpp"
 #include "utils/translation.hpp"
 
 #include <ISceneManager.h>
@@ -59,6 +61,7 @@ void FollowTheLeaderRace::init()
     // we ignore the leader, the points need to be based on number of karts -1
     stk_config->getAllScores(&m_score_for_position, getNumKarts() - 1);
     getKart(0)->setOnScreenText(_("Leader"));
+    getKart(0)->setBoostAI(true);
 }    // init
 
 #if 0
@@ -73,9 +76,10 @@ FollowTheLeaderRace::~FollowTheLeaderRace()
 //-----------------------------------------------------------------------------
 /** Called just before a race is started.
  */
-void FollowTheLeaderRace::reset()
+void FollowTheLeaderRace::reset(bool restart)
 {
-    LinearWorld::reset();
+    LinearWorld::reset(restart);
+    m_last_eliminated_time = 0.0f;
     m_leader_intervals.clear();
     m_leader_intervals    = stk_config->m_leader_intervals;
     for(unsigned int i=0; i<m_leader_intervals.size(); i++)
@@ -83,7 +87,7 @@ void FollowTheLeaderRace::reset()
             stk_config->m_leader_time_per_kart*race_manager->getNumberOfKarts();
     WorldStatus::setClockMode(WorldStatus::CLOCK_COUNTDOWN,
                               m_leader_intervals[0]);
-                              
+    
     m_is_over_delay = 2.0f;
 }   // reset
 
@@ -105,22 +109,13 @@ int FollowTheLeaderRace::getScoreForPosition(int p)
 const btTransform &FollowTheLeaderRace::getStartTransform(int index)
 {
     if (index == 0)   // Leader start position
-        return m_track->getStartTransform(index);
+        return Track::getCurrentTrack()->getStartTransform(index);
 
     // Otherwise the karts will start at the rear starting positions
     int start_index = stk_config->m_max_karts
                     - race_manager->getNumberOfKarts() + index;
-    return m_track->getStartTransform(start_index);
+    return Track::getCurrentTrack()->getStartTransform(start_index);
 }   // getStartTransform
-
-//-----------------------------------------------------------------------------
-/** Returns the original time at which the countdown timer started. This is
- *  used by the race_gui to display the music credits in FTL mode correctly.
- */
-float FollowTheLeaderRace::getClockStartTime() const
-{
-    return m_leader_intervals[0];
-}   // getClockStartTime
 
 //-----------------------------------------------------------------------------
 /** Called when a kart must be eliminated.
@@ -228,6 +223,15 @@ bool FollowTheLeaderRace::isRaceOver()
 }   // isRaceOver
 
 //-----------------------------------------------------------------------------
+/** If the leader kart is hit, increase the delay to the next elimination */
+void FollowTheLeaderRace::leaderHit()
+{
+    int countdown = getTimeTicks();
+    countdown += stk_config->time2Ticks(5.0f);
+    setTicks(countdown);
+} // leaderHit
+
+//-----------------------------------------------------------------------------
 /** Called at the end of a race. Updates highscores, pauses the game, and
  *  informs the unlock manager about the finished race. This function must
  *  be called after all other stats were updated from the different game
@@ -259,7 +263,7 @@ void FollowTheLeaderRace::terminateRace()
     endSetKartPositions();
 
     // Mark all still racing karts to be finished.
-    for (int i = m_karts.size(); i>0; i--)
+    for (int i = (int)m_karts.size(); i>0; i--)
     {
         AbstractKart *kart = getKartAtPosition(i);
         if (kart->isEliminated() || kart->hasFinishedRace())

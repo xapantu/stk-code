@@ -16,9 +16,6 @@ namespace irr
 namespace video
 {
 
-// Static members
-io::path CImageLoaderJPG::Filename;
-
 //! constructor
 CImageLoaderJPG::CImageLoaderJPG()
 {
@@ -66,7 +63,7 @@ void CImageLoaderJPG::init_source (j_decompress_ptr cinfo)
 boolean CImageLoaderJPG::fill_input_buffer (j_decompress_ptr cinfo)
 {
 	// DO NOTHING
-	return 1;
+	return TRUE;
 }
 
 
@@ -108,11 +105,11 @@ void CImageLoaderJPG::error_exit (j_common_ptr cinfo)
 void CImageLoaderJPG::output_message(j_common_ptr cinfo)
 {
 	// display the error message.
-	c8 temp1[JMSG_LENGTH_MAX];
-	(*cinfo->err->format_message)(cinfo, temp1);
-	core::stringc errMsg("JPEG FATAL ERROR in ");
-	errMsg += core::stringc(Filename);
-	os::Printer::log(errMsg.c_str(),temp1, ELL_ERROR);
+	//c8 temp1[JMSG_LENGTH_MAX];
+	//(*cinfo->err->format_message)(cinfo, temp1);
+	//core::stringc errMsg("JPEG FATAL ERROR in ");
+	//errMsg += core::stringc(Filename);
+	//os::Printer::log(errMsg.c_str(),temp1, ELL_ERROR);
 }
 #endif // _IRR_COMPILE_WITH_LIBJPEG_
 
@@ -135,17 +132,15 @@ bool CImageLoaderJPG::isALoadableFileFormat(io::IReadFile* file) const
 }
 
 //! creates a surface from the file
-IImage* CImageLoaderJPG::loadImage(io::IReadFile* file) const
+IImage* CImageLoaderJPG::loadImage(io::IReadFile* file, bool skip_checking) const
 {
 	#ifndef _IRR_COMPILE_WITH_LIBJPEG_
-	os::Printer::log("Can't load as not compiled with _IRR_COMPILE_WITH_LIBJPEG_:", file->getFileName(), ELL_DEBUG);
+	//os::Printer::log("Can't load as not compiled with _IRR_COMPILE_WITH_LIBJPEG_:", file->getFileName(), ELL_DEBUG);
 	return 0;
 	#else
 
 	if (!file)
 		return 0;
-
-	Filename = file->getFileName();
 
 	u8 **rowPtr=0;
 	u8* input = new u8[file->getSize()];

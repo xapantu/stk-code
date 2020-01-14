@@ -15,6 +15,8 @@
 //  along with this program; if not, write to the Free Software
 //  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
+#ifndef SERVER_ONLY
+
 #include "po_parser.hpp"
 
 #include <iostream>
@@ -277,7 +279,7 @@ POParser::parse_header(const std::string& header)
           {
             if (dict.get_plural_forms() != plural_forms)
             {
-              warning("Plural-Forms missmatch between .po file and dictionary");
+              warning("Plural-Forms mismatch between .po file and dictionary");
             }
           }
         }
@@ -338,9 +340,9 @@ POParser::parse()
   // skip UTF-8 intro that some text editors produce
   // see http://en.wikipedia.org/wiki/Byte-order_mark
   if (current_line.size() >= 3 &&
-      current_line[0] == static_cast<char>(0xef) &&
-      current_line[1] == static_cast<char>(0xbb) &&
-      current_line[2] == static_cast<char>(0xbf))
+      current_line[0] == static_cast<unsigned char>(0xef) &&
+      current_line[1] == static_cast<unsigned char>(0xbb) &&
+      current_line[2] == static_cast<unsigned char>(0xbf))
   {
     current_line = current_line.substr(3);
   }
@@ -496,3 +498,4 @@ POParser::parse()
 } // namespace tinygettext
 
 /* EOF */
+#endif

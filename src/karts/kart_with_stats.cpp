@@ -26,9 +26,9 @@
 KartWithStats::KartWithStats(const std::string& ident,
                              unsigned int world_kart_id,
                              int position, const btTransform& init_transform,
-                             PerPlayerDifficulty difficulty)
+                             HandicapLevel handicap)
              : Kart(ident, world_kart_id, position,
-                    init_transform, difficulty)
+                    init_transform, handicap, nullptr)
 {
 }   // KartWithStats
 
@@ -58,14 +58,13 @@ void KartWithStats::reset()
  *  statistics for this kart.
  *  \param dt Time step size.
  */
-void KartWithStats::update(float dt)
+void KartWithStats::update(int ticks)
 {
-    Kart::update(dt);
-    if(getSpeed()>m_top_speed) m_top_speed = getSpeed();
-    if(getControls().m_skid)
-        m_skidding_time += dt;
-    if(getControls().m_brake)
-        m_brake_count ++;
+    Kart::update(ticks);
+    if(getSpeed()>m_top_speed        ) m_top_speed = getSpeed();
+    float dt = stk_config->ticks2Time(ticks);
+    if(getControls().getSkidControl()) m_skidding_time += dt;
+    if(getControls().getBrake()      ) m_brake_count ++;
     LinearWorld *world = dynamic_cast<LinearWorld*>(World::getWorld());
     if(world && !world->isOnRoad(getWorldKartId()))
         m_off_track_count ++;
@@ -101,15 +100,12 @@ void KartWithStats::setKartAnimation(AbstractKartAnimation *ka)
 // ----------------------------------------------------------------------------
 /** Called when an item is collected. It will increment private variables that
  *  represent counters for each type of item hit.
- *  \param item The item that was hit.
- *  \param add_info Additional info, used in networking games to force
- *         a specific item to be used (instead of a random item) to keep
- *         all karts in synch.
+ *  \param item_state The item that was hit.
  */
-void KartWithStats::collectedItem(Item *item, int add_info)
+void KartWithStats::collectedItem(ItemState *item_state)
 {
-    Kart::collectedItem(item, add_info);
-    const Item::ItemType type = item->getType();
+    Kart::collectedItem(item_state);
+    const Item::ItemType type = item_state->getType();
 
     switch (type)
     {
@@ -117,6 +113,7 @@ void KartWithStats::collectedItem(Item *item, int add_info)
         m_banana_count++;
         break;
     case Item::ITEM_NITRO_SMALL:
+
         m_small_nitro_count++;
         break;
     case Item::ITEM_NITRO_BIG:

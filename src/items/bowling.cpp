@@ -24,7 +24,7 @@
 #include "graphics/material.hpp"
 #include "io/xml_node.hpp"
 #include "karts/abstract_kart.hpp"
-#include "utils/random_generator.hpp"
+#include "modes/linear_world.hpp"
 
 #include "utils/log.hpp" //TODO: remove after debugging is done
 
@@ -37,49 +37,9 @@ Bowling::Bowling(AbstractKart *kart)
         : Flyable(kart, PowerupManager::POWERUP_BOWLING, 50.0f /* mass */)
 {
     m_has_hit_kart = false;
-    float y_offset = 0.5f*kart->getKartLength() + m_extend.getZ()*0.5f;
-
-    // if the kart is looking backwards, release from the back
-    if( kart->getControls().m_look_back )
-    {
-        y_offset   = -y_offset;
-        m_speed    = -m_speed*2;
-    }
-    else
-    {
-        float min_speed = m_speed*4.0f;
-        /* make it go faster when throwing forward
-           so the player doesn't catch up with the ball
-           and explode by touching it */
-        m_speed = kart->getSpeed() + m_speed;
-        if(m_speed < min_speed) m_speed = min_speed;
-    }
-
-    createPhysics(y_offset, btVector3(0.0f, 0.0f, m_speed*2),
-                  new btSphereShape(0.5f*m_extend.getY()),
-                  1.0f /*restitution*/,
-                  -70.0f /*gravity*/,
-                  true /*rotates*/);
-    // Even if the ball is fired backwards, m_speed must be positive,
-    // otherwise the ball can start to vibrate when energy is added.
-    m_speed = fabsf(m_speed);
-    // Do not adjust the up velociy depending on height above terrain, since
-    // this would disable gravity.
-    setAdjustUpVelocity(false);
-
-    // unset no_contact_response flags, so that the ball
-    // will bounce off the track
-    int flag = getBody()->getCollisionFlags();
-    flag = flag & (~ btCollisionObject::CF_NO_CONTACT_RESPONSE);
-    getBody()->setCollisionFlags(flag);
-
-    // should not live forever, auto-destruct after 20 seconds
-    m_max_lifespan = 20;
-
     m_roll_sfx = SFXManager::get()->createSoundSource("bowling_roll");
     m_roll_sfx->play();
     m_roll_sfx->setLoop(true);
-
 }   // Bowling
 
 // ----------------------------------------------------------------------------
@@ -88,8 +48,7 @@ Bowling::Bowling(AbstractKart *kart)
 Bowling::~Bowling()
 {
     // This will stop the sfx and delete the object.
-    m_roll_sfx->deleteSFX();
-
+    removeRollSfx();
 }   // ~RubberBall
 
 // -----------------------------------------------------------------------------
@@ -116,11 +75,14 @@ void Bowling::init(const XMLNode &node, scene::IMesh *bowling)
  *  \param dt Time step size.
  *  \returns True of this object should be removed.
  */
-bool Bowling::updateAndDelete(float dt)
+bool Bowling::updateAndDelete(int ticks)
 {
-    bool can_be_deleted = Flyable::updateAndDelete(dt);
-    if(can_be_deleted)
+    bool can_be_deleted = Flyable::updateAndDelete(ticks);
+    if (can_be_deleted)
+    {
+        removeRollSfx();
         return true;
+    }
 
     const AbstractKart *kart=0;
     Vec3        direction;
@@ -136,20 +98,22 @@ bool Bowling::updateAndDelete(float dt)
             m_body->applyCentralForce(direction);
         }
     }
-
+    
+   
     // Bowling balls lose energy (e.g. when hitting the track), so increase
     // the speed if the ball is too slow, but only if it's not too high (if
     // the ball is too high, it is 'pushed down', which can reduce the
     // speed, which causes the speed to increase, which in turn causes
     // the ball to fly higher and higher.
     //btTransform trans = getTrans();
-    float hat         = getXYZ().getY()-getHoT();
+    float hat = (getXYZ() - getHitPoint()).length();
     if(hat-0.5f*m_extend.getY()<0.01f)
     {
         const Material *material = getMaterial();
         if(!material || material->isDriveReset())
         {
             hit(NULL);
+            removeRollSfx();
             return true;
         }
     }
@@ -169,14 +133,16 @@ bool Bowling::updateAndDelete(float dt)
     if(vlen<0.1)
     {
         hit(NULL);
+        removeRollSfx();
         return true;
     }
 
-    if (m_roll_sfx->getStatus()==SFXBase::SFX_PLAYING)
+    if (m_roll_sfx && m_roll_sfx->getStatus()==SFXBase::SFX_PLAYING)
         m_roll_sfx->setPosition(getXYZ());
 
     return false;
 }   // updateAndDelete
+
 // -----------------------------------------------------------------------------
 /** Callback from the physics in case that a kart or physical object is hit.
  *  The bowling ball triggers an explosion when hit.
@@ -205,13 +171,72 @@ bool Bowling::hit(AbstractKart* kart, PhysicalObject* obj)
 }   // hit
 
 // ----------------------------------------------------------------------------
+void Bowling::removeRollSfx()
+{
+    if (m_roll_sfx)
+    {
+        m_roll_sfx->deleteSFX();
+        m_roll_sfx = NULL;
+    }
+}   // removeRollSfx
+
+// ----------------------------------------------------------------------------
 /** Returns the hit effect object to use when this objects hits something.
  *  \returns The hit effect object, or NULL if no hit effect should be played.
  */
 HitEffect* Bowling::getHitEffect() const
 {
+    if (m_deleted_once)
+        return NULL;
     if(m_has_hit_kart)
         return new HitSFX(getXYZ(), "strike");
     else
         return new HitSFX(getXYZ(), "crash");
 }   // getHitEffect
+
+// ----------------------------------------------------------------------------
+void Bowling::onFireFlyable()
+{
+    Flyable::onFireFlyable();
+
+    m_has_hit_kart = false;
+    float y_offset = 0.5f*m_owner->getKartLength() + m_extend.getZ()*0.5f;
+
+    // if the kart is looking backwards, release from the back
+    if( m_owner->getControls().getLookBack())
+    {
+        y_offset   = -y_offset;
+        m_speed    = -m_speed*2;
+    }
+    else
+    {
+        float min_speed = m_speed*4.0f;
+        /* make it go faster when throwing forward
+           so the player doesn't catch up with the ball
+           and explode by touching it */
+        m_speed = m_owner->getSpeed() + m_speed;
+        if(m_speed < min_speed) m_speed = min_speed;
+    }
+
+    const Vec3& normal = m_owner->getNormal();
+    createPhysics(y_offset, btVector3(0.0f, 0.0f, m_speed*2),
+                  new btSphereShape(0.5f*m_extend.getY()),
+                  0.4f /*restitution*/,
+                  -70.0f*normal /*gravity*/,
+                  true /*rotates*/);
+    // Even if the ball is fired backwards, m_speed must be positive,
+    // otherwise the ball can start to vibrate when energy is added.
+    m_speed = fabsf(m_speed);
+    // Do not adjust the up velociy depending on height above terrain, since
+    // this would disable gravity.
+    setAdjustUpVelocity(false);
+
+    // unset no_contact_response flags, so that the ball
+    // will bounce off the track
+    int flag = getBody()->getCollisionFlags();
+    flag = flag & (~ btCollisionObject::CF_NO_CONTACT_RESPONSE);
+    getBody()->setCollisionFlags(flag);
+
+    // should not live forever, auto-destruct after 20 seconds
+    m_max_lifespan = stk_config->time2Ticks(20);
+}   // onFireFlyable

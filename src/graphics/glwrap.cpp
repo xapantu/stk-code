@@ -15,63 +15,58 @@
 //  along with this program; if not, write to the Free Software
 //  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
-#include "graphics/glwrap.hpp"
+#ifndef SERVER_ONLY
 
+#include "graphics/glwrap.hpp"
 
 #include "config/hardware_stats.hpp"
 #include "config/user_config.hpp"
 #include "graphics/central_settings.hpp"
+#include "graphics/irr_driver.hpp"
 #include "graphics/shaders.hpp"
-#include "graphics/stk_mesh.hpp"
+#include "graphics/sp/sp_base.hpp"
 #include "utils/profiler.hpp"
 #include "utils/cpp2011.hpp"
+#include "utils/string_utils.hpp"
 
 #include <fstream>
 #include <string>
 #include <sstream>
 
-#ifndef GL_DEBUG_SEVERITY_HIGH_ARB
-    // Extension: ARB_debug_output
-    #define GL_DEBUG_SEVERITY_HIGH_ARB       0x9146
-    #define GL_DEBUG_SEVERITY_LOW_ARB        0x9148
-    #define GL_DEBUG_SEVERITY_MEDIUM_ARB     0x9147
-    #define GL_DEBUG_SOURCE_API_ARB          0x8246
-    #define GL_DEBUG_SOURCE_APPLICATION_ARB  0x824A
-    #define GL_DEBUG_SOURCE_OTHER_ARB        0x824B
-    #define GL_DEBUG_SOURCE_SHADER_COMPILER_ARB 0x8248
-    #define GL_DEBUG_SOURCE_THIRD_PARTY_ARB  0x8249
-    #define GL_DEBUG_SOURCE_WINDOW_SYSTEM_ARB 0x8247
-    #define GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR_ARB 0x824D
-    #define GL_DEBUG_TYPE_ERROR_ARB          0x824C
-    #define GL_DEBUG_TYPE_OTHER_ARB          0x8251
-    #define GL_DEBUG_TYPE_PERFORMANCE_ARB    0x8250
-    #define GL_DEBUG_TYPE_PORTABILITY_ARB    0x824F
-    #define GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR_ARB 0x824E
+#ifdef DEBUG
+#if !defined(__APPLE__) && !defined(ANDROID)
+#define ARB_DEBUG_OUTPUT
+#endif
 #endif
 
-#ifndef GL_DEBUG_SEVERITY_HIGH
-    // Extension: KHR_debug
-    #define GL_DEBUG_SEVERITY_HIGH           0x9146
-    #define GL_DEBUG_SEVERITY_LOW            0x9148
-    #define GL_DEBUG_SEVERITY_MEDIUM         0x9147
-    #define GL_DEBUG_SEVERITY_NOTIFICATION   0x826B
-    #define GL_DEBUG_SOURCE_API              0x8246
-    #define GL_DEBUG_SOURCE_APPLICATION      0x824A
-    #define GL_DEBUG_SOURCE_OTHER            0x824B
-    #define GL_DEBUG_SOURCE_SHADER_COMPILER  0x8248
-    #define GL_DEBUG_SOURCE_THIRD_PARTY      0x8249
-    #define GL_DEBUG_SOURCE_WINDOW_SYSTEM    0x8247
-    #define GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR 0x824D
-    #define GL_DEBUG_TYPE_ERROR              0x824C
-    #define GL_DEBUG_TYPE_MARKER             0x8268
-    #define GL_DEBUG_TYPE_OTHER              0x8251
-    #define GL_DEBUG_TYPE_PERFORMANCE        0x8250
-    #define GL_DEBUG_TYPE_POP_GROUP          0x826A
-    #define GL_DEBUG_TYPE_PORTABILITY        0x824F
-    #define GL_DEBUG_TYPE_PUSH_GROUP         0x8269
-    #define GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR 0x824E
+#if defined(USE_GLES2)
+#ifndef __APPLE__
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
 #endif
 
+#ifdef ARB_DEBUG_OUTPUT
+#define GL_DEBUG_SEVERITY_HIGH_ARB            GL_DEBUG_SEVERITY_HIGH_KHR
+#define GL_DEBUG_SEVERITY_LOW_ARB             GL_DEBUG_SEVERITY_LOW_KHR
+#define GL_DEBUG_SEVERITY_MEDIUM_ARB          GL_DEBUG_SEVERITY_MEDIUM_KHR
+#define GL_DEBUG_SOURCE_API_ARB               GL_DEBUG_SOURCE_API_KHR
+#define GL_DEBUG_SOURCE_APPLICATION_ARB       GL_DEBUG_SOURCE_APPLICATION_KHR
+#define GL_DEBUG_SOURCE_OTHER_ARB             GL_DEBUG_SOURCE_OTHER_KHR
+#define GL_DEBUG_SOURCE_SHADER_COMPILER_ARB   GL_DEBUG_SOURCE_SHADER_COMPILER_KHR
+#define GL_DEBUG_SOURCE_THIRD_PARTY_ARB       GL_DEBUG_SOURCE_THIRD_PARTY_KHR
+#define GL_DEBUG_SOURCE_WINDOW_SYSTEM_ARB     GL_DEBUG_SOURCE_WINDOW_SYSTEM_KHR
+#define GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR_ARB GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR_KHR
+#define GL_DEBUG_TYPE_ERROR_ARB               GL_DEBUG_TYPE_ERROR_KHR
+#define GL_DEBUG_TYPE_OTHER_ARB               GL_DEBUG_TYPE_OTHER_KHR
+#define GL_DEBUG_TYPE_PERFORMANCE_ARB         GL_DEBUG_TYPE_PERFORMANCE_KHR
+#define GL_DEBUG_TYPE_PORTABILITY_ARB         GL_DEBUG_TYPE_PORTABILITY_KHR
+#define GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR_ARB  GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR_KHR
+
+#define GLDEBUGPROCARB GLDEBUGPROCKHR
+PFNGLDEBUGMESSAGECALLBACKKHRPROC pglDebugMessageCallbackKHR;
+#define glDebugMessageCallbackARB pglDebugMessageCallbackKHR
+#endif
+#endif
 
 static bool is_gl_init = false;
 
@@ -79,13 +74,6 @@ static bool is_gl_init = false;
 bool GLContextDebugBit = true;
 #else
 bool GLContextDebugBit = false;
-#endif
-
-
-#ifdef DEBUG
-#if !defined(__APPLE__) && !defined(ANDROID)
-#define ARB_DEBUG_OUTPUT
-#endif
 #endif
 
 #ifdef ARB_DEBUG_OUTPUT
@@ -171,28 +159,85 @@ debugCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei le
 }
 #endif
 
+#ifdef USE_GLES2
+#ifndef IOS_STK
+GL_APICALL void(*GL_APIENTRY glDebugMessageControl)(GLenum source, GLenum type,
+    GLenum severity, GLsizei count, const GLuint *ids, GLboolean enabled);
+GL_APICALL void(*GL_APIENTRY glDebugMessageInsert)(GLenum source, GLenum type,
+    GLuint id, GLenum severity, GLsizei length, const char *message);
+#endif
+
+#define GL_DEBUG_SOURCE_APPLICATION 0x824A
+#define GL_DEBUG_TYPE_MARKER 0x8268
+#define GL_DEBUG_SEVERITY_NOTIFICATION 0x826B
+#endif
+
 void initGL()
 {
     if (is_gl_init)
         return;
+        
     is_gl_init = true;
     // For Mesa extension reporting
-#ifndef ANDROID_DEVICE
+#if !defined(USE_GLES2)
 #ifndef WIN32
     glewExperimental = GL_TRUE;
 #endif
     GLenum err = glewInit();
-    if (GLEW_OK != err)
-        Log::fatal("GLEW", "Glew initialisation failed with error %s", glewGetErrorString(err));
+    
+    if (err == GLEW_ERROR_NO_GLX_DISPLAY)
+    {
+        Log::info("GLEW", "Glew couldn't open glx display.");
+    }
+    else if (err != GLEW_OK)
+    {
+        Log::fatal("GLEW", "Glew initialization failed with error %s", glewGetErrorString(err));
+    }
+#else
+#ifdef ARB_DEBUG_OUTPUT
+    glDebugMessageCallbackARB = (PFNGLDEBUGMESSAGECALLBACKKHRPROC)eglGetProcAddress("glDebugMessageCallbackKHR");
 #endif
+#endif
+
 #ifdef ARB_DEBUG_OUTPUT
     if (glDebugMessageCallbackARB)
         glDebugMessageCallbackARB((GLDEBUGPROCARB)debugCallback, NULL);
+#endif
+
+#ifndef ANDROID
+    if (SP::sp_apitrace && hasGLExtension("GL_KHR_debug"))
+    {
+#ifndef IOS_STK
+#ifdef USE_GLES2
+        glDebugMessageControl = (void(GL_APIENTRY*)(GLenum, GLenum, GLenum, GLsizei,
+            const GLuint*, GLboolean))eglGetProcAddress("glDebugMessageControlKHR");
+        glDebugMessageInsert = (void(GL_APIENTRY*)(GLenum, GLenum, GLuint, GLenum,
+            GLsizei, const char*))eglGetProcAddress("glDebugMessageInsertKHR");
+        assert(glDebugMessageControl && glDebugMessageInsert);
+#endif
+        glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, NULL, GL_TRUE);
+#endif
+    }
+    else
+    {
+        SP::sp_apitrace = false;
+    }
 #endif
 }
 
 ScopedGPUTimer::ScopedGPUTimer(GPUTimer &t) : timer(t)
 {
+#ifndef ANDROID
+#ifndef IOS_STK
+    if (SP::sp_apitrace)
+    {
+        std::string msg = timer.getName();
+        msg += " begin";
+        glDebugMessageInsert(GL_DEBUG_SOURCE_APPLICATION, GL_DEBUG_TYPE_MARKER, 100,
+            GL_DEBUG_SEVERITY_NOTIFICATION, -1, msg.c_str());
+    }
+#endif
+#endif
     if (!UserConfigParams::m_profiler_enabled) return;
     if (profiler.isFrozen()) return;
     if (!timer.canSubmitQuery) return;
@@ -207,6 +252,17 @@ ScopedGPUTimer::ScopedGPUTimer(GPUTimer &t) : timer(t)
 }
 ScopedGPUTimer::~ScopedGPUTimer()
 {
+#ifndef ANDROID
+#ifndef IOS_STK
+    if (SP::sp_apitrace)
+    {
+        std::string msg = timer.getName();
+        msg += " end";
+        glDebugMessageInsert(GL_DEBUG_SOURCE_APPLICATION, GL_DEBUG_TYPE_MARKER, 100,
+            GL_DEBUG_SEVERITY_NOTIFICATION, -1, msg.c_str());
+    }
+#endif
+#endif
     if (!UserConfigParams::m_profiler_enabled) return;
     if (profiler.isFrozen()) return;
     if (!timer.canSubmitQuery) return;
@@ -216,8 +272,10 @@ ScopedGPUTimer::~ScopedGPUTimer()
 #endif
 }
 
-GPUTimer::GPUTimer() : initialised(false), lastResult(0), canSubmitQuery(true)
+GPUTimer::GPUTimer(const char* name)
+        : m_name(name)
 {
+    reset();
 }
 
 unsigned GPUTimer::elapsedTimeus()
@@ -233,107 +291,6 @@ unsigned GPUTimer::elapsedTimeus()
     canSubmitQuery = true;
     return result / 1000;
 }
-
-FrameBuffer::FrameBuffer() {}
-
-FrameBuffer::FrameBuffer(const std::vector<GLuint> &RTTs, size_t w, size_t h,
-                         bool layered)
-           : fbolayer(0), RenderTargets(RTTs), DepthTexture(0), 
-             width(w), height(h)
-{
-    glGenFramebuffers(1, &fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-#ifndef ANDROID
-    if (layered)
-    {
-        for (unsigned i = 0; i < RTTs.size(); i++)
-            glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, RTTs[i], 0);
-    }
-    else
-    {
-#endif
-        for (unsigned i = 0; i < RTTs.size(); i++)
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE_2D, RTTs[i], 0);
-#ifndef ANDROID
-    }
-    GLenum result = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    assert(result == GL_FRAMEBUFFER_COMPLETE_EXT);
-#endif
-}
-
-FrameBuffer::FrameBuffer(const std::vector<GLuint> &RTTs, GLuint DS, size_t w,
-                         size_t h, bool layered) 
-           : fbolayer(0), RenderTargets(RTTs), DepthTexture(DS), width(w), 
-             height(h)
-{
-    glGenFramebuffers(1, &fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-#ifndef ANDROID
-    if (layered)
-    {
-        for (unsigned i = 0; i < RTTs.size(); i++)
-            glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, RTTs[i], 0);
-        glFramebufferTexture(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, DS, 0);
-    }
-    else
-    {
-#endif
-        for (unsigned i = 0; i < RTTs.size(); i++)
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE_2D, RTTs[i], 0);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, DS, 0);
-#ifndef ANDROID
-    }
-    GLenum result = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    assert(result == GL_FRAMEBUFFER_COMPLETE_EXT);
-    if (layered)
-        glGenFramebuffers(1, &fbolayer);
-#endif
-}
-
-FrameBuffer::~FrameBuffer()
-{
-    glDeleteFramebuffers(1, &fbo);
-    if (fbolayer)
-        glDeleteFramebuffers(1, &fbolayer);
-}
-
-void FrameBuffer::bind() const
-{
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glViewport(0, 0, (int)width, (int)height);
-    GLenum bufs[] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2 };
-    glDrawBuffers((int)RenderTargets.size(), bufs);
-}
-
-void FrameBuffer::bindLayer(unsigned i)
-{
-    glBindFramebuffer(GL_FRAMEBUFFER, fbolayer);
-    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, RenderTargets[0], 0, i);
-    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, DepthTexture, 0, i);
-    glViewport(0, 0, (int)width, (int)height);
-    GLenum bufs[] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2 };
-    glDrawBuffers((int)RenderTargets.size(), bufs);
-}
-
-void FrameBuffer::Blit(const FrameBuffer &Src, FrameBuffer &Dst, GLbitfield mask, GLenum filter)
-{
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, Src.fbo);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, Dst.fbo);
-    glBlitFramebuffer(0, 0, (int)Src.width, (int)Src.height, 0, 0,
-                      (int)Dst.width, (int)Dst.height, mask, filter);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-}
-
-void FrameBuffer::BlitToDefault(size_t x0, size_t y0, size_t x1, size_t y1)
-{
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    glBlitFramebuffer(0, 0, (int)width, (int)height, (int)x0, (int)y0, (int)x1, (int)y1, GL_COLOR_BUFFER_BIT, GL_NEAREST);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-}
-
 
 void draw3DLine(const core::vector3df& start,
                 const core::vector3df& end, irr::video::SColor color)
@@ -362,6 +319,7 @@ void draw3DLine(const core::vector3df& start,
 
 bool hasGLExtension(const char* extension) 
 {
+#if !defined(USE_GLES2)
     if (glGetStringi != NULL)
     {
         GLint numExtensions = 0;
@@ -377,11 +335,20 @@ bool hasGLExtension(const char* extension)
         }
     }
     else
+#endif
     {
         const char* extensions = (const char*) glGetString(GL_EXTENSIONS);
-        if (extensions && strstr(extensions, extension) != NULL)
+        static std::vector<std::string> all_extensions;
+        if (all_extensions.empty())
         {
-            return true;
+            all_extensions = StringUtils::split(std::string(extensions), ' ');
+        }
+        for (unsigned i = 0; i < all_extensions.size(); i++)
+        {
+            if (all_extensions[i] == extension)
+            {
+                return true;
+            }
         }
     }
     return false;
@@ -394,6 +361,7 @@ bool hasGLExtension(const char* extension)
 const std::string getGLExtensions()
 {
     std::string result;
+#if !defined(USE_GLES2)
     if (glGetStringi != NULL)
     {
         GLint num_extensions = 0;
@@ -407,6 +375,7 @@ const std::string getGLExtensions()
         }
     }
     else
+#endif
     {
         const char* extensions = (const char*) glGetString(GL_EXTENSIONS);
         result = extensions;
@@ -773,3 +742,57 @@ else \
 
 #endif  // ifdef XX
 }   // getGLLimits
+
+
+// ----------------------------------------------------------------------------
+/** Executes glGetError and prints error to the console
+ * \return True if error ocurred
+ */
+bool checkGLError()
+{
+    GLenum err = glGetError();
+    
+    switch (err)
+    {
+    case GL_NO_ERROR:
+        break;
+    case GL_INVALID_ENUM:
+        Log::warn("GLWrap", "glGetError: GL_INVALID_ENUM");
+        break;
+    case GL_INVALID_VALUE:
+        Log::warn("GLWrap", "glGetError: GL_INVALID_VALUE");
+        break;
+    case GL_INVALID_OPERATION:
+        Log::warn("GLWrap", "glGetError: GL_INVALID_OPERATION");
+        break;
+    case GL_INVALID_FRAMEBUFFER_OPERATION:
+        Log::warn("GLWrap", "glGetError: GL_INVALID_FRAMEBUFFER_OPERATION");
+        break;
+    case GL_OUT_OF_MEMORY:
+        Log::warn("GLWrap", "glGetError: GL_OUT_OF_MEMORY");
+        break;
+#if !defined(USE_GLES2)
+    case GL_STACK_UNDERFLOW:
+        Log::warn("GLWrap", "glGetError: GL_STACK_UNDERFLOW");
+        break;
+    case GL_STACK_OVERFLOW:
+        Log::warn("GLWrap", "glGetError: GL_STACK_OVERFLOW");
+        break;
+#endif
+    default:
+        Log::warn("GLWrap", "glGetError: %i", (int)err);
+        break;
+    }
+    
+    return err != GL_NO_ERROR;
+}
+
+#ifdef WIN32
+// Tell system that it should use nvidia on optimus devices
+extern "C" {
+    __declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
+}
+#endif
+
+#endif   // !SERVER_ONLY
+

@@ -19,16 +19,27 @@
 #include "tracks/track_object.hpp"
 
 #include "animations/three_d_animation.hpp"
+#include "graphics/central_settings.hpp"
 #include "graphics/irr_driver.hpp"
+#include "graphics/lod_node.hpp"
+#include "graphics/material.hpp"
+#include "graphics/material_manager.hpp"
+#include "graphics/render_info.hpp"
+#include "graphics/sp/sp_mesh_buffer.hpp"
+#include "graphics/sp/sp_mesh_node.hpp"
 #include "io/file_manager.hpp"
 #include "io/xml_node.hpp"
 #include "input/device_manager.hpp"
 #include "items/item_manager.hpp"
-#include "modes/world.hpp"
+#include "network/network_config.hpp"
 #include "physics/physical_object.hpp"
 #include "race/race_manager.hpp"
 #include "scriptengine/script_engine.hpp"
-#include "utils/helpers.hpp"
+#include "tracks/track.hpp"
+#include "tracks/model_definition_loader.hpp"
+#include "utils/string_utils.hpp"
+
+#include <IAnimatedMeshSceneNode.h>
 #include <ISceneManager.h>
 
 /** A track object: any additional object on the track. This object implements
@@ -65,7 +76,6 @@ TrackObject::TrackObject(const core::vector3df& xyz, const core::vector3df& hpr,
     m_enabled         = true;
     m_presentation    = NULL;
     m_animator        = NULL;
-    m_physical_object = NULL;
     m_parent_library  = NULL;
     m_interaction     = interaction;
     m_presentation    = presentation;
@@ -77,9 +87,8 @@ TrackObject::TrackObject(const core::vector3df& xyz, const core::vector3df& hpr,
     if (m_interaction != "ghost" && m_interaction != "none" &&
         physics_settings )
     {
-        m_physical_object = new PhysicalObject(is_dynamic,
-                                               *physics_settings,
-                                               this);
+        m_physical_object = std::make_shared<PhysicalObject>
+            (is_dynamic, *physics_settings, this);
     }
 
     reset();
@@ -103,7 +112,6 @@ void TrackObject::init(const XMLNode &xml_node, scene::ISceneNode* parent,
     m_presentation = NULL;
     m_animator = NULL;
     m_parent_library = parent_library;
-    m_physical_object = NULL;
 
     xml_node.get("id",      &m_id        );
     xml_node.get("model",   &m_name      );
@@ -151,21 +159,28 @@ void TrackObject::init(const XMLNode &xml_node, scene::ISceneNode* parent,
     }
     else if (xml_node.getName() == "library")
     {
+        xml_node.get("name", &m_name);
         m_presentation = new TrackObjectPresentationLibraryNode(this, xml_node, model_def_loader);
+        if (parent_library != NULL)
+        {
+            Track::getCurrentTrack()->addMetaLibrary(parent_library, this);
+        }
     }
     else if (type == "sfx-emitter")
     {
         // FIXME: at this time sound emitters are just disabled in multiplayer
-        //        otherwise the sounds would be constantly heard
-        if (race_manager->getNumLocalPlayers() < 2)
-            m_presentation = new TrackObjectPresentationSound(xml_node, parent);
+        //        otherwise the sounds would be constantly heard, for networking
+        //        the index of item needs to be same so we create and disable it
+        //        in TrackObjectPresentationSound constructor
+        m_presentation = new TrackObjectPresentationSound(xml_node, parent,
+            race_manager->getNumLocalPlayers() > 1);
     }
     else if (type == "action-trigger")
     {
         std::string action;
         xml_node.get("action", &action);
         m_name = action; //adds action as name so that it can be found by using getName()
-        m_presentation = new TrackObjectPresentationActionTrigger(xml_node);
+        m_presentation = new TrackObjectPresentationActionTrigger(xml_node, parent_library);
     }
     else if (type == "billboard")
     {
@@ -177,13 +192,87 @@ void TrackObject::init(const XMLNode &xml_node, scene::ISceneNode* parent,
     }
     else
     {
+        // Colorization settings
+        std::string model_name;
+        xml_node.get("model", &model_name);
+#ifndef SERVER_ONLY
+        if (CVS->isGLSL())
+        {
+            scene::IMesh* mesh = NULL;
+            // Use the first material in mesh to determine hue
+            Material* colorized = NULL;
+            if (model_name.size() > 0)
+            {
+                mesh = irr_driver->getMesh(model_name);
+                if (mesh != NULL)
+                {
+                    for (u32 j = 0; j < mesh->getMeshBufferCount(); j++)
+                    {
+                        SP::SPMeshBuffer* mb = static_cast<SP::SPMeshBuffer*>
+                            (mesh->getMeshBuffer(j));
+                        std::vector<Material*> mbs = mb->getAllSTKMaterials();
+                        for (Material* m : mbs)
+                        {
+                            if (m->isColorizable() && m->hasRandomHue())
+                            {
+                                colorized = m;
+                                break;
+                            }
+                        }
+                        if (colorized != NULL)
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                std::string group_name = "";
+                xml_node.get("lod_group", &group_name);
+                // Try to get the first mesh from lod groups
+                mesh = model_def_loader.getFirstMeshFor(group_name);
+                if (mesh != NULL)
+                {
+                    for (u32 j = 0; j < mesh->getMeshBufferCount(); j++)
+                    {
+                        SP::SPMeshBuffer* mb = static_cast<SP::SPMeshBuffer*>
+                            (mesh->getMeshBuffer(j));
+                        std::vector<Material*> mbs = mb->getAllSTKMaterials();
+                        for (Material* m : mbs)
+                        {
+                            if (m->isColorizable() && m->hasRandomHue())
+                            {
+                                colorized = m;
+                                break;
+                            }
+                        }
+                        if (colorized != NULL)
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // If at least one material is colorizable, add RenderInfo for it
+            if (colorized != NULL)
+            {
+                const float hue = colorized->getRandomHue();
+                if (hue > 0.0f)
+                {
+                    m_render_info = std::make_shared<RenderInfo>(hue);
+                }
+            }
+        }
+#endif
         scene::ISceneNode *glownode = NULL;
         bool is_movable = false;
         if (lod_instance)
         {
             m_type = "lod";
             TrackObjectPresentationLOD* lod_node =
-                new TrackObjectPresentationLOD(xml_node, parent, model_def_loader);
+                new TrackObjectPresentationLOD(xml_node, parent, model_def_loader, m_render_info);
             m_presentation = lod_node;
 
             LODNode* node = (LODNode*)lod_node->getNode();
@@ -207,7 +296,8 @@ void TrackObject::init(const XMLNode &xml_node, scene::ISceneNode* parent,
             m_type = "mesh";
             m_presentation = new TrackObjectPresentationMesh(xml_node,
                                                              m_enabled,
-                                                             parent);
+                                                             parent,
+                                                             m_render_info);
             scene::ISceneNode* node = ((TrackObjectPresentationMesh *)m_presentation)->getNode();
             if (type == "movable" && parent != NULL)
             {
@@ -253,8 +343,21 @@ void TrackObject::init(const XMLNode &xml_node, scene::ISceneNode* parent,
             r = glow.getRed() / 255.0f;
             g = glow.getGreen() / 255.0f;
             b = glow.getBlue() / 255.0f;
+            SP::SPMeshNode* spmn = dynamic_cast<SP::SPMeshNode*>(glownode);
+            if (spmn)
+            {
+                spmn->setGlowColor(video::SColorf(r, g, b));
+            }
+        }
 
-            irr_driver->addGlowingNode(glownode, r, g, b);
+        bool is_in_shadowpass = true;
+        if (xml_node.get("shadow-pass", &is_in_shadowpass) && glownode)
+        {
+            SP::SPMeshNode* spmn = dynamic_cast<SP::SPMeshNode*>(glownode);
+            if (spmn)
+            {
+                spmn->setInShadowPass(is_in_shadowpass);
+            }
         }
 
         bool forcedbloom = false;
@@ -262,8 +365,7 @@ void TrackObject::init(const XMLNode &xml_node, scene::ISceneNode* parent,
         {
             float power = 1;
             xml_node.get("bloompower", &power);
-            power = clampf(power, 0.5f, 10);
-
+            btClamp(power, 0.5f, 10.0f);
             irr_driver->addForcedBloomNode(glownode, power);
         }
     }
@@ -271,7 +373,14 @@ void TrackObject::init(const XMLNode &xml_node, scene::ISceneNode* parent,
 
     if (type == "animation" || xml_node.hasChildNamed("curve"))
     {
-        m_animator = new ThreeDAnimation(xml_node, this);
+        try
+        {
+            m_animator = new ThreeDAnimation(xml_node, this);
+        }
+        catch (std::exception& e)
+        {
+            Log::debug("TrackObject", e.what());
+        }
     }
 
     reset();
@@ -293,7 +402,8 @@ void TrackObject::onWorldReady()
     else if (m_visibility_condition.size() > 0)
     {
         unsigned char result = -1;
-        Scripting::ScriptEngine* script_engine = World::getWorld()->getScriptEngine();
+        Scripting::ScriptEngine* script_engine = 
+                                        Scripting::ScriptEngine::getInstance();
 
         std::ostringstream fn_signature;
         std::vector<std::string> arguments;
@@ -303,8 +413,8 @@ void TrackObject::onWorldReady()
             // There are arguments to pass to the function
             // TODO: For the moment we only support string arguments
             // TODO: this parsing could be improved
-            unsigned first = m_visibility_condition.find("(");
-            unsigned last = m_visibility_condition.find_last_of(")");
+            unsigned first = (unsigned)m_visibility_condition.find("(");
+            unsigned last = (unsigned)m_visibility_condition.find_last_of(")");
             std::string fn_name = m_visibility_condition.substr(0, first);
             std::string str_arguments = m_visibility_condition.substr(first + 1, last - first - 1);
             arguments = StringUtils::split(str_arguments, ',');
@@ -333,7 +443,7 @@ void TrackObject::onWorldReady()
                 {
                     ctx->SetArgObject(i, &arguments[i]);
                 }
-                ctx->SetArgObject(arguments.size(), self);
+                ctx->SetArgObject((int)arguments.size(), self);
             },
             [&](asIScriptContext* ctx) { result = ctx->GetReturnByte(); });
 
@@ -353,7 +463,6 @@ TrackObject::~TrackObject()
 {
     delete m_presentation;
     delete m_animator;
-    delete m_physical_object;
 }   // ~TrackObject
 
 // ----------------------------------------------------------------------------
@@ -380,7 +489,7 @@ void TrackObject::setEnabled(bool enabled)
 
     if (getType() == "mesh")
     {
-        if (m_physical_object != NULL)
+        if (m_physical_object)
         {
             if (enabled)
                 m_physical_object->addBody();
@@ -406,7 +515,7 @@ void TrackObject::resetEnabled()
 
     if (getType() == "mesh")
     {
-        if (m_physical_object != NULL)
+        if (m_physical_object)
         {
             if (m_initially_visible)
                 m_physical_object->addBody();
@@ -419,19 +528,45 @@ void TrackObject::resetEnabled()
     {
         m_movable_children[i]->resetEnabled();
     }
-}
+}   // resetEnabled
 
 // ----------------------------------------------------------------------------
+/** This updates all only graphical elements. It is only called once per
+ *  rendered frame, not once per time step.
+ *  float dt Time since last rame.
+ */
+void TrackObject::updateGraphics(float dt)
+{
+    if (m_presentation) m_presentation->updateGraphics(dt);
+    if (m_physical_object) m_physical_object->updateGraphics(dt);
+    if (m_animator) m_animator->updateWithWorldTicks(false/*has_physics*/);
+}   // update
 
+// ----------------------------------------------------------------------------
+/** This updates once per physics time step.
+ *  float dt Time since last rame.
+ */
 void TrackObject::update(float dt)
 {
     if (m_presentation) m_presentation->update(dt);
-
     if (m_physical_object) m_physical_object->update(dt);
-
-    if (m_animator) m_animator->update(dt);
+    if (m_animator) m_animator->updateWithWorldTicks(true/*has_physics*/);
 }   // update
 
+
+// ----------------------------------------------------------------------------
+/** This reset all physical object moved by 3d animation back to current ticks
+ */
+void TrackObject::resetAfterRewind()
+{
+    if (!m_animator || !m_physical_object)
+        return;
+    m_animator->updateWithWorldTicks(true/*has_physics*/);
+    btTransform new_trans;
+    m_physical_object->getMotionState()->getWorldTransform(new_trans);
+    m_physical_object->getBody()->setCenterOfMassTransform(new_trans);
+    m_physical_object->getBody()->saveKinematicState(stk_config->ticks2Time(1));
+}   // resetAfterRewind
 
 // ----------------------------------------------------------------------------
 /** Does a raycast against the track object. The object must have a physical
@@ -470,7 +605,7 @@ void TrackObject::move(const core::vector3df& xyz, const core::vector3df& hpr,
     if (m_presentation != NULL)
         m_presentation->move(xyz, hpr, scale, isAbsoluteCoord);
 
-    if (update_rigid_body && m_physical_object != NULL)
+    if (update_rigid_body && m_physical_object)
     {
         movePhysicalBodyToGraphicalNode(xyz, hpr);
     }
@@ -478,7 +613,8 @@ void TrackObject::move(const core::vector3df& xyz, const core::vector3df& hpr,
 
 // ----------------------------------------------------------------------------
 
-void TrackObject::movePhysicalBodyToGraphicalNode(const core::vector3df& xyz, const core::vector3df& hpr)
+void TrackObject::movePhysicalBodyToGraphicalNode(const core::vector3df& xyz,
+                                                  const core::vector3df& hpr)
 {
     // If we set a bullet position from an irrlicht position, we need to
     // get the absolute transform from the presentation object (as set in
@@ -496,7 +632,7 @@ void TrackObject::movePhysicalBodyToGraphicalNode(const core::vector3df& xyz, co
     {
         m_physical_object->move(xyz, hpr);
     }
-}
+}   // movePhysicalBodyToGraphicalNode
 
 // ----------------------------------------------------------------------------
 const core::vector3df& TrackObject::getPosition() const
@@ -516,7 +652,6 @@ const core::vector3df TrackObject::getAbsoluteCenterPosition() const
     else
         return m_init_xyz;
 }   // getAbsolutePosition
-
 
 // ----------------------------------------------------------------------------
 
@@ -571,22 +706,76 @@ void TrackObject::addChild(TrackObject* child)
 // scripting function
 void TrackObject::moveTo(const Scripting::SimpleVec3* pos, bool isAbsoluteCoord)
 {
-    TrackObjectPresentationLibraryNode *libnode =
-        dynamic_cast<TrackObjectPresentationLibraryNode*>(m_presentation);
-    if (libnode != NULL)
-    {
-        libnode->move(core::vector3df(pos->getX(), pos->getY(), pos->getZ()),
-            core::vector3df(0.0f, 0.0f, 0.0f), // TODO: preserve rotation
-            core::vector3df(1.0f, 1.0f, 1.0f), // TODO: preserve scale
-            isAbsoluteCoord,
-            true /* moveChildrenPhysicalBodies */);
-    }
-    else
-    {
-        move(core::vector3df(pos->getX(), pos->getY(), pos->getZ()),
-            core::vector3df(0.0f, 0.0f, 0.0f), // TODO: preserve rotation
-            core::vector3df(1.0f, 1.0f, 1.0f), // TODO: preserve scale
-            true, // updateRigidBody
-            isAbsoluteCoord);
-    }
+    move(core::vector3df(pos->getX(), pos->getY(), pos->getZ()),
+        core::vector3df(0.0f, 0.0f, 0.0f), // TODO: preserve rotation
+        core::vector3df(1.0f, 1.0f, 1.0f), // TODO: preserve scale
+        true, // updateRigidBody
+        isAbsoluteCoord);
 }
+
+// ----------------------------------------------------------------------------
+scene::IAnimatedMeshSceneNode* TrackObject::getMesh()
+{
+    if (getPresentation<TrackObjectPresentationLOD>())
+    {
+        LODNode* ln = dynamic_cast<LODNode*>
+            (getPresentation<TrackObjectPresentationLOD>()->getNode());
+        if (ln && !ln->getAllNodes().empty())
+        {
+            scene::IAnimatedMeshSceneNode* an =
+                dynamic_cast<scene::IAnimatedMeshSceneNode*>
+                (ln->getFirstNode());
+            if (an)
+            {
+                return an;
+            }
+        }
+    }
+    else if (getPresentation<TrackObjectPresentationMesh>())
+    {
+        scene::IAnimatedMeshSceneNode* an =
+            dynamic_cast<scene::IAnimatedMeshSceneNode*>
+            (getPresentation<TrackObjectPresentationMesh>()->getNode());
+        if (an)
+        {
+            return an;
+        }
+    }
+    Log::debug("TrackObject", "No animated mesh");
+    return NULL;
+}   // getMesh
+
+// ----------------------------------------------------------------------------
+/* This function will join this (if true) static track object to main track
+ * model, the geometry creator in irrlicht will draw its physical shape to
+ * triangle mesh, so it can be combined to main track mesh.
+ * \return True if this track object is joinable and can be removed if needeed
+ */
+bool TrackObject::joinToMainTrack()
+{
+    // If no physical object or there is animator, skip it
+    // Also no joining if will affect kart (like moveable, flatten...)
+    if (!isEnabled() || !m_physical_object || hasAnimatorRecursively() ||
+        m_physical_object->isDynamic() || m_physical_object->isCrashReset() ||
+        m_physical_object->isExplodeKartObject() ||
+        m_physical_object->isFlattenKartObject())
+        return false;
+
+    // Scripting exploding barrel is assumed to be joinable in networking
+    // as it doesn't support it
+    if (!NetworkConfig::get()->isNetworking() &&
+        (!m_physical_object->getOnKartCollisionFunction().empty() ||
+        !m_physical_object->getOnItemCollisionFunction().empty()))
+        return false;
+
+    // Skip driveable non-exact shape object
+    // Notice driveable object should always has exact shape specified in
+    // blender
+    if (m_is_driveable && !m_physical_object->hasTriangleMesh())
+        return false;
+
+    m_physical_object->joinToMainTrack();
+    // This will remove the separated body
+    m_physical_object.reset();
+    return true;
+}   // joinToMainTrack

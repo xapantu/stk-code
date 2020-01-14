@@ -56,7 +56,7 @@ class CreditsScreen : public GUIEngine::Screen,
 
     friend class GUIEngine::ScreenSingleton<CreditsScreen>;
     CreditsScreen();
-    bool getWideLine(std::ifstream& file, core::stringw* out);
+    bool getLineAsWide(std::ifstream& file, core::stringw* out);
 
     bool m_is_victory_music;
 
@@ -73,7 +73,7 @@ public:
 
     /** \brief implement optional callback from parent class
      *  GUIEngine::Screen */
-    void onUpdate(float dt) OVERRIDE;
+    void onDraw(float dt) OVERRIDE;
 
     /** \brief implement callback from parent class GUIEngine::Screen */
     void init() OVERRIDE;

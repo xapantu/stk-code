@@ -25,12 +25,16 @@
   */
 
 #include "network/transport_address.hpp"
+#include "race/race_manager.hpp"
 #include "utils/types.hpp"
 
 #include <irrString.h>
 
+#include <map>
 #include <string>
+#include <tuple>
 
+class Track;
 class XMLNode;
 
 /**
@@ -40,14 +44,6 @@ class Server
 {
 public:
 
-    /** Set the sort order used in the comparison function. */
-    enum SortOrder
-    {
-        SO_SCORE = 1,    // Sorted on satisfaction score
-        SO_NAME = 2,     // Sorted alphabetically by name
-        SO_PLAYERS = 4
-    };
-
 protected:
     /** The server name to be displayed. */
     irr::core::stringw m_name;
@@ -55,8 +51,14 @@ protected:
     /** Name in lower case for comparisons. */
     std::string m_lower_case_name;
 
+    std::string m_server_owner_lower_case_name;
+
+    std::string m_lower_case_player_names;
+
+    std::string m_ipv6_address;
+
     uint32_t m_server_id;
-    uint32_t m_host_id;
+    uint32_t m_server_owner;
 
     /** The maximum number of players that the server supports */
     int m_max_players;
@@ -64,38 +66,58 @@ protected:
     /** The number of players currently on the server */
     int m_current_players;
 
-    /** The score/rating given */
-    float m_satisfaction_score;
-
-    /** True if this server is on the LAN, false otherwise. */
-    bool m_is_lan;
-
     /** The public ip address and port of this server. */
     TransportAddress m_address;
 
     /** This is the private port of the server. This is used if a WAN game
      *  is started, but one client is discovered on the same LAN, so a direct
-     *  connection using the private port is possible. */
+     *  connection using the private port with a broadcast is possible. */
     uint16_t m_private_port;
 
-    /** The sort order to be used in the comparison. */
-    static SortOrder m_sort_order;
+    unsigned m_server_mode;
 
+    RaceManager::Difficulty m_difficulty;
+
+    bool m_password_protected;
+
+    /* WAN server only, show the owner name of server, can only be seen
+     * for localhost or if you are friend with the server owner. */
+    core::stringw m_server_owner_name;
+
+    /* WAN server only, distance based on IP latitude and longitude. */
+    float m_distance;
+
+    /* WAN server only, true if hosted officially by stk team. */
+    bool m_official;
+
+    bool m_supports_encrytion;
+
+    bool m_game_started;
+
+    bool m_ipv6_connection;
+
+    std::vector<std::tuple<
+        /*rank*/int, core::stringw, /*scores*/double, /*playing time*/float
+        > > m_players;
+
+    std::string m_current_track;
+
+    std::string m_country_code;
 public:
 
          /** Initialises the object from an XML node. */
-         Server(const XMLNode &xml, bool is_lan);
-         Server(const irr::core::stringw &name, bool is_lan, int max_players,
-                int current_players, const TransportAddress &address);
-    bool filterByWords(const irr::core::stringw words) const;
+         Server(const XMLNode& server_info);
+         Server(unsigned server_id, const irr::core::stringw &name,
+                int max_players, int current_players, unsigned difficulty,
+                unsigned server_mode, const TransportAddress &address,
+                bool password_protected, bool game_started,
+                const std::string& current_track = "");
     // ------------------------------------------------------------------------
     /** Returns ip address and port of this server. */
     const TransportAddress& getAddress() const { return m_address; }
     // ------------------------------------------------------------------------
-    /** Sets the sort order used in the comparison function. It is static, so
-    *  that each instance can access the sort order. */
-    static void setSortOrder(SortOrder so) { m_sort_order = so; }
-
+    /** Returns the lower case name of the server. */
+    const std::string& getLowerCaseName() const { return m_lower_case_name; }
     // ------------------------------------------------------------------------
     /** Returns the name of the server. */
     const irr::core::stringw& getName() const { return m_name; }
@@ -103,8 +125,10 @@ public:
     /** Returns the ID of this server. */
     const uint32_t getServerId() const { return m_server_id; }
     // ------------------------------------------------------------------------
-    /** Returns the unique host id of this server. */
-    const uint32_t getHostId() const { return m_host_id; }
+    /** Returns the user id in STK addon server of the server owner (WAN). */
+    const uint32_t getServerOwner() const { return m_server_owner; }
+    // ------------------------------------------------------------------------
+    uint16_t getPrivatePort() const { return m_private_port; }
     // ------------------------------------------------------------------------
     /** Returns the maximum number of players allowed on this server. */
     const int getMaxPlayers() const { return m_max_players; }
@@ -112,27 +136,53 @@ public:
     /** Returns the number of currently connected players. */
     const int getCurrentPlayers() const { return m_current_players; }
     // ------------------------------------------------------------------------
-    /** Compares two servers according to the sort order currently defined.
-     *  \param a The addon to compare this addon to.
-     */
-    bool operator<(const Server &server) const
+    unsigned getServerMode() const                    { return m_server_mode; }
+    // ------------------------------------------------------------------------
+    RaceManager::Difficulty getDifficulty() const      { return m_difficulty; }
+    // ------------------------------------------------------------------------
+    bool isPasswordProtected() const           { return m_password_protected; }
+    // ------------------------------------------------------------------------
+    const core::stringw& getServerOwnerName() const
+                                                { return m_server_owner_name; }
+    // ------------------------------------------------------------------------
+    const std::string& getServerOwnerLowerCaseName() const
+                                     { return m_server_owner_lower_case_name; }
+    // ------------------------------------------------------------------------
+    float getDistance() const                            { return m_distance; }
+    // ------------------------------------------------------------------------
+    bool supportsEncryption() const            { return m_supports_encrytion; }
+    // ------------------------------------------------------------------------
+    bool isOfficial() const                              { return m_official; }
+    // ------------------------------------------------------------------------
+    bool isGameStarted() const                       { return m_game_started; }
+    // ------------------------------------------------------------------------
+    const std::vector<std::tuple<int, core::stringw, double, float> >&
+        getPlayers() const                                { return m_players; }
+    // ------------------------------------------------------------------------
+    void setServerId(unsigned id)                         { m_server_id = id; }
+    // ------------------------------------------------------------------------
+    void setPrivatePort(uint16_t port)               { m_private_port = port; }
+    // ------------------------------------------------------------------------
+    void setSupportsEncryption(bool val)        { m_supports_encrytion = val; }
+    // ------------------------------------------------------------------------
+    bool searchByName(const std::string& lower_case_word);
+    // ------------------------------------------------------------------------
+    Track* getCurrentTrack() const;
+    // ------------------------------------------------------------------------
+    const std::string& getCountryCode() const        { return m_country_code; }
+    // ------------------------------------------------------------------------
+    void setIPV6Connection(bool val)
     {
-        switch (m_sort_order)
-        {
-        case SO_SCORE:
-            return m_satisfaction_score < server.m_satisfaction_score;
-            break;
-        case SO_NAME:
-            // m_id is the lower case name
-            return m_lower_case_name < server.m_lower_case_name;
-            break;
-        case SO_PLAYERS:
-            return m_current_players < server.m_current_players;
-            break;
-        }   // switch
-
-        return true;
-    }   // operator<
-
+        if (m_ipv6_address.empty())
+            m_ipv6_connection = false;
+        else
+            m_ipv6_connection = val;
+    }
+    // ------------------------------------------------------------------------
+    bool useIPV6Connection() const                { return m_ipv6_connection; }
+    // ------------------------------------------------------------------------
+    void setIPV6Address(const std::string& addr)     { m_ipv6_address = addr; }
+    // ------------------------------------------------------------------------
+    const std::string& getIPV6Address() const        { return m_ipv6_address; }
 };   // Server
 #endif // HEADER_SERVER_HPP

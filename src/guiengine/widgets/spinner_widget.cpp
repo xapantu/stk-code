@@ -23,7 +23,7 @@
 #include "guiengine/widgets/spinner_widget.hpp"
 #include "io/file_manager.hpp"
 #include "utils/string_utils.hpp"
-#include "utils/translation.hpp"
+#include "utils/log.hpp"
 
 #include <IGUIElement.h>
 #include <IGUIEnvironment.h>
@@ -49,6 +49,7 @@ SpinnerWidget::SpinnerWidget(const bool gauge) : Widget(WTYPE_SPINNER)
     m_spinner_widget_player_id=-1;
     m_min = 0;
     m_max = 999;
+    m_right_selected = false;
 }
 
 // -----------------------------------------------------------------------------
@@ -156,8 +157,6 @@ void SpinnerWidget::add()
         label->setTextAlignment(EGUIA_CENTER, EGUIA_CENTER);
         label->setTabStop(false);
         label->setNotClipped(true);
-        label->setRightToLeft(translations->isRTLText(text));
-
 
         if (m_labels.size() > 0)
         {
@@ -230,45 +229,65 @@ void SpinnerWidget::move(const int x, const int y, const int w, const int h)
 
 EventPropagation SpinnerWidget::rightPressed(const int playerID)
 {
+    //Log::info("SpinnerWidget", "Right pressed");
+
     // if widget is deactivated, do nothing
     if (m_deactivated) return EVENT_BLOCK;
 
-    //Log::info("SpinnerWidget", "Right pressed");
-    if (m_value+1 <= m_max)
-    {
-        setValue(m_value+1);
-    }
-    else if (m_wrap_around)
-    {
-        setValue(m_min);
-    }
+    // if right arrow is selected, let event handler move to next widget
+    if (m_right_selected)
+        return EVENT_BLOCK;
+    else
+        setSelectedButton(/* right*/ true);
 
-    //GUIEngine::transmitEvent( this, m_properties[PROP_ID], playerID );
-
-    return EVENT_LET;
-}
+    return EVENT_BLOCK_BUT_HANDLED;
+} // rightPressed
 
 // -----------------------------------------------------------------------------
 
 EventPropagation SpinnerWidget::leftPressed(const int playerID)
 {
+    //Log::info("SpinnerWidget", "Left pressed");
+
     // if widget is deactivated, do nothing
     if (m_deactivated) return EVENT_BLOCK;
 
-    //Log::info("SpinnerWidget", "Left pressed");
-    if (m_value-1 >= m_min)
-    {
-        setValue(m_value-1);
-    }
-    else if (m_wrap_around)
-    {
-        setValue(m_max);
-    }
 
-    //GUIEngine::transmitEvent( this, m_properties[PROP_ID], playerID );
+    // if right arrow is selected, select left arrow
+    if (m_right_selected)
+        setSelectedButton(/* right*/ false);
+    // if left arrow is selected, let navigation move to next widget
+    else
+        return EVENT_BLOCK;
 
-    return EVENT_LET;
-}
+    return EVENT_BLOCK_BUT_HANDLED;
+} // leftPressed
+
+void SpinnerWidget::activateSelectedButton()
+{
+    if (m_right_selected)
+    {
+        if (m_value+1 <= m_max)
+        {
+            setValue(m_value+1);
+        }
+        else if (m_wrap_around)
+        {
+            setValue(m_min);
+        }
+    }
+    else // left button active
+    {
+        if (m_value-1 >= m_min)
+        {
+            setValue(m_value-1);
+        }
+        else if (m_wrap_around)
+        {
+            setValue(m_max);
+        }
+    }
+} // activateSelectedButton
 
 // -----------------------------------------------------------------------------
 
@@ -283,11 +302,13 @@ EventPropagation SpinnerWidget::transmitEvent(Widget* w,
 
     if (originator == "left")
     {
-        leftPressed(playerID);
+        m_right_selected = false;
+        activateSelectedButton();
     }
     else if (originator == "right")
     {
-        rightPressed(playerID);
+        m_right_selected = true;
+        activateSelectedButton();
     }
     else if (originator == "spinnerbody" || originator == m_properties[PROP_ID])
     {
@@ -318,7 +339,7 @@ void SpinnerWidget::addLabel(stringw label)
 {
     m_labels.push_back(label);
     m_min = 0;
-    m_max = m_labels.size()-1;
+    m_max = (int)m_labels.size()-1;
 
     if (m_element != NULL) setValue(0);
 }
@@ -328,7 +349,7 @@ void SpinnerWidget::addLabel(stringw label)
 void SpinnerWidget::setValue(const int new_value)
 {
     m_value = new_value;
-    m_customText = "";
+    m_custom_text = "";
 
     if (m_graphical)
     {
@@ -402,30 +423,30 @@ void SpinnerWidget::setActive(bool active)
     if (active)
     {
         setText(L"");
-        if (m_customText.empty())
+        if (m_custom_text.empty())
         {
             setValue(getValue()); // Update the display
         }
         else
         {
-            setCustomText(m_customText);
+            setCustomText(m_custom_text);
         }
     }
     else
     {
         // Save it temporary because setValue(which is uses for update in
         // this case) overwrites it
-        core::stringw customText = m_customText;
+        core::stringw custom_text = m_custom_text;
         setText(L"-");
         setValue(getValue()); // Update the display
-        m_customText = customText;
+        m_custom_text = custom_text;
     }
 }   // setActive
 
 // -----------------------------------------------------------------------------
 void SpinnerWidget::setCustomText(const core::stringw& text)
 {
-    m_customText = text;
+    m_custom_text = text;
     if (m_children.size() > 0)
     {
         m_children[1].m_element->setText(text.c_str());
@@ -434,13 +455,13 @@ void SpinnerWidget::setCustomText(const core::stringw& text)
 
 // -----------------------------------------------------------------------------
 
-void SpinnerWidget::onClick()
+EventPropagation SpinnerWidget::onClick()
 {
     if (m_children[1].m_deactivated || 
         m_children[1].m_properties[PROP_ID] != "spinnerbody"  || 
         !isGauge()) 
     { 
-        return; 
+        return EVENT_LET; 
     }
 
     const core::position2di mouse_position
@@ -464,6 +485,8 @@ void SpinnerWidget::onClick()
 
         setValue(new_value);
     }
+    
+    return EVENT_LET;
 }
 
 // -----------------------------------------------------------------------------

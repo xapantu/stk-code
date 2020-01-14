@@ -15,9 +15,12 @@
 //  along with this program; if not, write to the Free Software
 //  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
+#ifndef SERVER_ONLY
+
 #include "addons/news_manager.hpp"
 
 #include "config/user_config.hpp"
+#include "config/stk_config.hpp"
 #include "io/file_manager.hpp"
 #include "online/http_request.hpp"
 #include "online/request_manager.hpp"
@@ -32,7 +35,8 @@
 
 using namespace Online;
 
-NewsManager *NewsManager::m_news_manager=NULL;
+NewsManager *NewsManager::m_news_manager = nullptr;
+std::string NewsManager::m_news_filename = "online_news.xml";
 
 // ----------------------------------------------------------------------------
 NewsManager::NewsManager() : m_news(std::vector<NewsMessage>())
@@ -40,6 +44,12 @@ NewsManager::NewsManager() : m_news(std::vector<NewsMessage>())
     m_current_news_message = -1;
     m_error_message.setAtomic("");
     m_force_refresh = false;
+
+    // Clean .part file which may be left behind
+    std::string news_part = file_manager->getAddonsFile(m_news_filename + ".part");
+    if (file_manager->fileExists(news_part))
+        file_manager->removeFile(news_part);
+
     init(false);
 }   // NewsManage
 
@@ -51,17 +61,16 @@ NewsManager::~NewsManager()
 // ---------------------------------------------------------------------------
 /** This function initialises the data for the news manager. It starts a
  *  separate thread to execute downloadNews() - which (if necessary) downloads
- *  the news.xml file and updates the list of news messages. It also
+ *  the m_news_filename file and updates the list of news messages. It also
  *  initialises the addons manager (which can trigger another download of
- *  news.xml).
- *  \param force_refresh Re-download news.xml, even if
+ *  m_news_filename).
+ *  \param force_refresh Re-download m_news_filename, even if
  */
 void NewsManager::init(bool force_refresh)
 {
     m_force_refresh = force_refresh;
 
-#ifndef ANDROID
-    // The rest (which potentially involves downloading news.xml) is handled
+    // The rest (which potentially involves downloading m_news_filename) is handled
     // in a separate thread, so that the GUI remains responsive. It is only
     // started if internet access is enabled, else nothing is done in the
     // thread anyway (and the addons menu is disabled as a result).
@@ -70,9 +79,6 @@ void NewsManager::init(bool force_refresh)
         pthread_attr_t  attr;
         pthread_attr_init(&attr);
         pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        // Should be the default, but just in case:
-        pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-        //pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
         pthread_t thread_id;
         int error = pthread_create(&thread_id, &attr,
             &NewsManager::downloadNews, this);
@@ -84,12 +90,11 @@ void NewsManager::init(bool force_refresh)
         }
         pthread_attr_destroy(&attr);
     }
-#endif
 
 }   //init
 
 // ---------------------------------------------------------------------------
-/** This function submits request which will download the news.xml file
+/** This function submits request which will download the m_news_filename file
  *  if necessary. It is running in its own thread, so we can use blocking
  *  download calls without blocking the GUI.
  *  \param obj This is 'this' object, passed on during pthread creation.
@@ -100,21 +105,23 @@ void* NewsManager::downloadNews(void *obj)
     NewsManager *me = (NewsManager*)obj;
     me->clearErrorMessage();
 
-    std::string xml_file = file_manager->getAddonsFile("news.xml");
+    std::string xml_file = file_manager->getAddonsFile(m_news_filename);
+    // Prevent downloading when .part file created, which is already downloaded
+    std::string xml_file_part = file_manager->getAddonsFile(m_news_filename + ".part");
     bool news_exists = file_manager->fileExists(xml_file);
 
     // The news message must be updated if either it has never been updated,
     // or if the time of the last update was more than news_frequency ago,
     // or because a 'refresh' was explicitly requested by the user, or no
-    // news.xml file exists.
+    // m_news_filename file exists.
     bool download = ( UserConfigParams::m_news_last_updated==0  ||
                       UserConfigParams::m_news_last_updated
                           +UserConfigParams::m_news_frequency
                         < StkTime::getTimeSinceEpoch()          ||
                       me->m_force_refresh                       ||
                       !news_exists                                    )
-         && UserConfigParams::m_internet_status==RequestManager::IPERM_ALLOWED;
-
+         && UserConfigParams::m_internet_status==RequestManager::IPERM_ALLOWED
+         && !file_manager->fileExists(xml_file_part);
     const XMLNode *xml = NULL;
 
     if(!download && news_exists)
@@ -143,8 +150,8 @@ void* NewsManager::downloadNews(void *obj)
     {
         core::stringw error_message("");
 
-        HTTPRequest *download_req = new HTTPRequest("news.xml");
-        download_req->setAddonsURL("news.xml");
+        auto download_req = std::make_shared<HTTPRequest>(m_news_filename);
+        download_req->setAddonsURL(m_news_filename);
 
         // Initialise the online portion of the addons manager.
         if(UserConfigParams::logAddons())
@@ -157,15 +164,12 @@ void* NewsManager::downloadNews(void *obj)
             // with the default server address again (just in case
             // that a redirect went wrong, or a wrong/incorrect
             // address somehow made its way into the config file.
-            delete download_req;
-
             // We need a new object, since the state of the old
             // download request is now done.
-            download_req = new HTTPRequest("news.xml");
-            UserConfigParams::m_server_addons.revertToDefaults();
+            download_req = std::make_shared<HTTPRequest>(m_news_filename);
 
             // make sure the new server address is actually used
-            download_req->setAddonsURL("news.xml");
+            download_req->setAddonsURL(m_news_filename);
             download_req->executeNow();
 
             if(download_req->hadDownloadError())
@@ -184,7 +188,6 @@ void* NewsManager::downloadNews(void *obj)
 
         if(!download_req->hadDownloadError())
             UserConfigParams::m_news_last_updated = StkTime::getTimeSinceEpoch();
-        delete download_req;
 
         // No download error, update the last_updated time value, and delete
         // the potentially loaded xml file
@@ -220,31 +223,53 @@ void* NewsManager::downloadNews(void *obj)
  */
 void NewsManager::checkRedirect(const XMLNode *xml)
 {
-    std::string new_server;
-    int result = xml->get("redirect", &new_server);
-    if(result==1 && new_server!="")
+    if (stk_config->m_allow_news_redirects)
     {
-        if(UserConfigParams::logAddons())
+        // NOTE: Before 0.10 there were just two redirect attributes
+        // "redirect" - addons server (contains /dl/xml/ path)
+        // "hw-report-server" - hardware report server
+
+        // Redirect for the new addons server
+        std::string new_addons_server;
+        if (xml->get("redirect-server-addons", &new_addons_server) == 1 && !new_addons_server.empty())
         {
-            Log::info("[Addons]", "Current server: '%s'\n [Addons] New server: '%s'",
-                        UserConfigParams::m_server_addons.c_str(), new_server.c_str());
+            if (UserConfigParams::logAddons())
+            {
+                Log::info("[Addons]", "Current addons server: '%s'\n [Addons] New addons server: '%s'",
+                            stk_config->m_server_addons.c_str(), new_addons_server.c_str());
+            }
+            stk_config->m_server_addons = new_addons_server;
         }
-        UserConfigParams::m_server_addons = new_server;
+
+        // Redirect for the API server
+        std::string new_api_server;
+        if (xml->get("redirect-server-api", &new_api_server) == 1 && !new_api_server.empty())
+        {
+            if (UserConfigParams::logAddons())
+            {
+                Log::info("[Addons]", "Current API server: '%s'\n [Addons] New API server: '%s'",
+                            stk_config->m_server_api.c_str(), new_api_server.c_str());
+            }
+            stk_config->m_server_api = new_api_server;
+        }
+
+        // Redirect for the hardware report server
+        std::string new_hardware_report_server;
+        if (xml->get("redirect-server-hardware-report", &new_hardware_report_server) == 1 && !new_hardware_report_server.empty())
+        {
+            Log::info("hw report", "Current hardware report  server: '%s'\n [hw report] New hardware report server: '%s'",
+                        stk_config->m_server_hardware_report.c_str(), new_hardware_report_server.c_str());
+            stk_config->m_server_hardware_report = new_hardware_report_server;
+        }
     }
 
-    std::string hw_report_server;
-    if(xml->get("hw-report-server", &hw_report_server)==1 && hw_report_server.size()>0)
-    {
-        Log::info("hw report", "New server at '%s'.", hw_report_server.c_str());
-        UserConfigParams::m_server_hw_report = hw_report_server;
-    }
-
+    // Update menu/game polling interval
     float polling;
-    if(xml->get("menu-polling-interval", &polling))
+    if (xml->get("menu-polling-interval", &polling))
     {
         RequestManager::get()->setMenuPollingInterval(polling);
     }
-    if(xml->get("game-polling-interval", &polling))
+    if (xml->get("game-polling-interval", &polling))
     {
         RequestManager::get()->setGamePollingInterval(polling);
     }
@@ -316,7 +341,7 @@ void NewsManager::updateNews(const XMLNode *xml, const std::string &filename)
         // a new read on the next start, instead of waiting
         // for some time).
         file_manager->removeFile(filename);
-        NewsMessage n(_("Can't access stkaddons server..."), -1);
+        NewsMessage n(_("Failed to connect to the SuperTuxKart add-ons server."), -1);
         m_news.lock();
         m_news.getData().push_back(n);
 
@@ -487,3 +512,5 @@ bool NewsManager::conditionFulfilled(const std::string &cond)
 }   // conditionFulfilled
 
 // ----------------------------------------------------------------------------
+
+#endif

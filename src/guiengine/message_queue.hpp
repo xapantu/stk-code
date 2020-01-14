@@ -34,11 +34,22 @@ namespace MessageQueue
      *  different look. This type is used to sort the messages, so it is
      *  important that messages that need to be shown as early as possible
      *  will be listed last (i.e. have highest priority). */
-    enum MessageType { MT_FRIEND, MT_ACHIEVEMENT, MT_ERROR};
+    enum MessageType
+    {
+        MT_FRIEND,
+        MT_ACHIEVEMENT,
+        MT_GENERIC,
+        MT_ERROR,
+        MT_PROGRESS
+    };
 
     void add(MessageType mt, const core::stringw &message);
+    void addStatic(MessageType mt, const core::stringw &message);
+    void showProgressBar(int progress, const core::stringw& msg);
     void updatePosition();
     void update(float dt);
-
+    void discardStatic();
+    void clear();
+    void resetGlobalVariables();
 };   // namespace GUIEngine
 #endif

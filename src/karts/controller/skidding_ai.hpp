@@ -45,12 +45,13 @@
 
 #include "karts/controller/ai_base_lap_controller.hpp"
 #include "race/race_manager.hpp"
-#include "tracks/graph_node.hpp"
+#include "tracks/drive_node.hpp"
 #include "utils/random_generator.hpp"
 
+#include <line3d.h>
+
+class ItemState;
 class LinearWorld;
-class QuadGraph;
-class ShowCurve;
 class Track;
 
 namespace irr
@@ -143,8 +144,14 @@ private:
     /** Distance to the kard behind. */
     float m_distance_behind;
 
-    /** The actual start delay used. */
-    float m_start_delay;
+    /** Distance to the leader kart (used only in FTL)
+        If this kart is leader, contains a high value
+        to avoid the leader slowing down */
+    float m_distance_leader;
+
+
+    /** The actual start delay used in ticks. */
+    int m_start_delay;
 
     /** Time an item has been collected and not used. */
     float m_time_since_last_shot;
@@ -155,7 +162,7 @@ private:
     int m_start_kart_crash_direction;
 
     /** The direction of the track where the kart is on atm. */
-    GraphNode::DirectionType m_current_track_direction;
+    DriveNode::DirectionType m_current_track_direction;
 
     /** The radius of the curve the kart is currently driving. Undefined
      *  when being on a straigt section. */
@@ -171,7 +178,7 @@ private:
     unsigned int m_last_direction_node;
 
     /** If set an item that the AI should aim for. */
-    const Item *m_item_to_collect;
+    const ItemState *m_item_to_collect;
 
     /** True if items to avoid are close by. Used to avoid using zippers
      *  (which would make it more difficult to avoid items). */
@@ -179,6 +186,12 @@ private:
 
     /** Distance to the player, used for rubber-banding. */
     float m_distance_to_player;
+
+    /** Number of players ahead, used for rubber-banding. */
+    int m_num_players_ahead;
+
+    /** This bool allows to make the AI use nitro by series of two bursts */
+    bool m_burster;
 
     /** A random number generator to decide if the AI should skid or not. */
     RandomGenerator m_random_skid;
@@ -194,9 +207,12 @@ private:
     enum {SKID_PROBAB_NOT_YET, SKID_PROBAB_NO_SKID, SKID_PROBAB_SKID}
           m_skid_probability_state;
 
+    /** This is used by computeSkill to know what skill is used */
+    enum SkillType {ITEM_SKILL, NITRO_SKILL};
+
     /** The last item selected for collection, for which a probability
      *  was determined. */
-    const Item *m_last_item_random;
+    const ItemState *m_last_item_random;
 
     /** True if m_last_item_random was randomly selected to be collected. */
     bool m_really_collect_item;
@@ -205,19 +221,17 @@ private:
     RandomGenerator m_random_collect_item;
 
     /** \brief Determines the algorithm to use to select the point-to-aim-for
-     *  There are three different Point Selection Algorithms:
+     *  There are two different Point Selection Algorithms:
      *  1. findNonCrashingPoint() is the default (which is actually slightly
      *     buggy, but so far best one after handling of 90 degree turns was
      *     added).
-     *  2. findNonCrashingPointFixed() which fixes the bugs of the default
-     *     algorithm.
-     *  3. findNonCrashingPointNew() A newly designed algorithm, which is
-     *     faster than the standard one, but does not give as good results
-     *     as the 'buggy' one.
+     *  2. findNonCrashingPointNew() A newly designed algorithm, which is
+     *     faster than a fixed version of findNonCrashingPoint, but does not
+     *     give as good results as the 'buggy' one.
      *
      *  So far the default one has by far the best performance, even though
      *  it has bugs. */
-    enum {PSA_DEFAULT, PSA_FIXED, PSA_NEW}
+    enum {PSA_DEFAULT, PSA_NEW}
           m_point_selection_algorithm;
 
 #ifdef AI_DEBUG
@@ -240,36 +254,41 @@ private:
      *specific action (more like, associated with inaction).
      */
     void  handleRaceStart();
-    void  handleAcceleration(const float dt);
+    void  handleAccelerationAndBraking(int ticks);
     void  handleSteering(float dt);
-    void  handleItems(const float dt);
+    int   computeSkill(SkillType type);
+    void  handleItems(const float dt, const Vec3 *aim_point,
+                                int last_node, int item_skill);
+    void  handleBubblegum(int item_skill,
+                          const std::vector<const ItemState *> &items_to_collect,
+                          const std::vector<const ItemState *> &items_to_avoid);
+    void  handleCake(int item_skill);
+    void  handleBowling(int item_skill);
+    void  handleSwatter(int item_skill);
+    void  handleSwitch(int item_skill,
+                       const std::vector<const ItemState *> &items_to_collect,
+                       const std::vector<const ItemState *> &items_to_avoid);
     void  handleRescue(const float dt);
-    void  handleBraking();
-    void  handleNitroAndZipper();
+    void  handleBraking(float max_turn_speed, float min_speed);
+    void  handleNitroAndZipper(float max_safe_speed);
     void  computeNearestKarts();
     void  handleItemCollectionAndAvoidance(Vec3 *aim_point,
                                            int last_node);
-    bool  handleSelectedItem(float kart_aim_angle, Vec3 *aim_point);
-    bool  steerToAvoid(const std::vector<const Item *> &items_to_avoid,
-                       const core::line2df &line_to_target,
+    bool  handleSelectedItem(Vec3 kart_aim_direction, Vec3 *aim_point);
+    bool  steerToAvoid(const std::vector<const ItemState *> &items_to_avoid,
+                       const core::line3df &line_to_target,
                        Vec3 *aim_point);
-    bool  hitBadItemWhenAimAt(const Item *item,
-                              const std::vector<const Item *> &items_to_avoid);
-    void  evaluateItems(const Item *item, float kart_aim_angle,
-                        std::vector<const Item *> *items_to_avoid,
-                        std::vector<const Item *> *items_to_collect);
+    bool  hitBadItemWhenAimAt(const ItemState *item,
+                              const std::vector<const ItemState *> &items_to_avoid);
+    void  evaluateItems(const ItemState *item, Vec3 kart_aim_direction,
+                        std::vector<const ItemState *> *items_to_avoid,
+                        std::vector<const ItemState *> *items_to_collect);
 
     void  checkCrashes(const Vec3& pos);
-    void  findNonCrashingPointFixed(Vec3 *result, int *last_node);
     void  findNonCrashingPointNew(Vec3 *result, int *last_node);
     void  findNonCrashingPoint(Vec3 *result, int *last_node);
 
     void  determineTrackDirection();
-    void  determineTurnRadius(const Vec3 &start,
-                              const Vec3 &start_direction,
-                              const Vec3 &end,
-                              Vec3 *center,
-                              float *radius);
     virtual bool canSkid(float steer_fraction);
     virtual void setSteering(float angle, float dt);
     void handleCurve();
@@ -280,7 +299,7 @@ protected:
 public:
                  SkiddingAI(AbstractKart *kart);
                 ~SkiddingAI();
-    virtual void update      (float delta) ;
+    virtual void update      (int ticks);
     virtual void reset       ();
     virtual const irr::core::stringw& getNamePostfix() const;
 };

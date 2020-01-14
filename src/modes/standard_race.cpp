@@ -21,6 +21,7 @@
 #include "items/powerup_manager.hpp"
 #include "karts/abstract_kart.hpp"
 #include "karts/controller/controller.hpp"
+#include "karts/controller/ghost_controller.hpp"
 #include "network/network_config.hpp"
 
 //-----------------------------------------------------------------------------
@@ -34,6 +35,11 @@ StandardRace::StandardRace() : LinearWorld()
  */
 bool StandardRace::isRaceOver()
 {
+    if (race_manager->isWatchingReplay())
+    {
+        return dynamic_cast<GhostController*>
+            (m_karts[0]->getController())->isReplayEnd();
+    }
     // The race is over if all players have finished the race. Remaining
     // times for AI opponents will be estimated in enterRaceOverState
     return race_manager->allPlayerFinished();
@@ -43,7 +49,8 @@ bool StandardRace::isRaceOver()
 void StandardRace::getDefaultCollectibles(int *collectible_type, int *amount)
 {
     // in time trial mode, give zippers
-    if(race_manager->getMinorMode() == RaceManager::MINOR_MODE_TIME_TRIAL)
+    if(race_manager->getMinorMode() == RaceManager::MINOR_MODE_TIME_TRIAL &&
+        !race_manager->isWatchingReplay())
     {
         *collectible_type = PowerupManager::POWERUP_ZIPPER;
         *amount = race_manager->getNumLaps();
@@ -78,12 +85,19 @@ const std::string& StandardRace::getIdent() const
  *  as well as being placed at the back. Players that already finished keep
  *  their position.
  *
- *  End time for the punished players is calculated as follows
+ *  End time for the punished players is calculated as follows :
+ *
+ *  1) Intended for races without auto-end where a finish before all
+ *     karts arrived means a player abandoned.
  *  end_time = current_time + (estimated_time - current_time)
  *                          + (estimated_time_for_last - current_time)
  *           = estimated_time + estimated_time_for_last - current_time
  *  This will put them at the end at all times. The further you (and the last in
  *  the race) are from the finish line, the harsher the punishment will be.
+ *
+ *  2) When there is no AI. Intended for online races with auto-end.
+ *  end_time = current_time + 2*(estimated_time - current_time)
+ *           = 2*estimated_time - current_time
  */
 void StandardRace::endRaceEarly()
 {
@@ -91,39 +105,67 @@ void StandardRace::endRaceEarly()
     std::vector<int> active_players;
     // Required for debugging purposes
     beginSetKartPositions();
+    float worse_finish_time = 0.0f;
+
     for (unsigned int i = 1; i <= kart_amount; i++)
     {
         int kartid = m_position_index[i-1];
-        AbstractKart* kart = m_karts[kartid];
+        AbstractKart* kart = m_karts[kartid].get();
+
         if (kart->hasFinishedRace())
         {
+            if (kart->getFinishTime() > worse_finish_time)
+                worse_finish_time = kart->getFinishTime();
+
             // Have to do this to keep endSetKartPosition happy
             setKartPosition(kartid, kart->getPosition());
-            continue;
         }
 
-        if (kart->getController()->isPlayerController())
-        {
-            // Keep active players apart for now
-            active_players.push_back(kartid);
-        }
         else
         {
+            float estimated_finish_time = estimateFinishTimeForKart(kart);
+            if (estimated_finish_time > worse_finish_time)
+                worse_finish_time = estimated_finish_time;
+
+            // Keep active players apart for now
+            if (kart->getController()->isPlayerController())
+            {
+                active_players.push_back(kartid);
+            }
             // AI karts finish
-            setKartPosition(kartid, i - (unsigned int) active_players.size());
-            kart->finishedRace(estimateFinishTimeForKart(kart));
+            else
+            {
+                setKartPosition(kartid, i - (unsigned int) active_players.size());
+                kart->finishedRace(estimated_finish_time);
+            }
         }
     } // i <= kart_amount
+
     // Now make the active players finish
     for (unsigned int i = 0; i < active_players.size(); i++)
     {
         int kartid = active_players[i];
         int position = getNumKarts() - (int) active_players.size() + 1 + i;
         setKartPosition(kartid, position);
-        m_karts[kartid]->eliminate();
+        // Compute the finish time, with a different formula for networked races
+        // to avoid making auto-end too punishing
+        float punished_time = estimateFinishTimeForKart(m_karts[kartid].get());
+        if (!isNetworkWorld())
+            punished_time += worse_finish_time - WorldStatus::getTime();
+        else
+            punished_time = (punished_time * 2) - WorldStatus::getTime();
+
+        m_karts[kartid]->finishedRace(punished_time);
+
+        // In networked races, endRaceEarly will be called if a player
+        // takes too much time to finish, so don't mark him as eliminated
+        if (!isNetworkWorld())
+            m_karts[kartid]->eliminate();
     } // Finish the active players
     endSetKartPositions();
     setPhase(RESULT_DISPLAY_PHASE);
     if (!isNetworkWorld() || NetworkConfig::get()->isServer())
         terminateRace();
+    if (!isNetworkWorld())
+        m_ended_early = true;
 } // endRaceEarly

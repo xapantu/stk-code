@@ -25,6 +25,9 @@
   * battle, etc.)
   */
 
+#include <limits>
+#include <map>
+#include <memory>
 #include <vector>
 #include <stdexcept>
 
@@ -38,11 +41,12 @@
 #include "LinearMath/btTransform.h"
 
 class AbstractKart;
+class BareNetworkString;
 class btRigidBody;
 class Controller;
+class ItemState;
 class PhysicalObject;
-class Physics;
-class Track;
+class STKPeer;
 
 namespace Scripting
 {
@@ -81,10 +85,17 @@ public:
 class World : public WorldStatus
 {
 public:
-    typedef std::vector<AbstractKart*> KartList;
+    typedef std::vector<std::shared_ptr<AbstractKart> > KartList;
 private:
     /** A pointer to the global world object for a race. */
     static World *m_world;
+    // ------------------------------------------------------------------------
+    void setAITeam();
+    // ------------------------------------------------------------------------
+    std::shared_ptr<AbstractKart> createKartWithTeam
+        (const std::string &kart_ident, int index, int local_player_id,
+        int global_player_id, RaceManager::KartType type,
+        HandicapLevel handicap);
 
 protected:
 
@@ -92,12 +103,16 @@ protected:
     unsigned int m_magic_number;
 #endif
 
+    /* Team related variables. */
+    int m_red_ai;
+    int m_blue_ai;
+    std::map<int, KartTeam> m_kart_team_map;
+    std::map<int, unsigned int> m_kart_position_map;
+
     /** The list of all karts. */
     KartList                  m_karts;
     RandomGenerator           m_random;
 
-    Physics*      m_physics;
-    bool          m_force_disable_fog;
     AbstractKart* m_fastest_kart;
     /** Number of eliminated karts. */
     int         m_eliminated_karts;
@@ -110,6 +125,8 @@ protected:
 
     bool        m_stop_music_when_dialog_open;
 
+    bool        m_unfair_team;
+
     /** Whether highscores should be used for this kind of race.
      *  True by default, change to false in a child class to disable.
     */
@@ -117,19 +134,13 @@ protected:
 
     void  updateHighscores  (int* best_highscore_rank);
     void  resetAllKarts     ();
-    void  eliminateKart     (int kart_number, bool notifyOfElimination=true);
     Controller*
           loadAIController  (AbstractKart *kart);
 
-    virtual AbstractKart *createKart(const std::string &kart_ident, int index,
-                             int local_player_id, int global_player_id,
-                             RaceManager::KartType type,
-                             PerPlayerDifficulty difficulty);
-    /** Pointer to the track. The track is managed by world. */
-    Track* m_track;
-
-    /**Pointer to scripting engine  */
-    Scripting::ScriptEngine* m_script_engine;
+    virtual std::shared_ptr<AbstractKart> createKart
+        (const std::string &kart_ident, int index, int local_player_id,
+        int global_player_id, RaceManager::KartType type,
+        HandicapLevel handicap);
 
     /** Pointer to the race GUI. The race GUI is handled by world. */
     RaceGUIBase *m_race_gui;
@@ -140,8 +151,6 @@ protected:
         to texture without having any scene nodes, but in case of a restart
         there are scene nodes). */
     RaceGUIBase *m_saved_race_gui;
-
-    irr::video::SColor m_clear_color;
 
     /** Pausing/unpausing are not done immediately, but at next udpdate. The
      *  use of this is when switching between screens : if we leave a screen
@@ -170,17 +179,15 @@ protected:
 
     /** Set when the world is online and counts network players. */
     bool m_is_network_world;
-    
-    /** Used to show weather graphical effects. */
-    Weather* m_weather;
 
+    bool m_ended_early;
 
     virtual void  onGo() OVERRIDE;
     /** Returns true if the race is over. Must be defined by all modes. */
     virtual bool  isRaceOver() = 0;
-    virtual void  update(float dt);
+    virtual void  update(int ticks) OVERRIDE;
     virtual void  createRaceGUI();
-            void  updateTrack(float dt);
+            void  updateTrack(int ticks);
     // ------------------------------------------------------------------------
     /** Used for AI karts that are still racing when all player kart finished.
      *  Generally it should estimate the arrival time for those karts, but as
@@ -191,7 +198,8 @@ protected:
      */
     virtual float estimateFinishTimeForKart(AbstractKart* kart)
                                         {return getTime(); }
-
+    void updateAchievementDataEndRace();
+    void updateAchievementModeCounters(bool start);
 
 public:
                     World();
@@ -221,13 +229,13 @@ public:
     // ------------------------------------------------------------------------
     /** Returns the number of rescue positions on a given track and game
      *  mode. */
-    virtual unsigned int getNumberOfRescuePositions() const = 0;
+    virtual unsigned int getNumberOfRescuePositions() const;
     // ------------------------------------------------------------------------
     /** Determines the rescue position index of the specified kart. */
     virtual unsigned int getRescuePositionIndex(AbstractKart *kart) = 0;
     // ------------------------------------------------------------------------
     /** Returns the bullet transformation for the specified rescue index. */
-    virtual btTransform getRescueTransform(unsigned int index) const = 0;
+    virtual btTransform getRescueTransform(unsigned int index) const;
     // ------------------------------------------------------------------------
     virtual void moveKartAfterRescue(AbstractKart* kart);
     // ------------------------------------------------------------------------
@@ -237,10 +245,10 @@ public:
     // ------------------------------------------------------------------------
     /** Returns the number of laps for a given kart. Only valid when
      *  raceHasLaps() - otherwise STK will abort. */
-    virtual int getKartLaps(unsigned int kart_index) const
+    virtual int getFinishedLapsOfKart(unsigned int kart_index) const
     {
         assert(false); return -1; // remove compiler warning
-    }   // getKartLaps
+    }   // getFinishedLapsOfKart
     // ------------------------------------------------------------------------
     /** Called by the code that draws the list of karts on the race GUI
       * to know what needs to be drawn in the current mode. */
@@ -251,14 +259,21 @@ public:
     // Virtual functions
     // =================
     virtual void    init();
+    virtual void    updateGraphics(float dt);
     virtual void    terminateRace() OVERRIDE;
-    virtual void    reset();
+    virtual void    reset(bool restart=false) OVERRIDE;
     virtual void    pause(Phase phase) OVERRIDE;
     virtual void    unpause() OVERRIDE;
     virtual void    getDefaultCollectibles(int *collectible_type,
                                            int *amount );
-    virtual void    endRaceEarly() { return; }
-
+    // ------------------------------------------------------------------------
+    /** Receives notification if an item is collected. Used for easter eggs. */
+    virtual void collectedItem(const AbstractKart *kart, 
+                               const ItemState *item    ) {}
+    // ------------------------------------------------------------------------
+    virtual void endRaceEarly() { return; }
+    // ------------------------------------------------------------------------
+    virtual bool hasRaceEndedEarly() const { return m_ended_early; }
     // ------------------------------------------------------------------------
     /** Called to determine whether this race mode uses bonus boxes. */
     virtual bool haveBonusBoxes() { return true; }
@@ -276,7 +291,7 @@ public:
     virtual void newLap(unsigned int kart_index) {}
     // ------------------------------------------------------------------------
     /** Called when a kart was hit by a projectile. */
-    virtual void kartHit(const unsigned int kart_id) {};
+    virtual bool kartHit(int kart_id, int hitter = -1) { return false; }
     // ------------------------------------------------------------------------
     virtual void onMouseClick(int x, int y) {};
 
@@ -287,12 +302,13 @@ public:
     void            scheduleUnpause();
     void            scheduleExitRace() { m_schedule_exit_race = true; }
     void            scheduleTutorial();
-    void            updateWorld(float dt);
+    void            updateWorld(int ticks);
     void            handleExplosion(const Vec3 &xyz, AbstractKart *kart_hit,
                                     PhysicalObject *object);
     AbstractKart*   getPlayerKart(unsigned int player) const;
     AbstractKart*   getLocalPlayerKart(unsigned int n) const;
     virtual const btTransform &getStartTransform(int index);
+    void moveKartTo(AbstractKart* kart, const btTransform &t);
     // ------------------------------------------------------------------------
     /** Returns a pointer to the race gui. */
     RaceGUIBase    *getRaceGUI() const { return m_race_gui;}
@@ -303,7 +319,7 @@ public:
     /** Returns the kart with a given world id. */
     AbstractKart       *getKart(int kartId) const {
                         assert(kartId >= 0 && kartId < int(m_karts.size()));
-                        return m_karts[kartId];                              }
+                        return m_karts[kartId].get();                              }
     // ------------------------------------------------------------------------
     /** Returns all karts. */
     const KartList & getKarts() const { return m_karts; }
@@ -316,38 +332,29 @@ public:
     unsigned int    getCurrentNumPlayers() const { return m_num_players -
                                                          m_eliminated_players;}
     // ------------------------------------------------------------------------
-    /** Returns a pointer to the physics. */
-    Physics        *getPhysics() const { return m_physics; }
+    void resetElimination()
+    {
+        m_eliminated_karts = 0;
+        m_eliminated_players = 0;
+    }
     // ------------------------------------------------------------------------
-    /** Returns a pointer to the track. */
-    Track          *getTrack() const { return m_track; }
+    virtual void addReservedKart(int kart_id)
+    {
+        if (m_eliminated_karts > 0)
+            m_eliminated_karts--;
+    }
     // ------------------------------------------------------------------------
-    /** Returns a pointer to the Scripting Engine. */
-    Scripting::ScriptEngine   *getScriptEngine() 
-                               const { return m_script_engine; }
-    //-------------------------------------------------------------------------
-    bool            isFogEnabled() const;
+    virtual void saveCompleteState(BareNetworkString* bns, STKPeer* peer) {}
     // ------------------------------------------------------------------------
-    void moveKartTo(AbstractKart* kart, const btTransform &t);
+    virtual void restoreCompleteState(const BareNetworkString& buffer) {}
     // ------------------------------------------------------------------------
     /** The code that draws the timer should call this first to know
      *  whether the game mode wants a timer drawn. */
     virtual bool shouldDrawTimer() const
-                    { return isRacePhase() && getClockMode() != CLOCK_NONE; }
+                    { return isActiveRacePhase() && getClockMode() != CLOCK_NONE; }
     // ------------------------------------------------------------------------
     /** \return whether this world can generate/have highscores */
     bool useHighScores() const { return m_use_highscores; }
-    // ------------------------------------------------------------------------
-    /** Returns the color to clear the back buffer. */
-    const irr::video::SColor& getClearColor() const { return m_clear_color; }
-    // ------------------------------------------------------------------------
-    /** Sets the color to use when clearing the back buffer. */
-    void setClearbackBufferColor(irr::video::SColor color)
-    {
-        m_clear_color       = color;
-    }
-    /** Override track fog value to force disabled */
-    void forceFogDisabled(bool v) { m_force_disable_fog = v; }
     // ------------------------------------------------------------------------
     /** Override if you want to know when a kart presses fire */
     virtual void onFirePressed(Controller* who) {}
@@ -356,17 +363,39 @@ public:
       * quadgraph. Override to change value. */
     virtual bool useChecklineRequirements() const { return false; }
     // ------------------------------------------------------------------------
-    void delayedSelfDestruct();
-    // ------------------------------------------------------------------------
     virtual void escapePressed();
-
+    // ------------------------------------------------------------------------
+    virtual void loadCustomModels() {}
+    // ------------------------------------------------------------------------
+    void eliminateKart(int kart_number, bool notify_of_elimination = true);
+    // ------------------------------------------------------------------------
+    void setUnfairTeam(bool val)                       { m_unfair_team = val; }
+    // ------------------------------------------------------------------------
+    virtual bool hasTeam() const                              { return false; }
+    // ------------------------------------------------------------------------
+    /** Get the team of kart in world (including AIs) */
+    KartTeam getKartTeam(unsigned int kart_id) const;
+    // ------------------------------------------------------------------------
+    int getTeamNum(KartTeam team) const;
+    // ------------------------------------------------------------------------
     /** Set the network mode (true if networked) */
     void setNetworkWorld(bool is_networked) { m_is_network_world = is_networked; }
-
+    // ------------------------------------------------------------------------
     bool isNetworkWorld() const { return m_is_network_world; }
-    
-    /** Returns a pointer to the weather. */
-    Weather* getWeather() {return m_weather;}
+    // ------------------------------------------------------------------------
+    /** Set the team arrow on karts if necessary*/
+    void initTeamArrows(AbstractKart* k);
+    // ------------------------------------------------------------------------
+    /** Used by server to get the current started game progress in either or
+     *  both remaining time or progress in percent. uint32_t max for either or
+     *  both if not available.  */
+    virtual std::pair<uint32_t, uint32_t> getGameStartedProgress() const
+    {
+        return std::make_pair(std::numeric_limits<uint32_t>::max(),
+            std::numeric_limits<uint32_t>::max());
+    }
+    // ------------------------------------------------------------------------
+    virtual bool isGoalPhase() const { return false; }
 };   // World
 
 #endif

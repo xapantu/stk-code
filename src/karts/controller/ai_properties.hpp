@@ -46,6 +46,7 @@ protected:
     friend class AIBaseLapController;
     friend class SkiddingAI;
     friend class ArenaAI;
+    friend class TestAI;
 
     /** Used to check that all values are defined in the xml file. */
     static float UNDEFINED;
@@ -77,7 +78,8 @@ protected:
     InterpolationArray m_skid_probability;
 
     /** To cap maximum speed if the kart is ahead of the player. */
-    InterpolationArray m_speed_cap;
+    InterpolationArray m_first_speed_cap;
+    InterpolationArray m_last_speed_cap;
 
     /** To determine the probability of selecting an item. */
     InterpolationArray m_collect_item_probability;
@@ -110,11 +112,15 @@ protected:
     /** If the AI should actively try to pass on a bomb. */
     bool m_handle_bomb;
 
-    /** True if items should be used better (i.e. non random). */
-    bool m_item_usage_non_random;
+    /** Determines the strategies used by the AI for items. 0 is no use,
+        1 is random use ; 2 to 5 use varying tactics, with 2 having the worst
+        and 5 the best. */
+    int m_item_usage_skill;
 
-    /** How the AI uses nitro. */
-    enum {NITRO_NONE, NITRO_SOME, NITRO_ALL} m_nitro_usage;
+    /** How the AI uses nitro. 0 correspond to no use ; 1 to immediate use 
+        2 to 4 to various levels of mastery (the AI tries to accumulate a reserve
+        and to use bursts whose size/spacing varies according to the level). */
+    int m_nitro_usage;
 
     /** TODO: ONLY USE FOR OLD SKIDDING! CAN BE REMOVED once the new skidding
      *  works as expected.
@@ -141,10 +147,8 @@ public:
     // ------------------------------------------------------------------------
     /** Returns the fraction of maximum speed the AI should drive at, depending
      *  on the distance from the player. */
-    float getSpeedCap(float distance) const
-    {
-        return m_speed_cap.get(distance);
-    }   // getSpeedCap
+    float getSpeedCap(float distance, int ai_position, int num_ai) const;
+
     // ------------------------------------------------------------------------
     /** Returns the probability to collect an item depending on the distance
      *  to the first player kart. */

@@ -28,9 +28,11 @@
 #include "race/race_manager.hpp"
 #include "states_screens/arenas_screen.hpp"
 #include "states_screens/easter_egg_screen.hpp"
+#include "states_screens/ghost_replay_selection.hpp"
 #include "states_screens/soccer_setup_screen.hpp"
 #include "states_screens/state_manager.hpp"
-#include "states_screens/tracks_screen.hpp"
+#include "states_screens/tracks_and_gp_screen.hpp"
+#include "utils/string_utils.hpp"
 #include "utils/translation.hpp"
 
 const int CONFIG_CODE_NORMAL    = 0;
@@ -39,9 +41,9 @@ const int CONFIG_CODE_FTL       = 2;
 const int CONFIG_CODE_3STRIKES  = 3;
 const int CONFIG_CODE_EASTER    = 4;
 const int CONFIG_CODE_SOCCER    = 5;
+const int CONFIG_CODE_GHOST     = 6;
 
 using namespace GUIEngine;
-DEFINE_SCREEN_SINGLETON( RaceSetupScreen );
 
 // -----------------------------------------------------------------------------
 
@@ -64,6 +66,7 @@ void RaceSetupScreen::init()
     RibbonWidget* w = getWidget<RibbonWidget>("difficulty");
     assert( w != NULL );
 
+    race_manager->setMajorMode(RaceManager::MAJOR_MODE_SINGLE);
     if (UserConfigParams::m_difficulty == RaceManager::DIFFICULTY_BEST &&
         PlayerManager::getCurrentPlayer()->isLocked("difficulty_best"))
     {
@@ -106,15 +109,14 @@ void RaceSetupScreen::init()
         w2->addItem(name3, IDENT_FTL, RaceManager::getIconOf(RaceManager::MINOR_MODE_FOLLOW_LEADER), false);
     }
 
-    irr::core::stringw name4 = irr::core::stringw(
-        RaceManager::getNameOf(RaceManager::MINOR_MODE_3_STRIKES)) + L"\n";
+    irr::core::stringw name4 = irr::core::stringw(_("Battle")) + L"\n";
     //FIXME: avoid duplicating descriptions from the help menu!
-    name4 += _("Hit others with weapons until they lose all their lives (only in multiplayer games).");
-    w2->addItem( name4, IDENT_STRIKES, RaceManager::getIconOf(RaceManager::MINOR_MODE_3_STRIKES));
+    name4 += _("Hit others with weapons until they lose all their lives.");
+    w2->addItem( name4, IDENT_STRIKES, RaceManager::getIconOf(RaceManager::MINOR_MODE_FREE_FOR_ALL));
 
     irr::core::stringw name5 = irr::core::stringw(
         RaceManager::getNameOf(RaceManager::MINOR_MODE_SOCCER)) + L"\n";
-    name5 += _("Push the ball to the opposite cage to score goals (only in multiplayer games).");
+    name5 += _("Push the ball into the opposite cage to score goals.");
     w2->addItem( name5, IDENT_SOCCER, RaceManager::getIconOf(RaceManager::MINOR_MODE_SOCCER));
 
 #define ENABLE_EASTER_EGG_MODE
@@ -130,6 +132,10 @@ void RaceSetupScreen::init()
             RaceManager::getIconOf(RaceManager::MINOR_MODE_EASTER_EGG));
     }
 #endif
+
+    irr::core::stringw name6 = irr::core::stringw( _("Ghost replay race")) + L"\n";
+    name6 += _("Race against ghost karts and try to beat them!");
+    w2->addItem( name6, IDENT_GHOST, "/gui/icons/mode_ghost.png");
 
     w2->updateItemDisplay();
 
@@ -153,6 +159,9 @@ void RaceSetupScreen::init()
         break;
     case CONFIG_CODE_SOCCER :
         w2->setSelection(IDENT_SOCCER, PLAYER_ID_GAME_MASTER, true);
+        break;
+    case CONFIG_CODE_GHOST :
+        w2->setSelection(IDENT_GHOST, PLAYER_ID_GAME_MASTER, true);
         break;
     }
 
@@ -195,13 +204,13 @@ void RaceSetupScreen::eventCallback(Widget* widget, const std::string& name,
         {
             race_manager->setMinorMode(RaceManager::MINOR_MODE_NORMAL_RACE);
             UserConfigParams::m_game_mode = CONFIG_CODE_NORMAL;
-            TracksScreen::getInstance()->push();
+            TracksAndGPScreen::getInstance()->push();
         }
         else if (selectedMode == IDENT_TTRIAL)
         {
             race_manager->setMinorMode(RaceManager::MINOR_MODE_TIME_TRIAL);
             UserConfigParams::m_game_mode = CONFIG_CODE_TIMETRIAL;
-            TracksScreen::getInstance()->push();
+            TracksAndGPScreen::getInstance()->push();
         }
         else if (selectedMode == IDENT_FTL)
         {
@@ -211,7 +220,7 @@ void RaceSetupScreen::eventCallback(Widget* widget, const std::string& name,
 
             race_manager->setMinorMode(RaceManager::MINOR_MODE_FOLLOW_LEADER);
             UserConfigParams::m_game_mode = CONFIG_CODE_FTL;
-            TracksScreen::getInstance()->push();
+            TracksAndGPScreen::getInstance()->push();
         }
         else if (selectedMode == IDENT_STRIKES)
         {
@@ -231,6 +240,12 @@ void RaceSetupScreen::eventCallback(Widget* widget, const std::string& name,
             race_manager->setMinorMode(RaceManager::MINOR_MODE_SOCCER);
             UserConfigParams::m_game_mode = CONFIG_CODE_SOCCER;
             SoccerSetupScreen::getInstance()->push();
+        }
+        else if (selectedMode == IDENT_GHOST)
+        {
+            race_manager->setMinorMode(RaceManager::MINOR_MODE_TIME_TRIAL);
+            UserConfigParams::m_game_mode = CONFIG_CODE_GHOST;
+            GhostReplaySelection::getInstance()->push();
         }
         else if (selectedMode == "locked")
         {

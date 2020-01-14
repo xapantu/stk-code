@@ -7,6 +7,7 @@
 
 #include "IrrCompileConfig.h"
 #ifdef _IRR_COMPILE_WITH_OPENGL_
+#define GL_SILENCE_DEPRECATION
 
 #include "EDriverFeatures.h"
 #include "irrTypes.h"
@@ -924,7 +925,7 @@ class COpenGLExtensionHandler
 	COpenGLExtensionHandler();
 
 	// deferred initialization
-	void initExtensions(bool stencilBuffer);
+	void initExtensions(bool stencilBuffer, bool useCoreContext);
 
 	//! queries the features of the driver, returns true if feature is available
 	bool queryFeature(E_VIDEO_DRIVER_FEATURE feature) const;
@@ -932,8 +933,6 @@ class COpenGLExtensionHandler
 	//! queries the features of the driver, returns true if feature is available
 	bool queryOpenGLFeature(EOpenGLFeatures feature) const
 	{
-	  if (COpenGLExtensionHandler::IRR_EXT_packed_depth_stencil)
-		 return true;
 		return FeatureAvailable[feature];
 	}
 

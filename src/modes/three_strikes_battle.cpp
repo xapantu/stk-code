@@ -17,22 +17,31 @@
 
 #include "modes/three_strikes_battle.hpp"
 
-#include <string>
-#include <IMeshSceneNode.h>
-
+#include "main_loop.hpp"
 #include "audio/music_manager.hpp"
 #include "config/user_config.hpp"
 #include "graphics/camera.hpp"
 #include "graphics/irr_driver.hpp"
+#include "graphics/render_info.hpp"
 #include "io/file_manager.hpp"
-#include "karts/abstract_kart.hpp"
+#include "karts/kart.hpp"
+#include "karts/controller/spare_tire_ai.hpp"
 #include "karts/kart_model.hpp"
 #include "karts/kart_properties.hpp"
+#include "karts/kart_properties_manager.hpp"
 #include "physics/physics.hpp"
 #include "states_screens/race_gui_base.hpp"
+#include "tracks/arena_graph.hpp"
+#include "tracks/arena_node.hpp"
 #include "tracks/track.hpp"
 #include "tracks/track_object_manager.hpp"
 #include "utils/constants.hpp"
+#include "utils/string_utils.hpp"
+#include "utils/translation.hpp"
+
+#include <algorithm>
+#include <string>
+#include <IMeshSceneNode.h>
 
 //-----------------------------------------------------------------------------
 /** Constructor. Sets up the clock mode etc.
@@ -44,8 +53,14 @@ ThreeStrikesBattle::ThreeStrikesBattle() : WorldWithRank()
     m_insert_tire = 0;
 
     m_tire = irr_driver->getMesh(file_manager->getAsset(FileManager::MODEL,
-                                 "tire.b3d") );
+                                 "tire.spm") );
     irr_driver->grabAllTextures(m_tire);
+
+    m_total_rescue = 0;
+    m_frame_count = 0;
+    m_start_time = irr_driver->getRealTime();
+    m_total_hit = 0;
+
 }   // ThreeStrikesBattle
 
 //-----------------------------------------------------------------------------
@@ -66,8 +81,9 @@ void ThreeStrikesBattle::init()
 ThreeStrikesBattle::~ThreeStrikesBattle()
 {
     m_tires.clearWithoutDeleting();
+    m_spare_tire_karts.clear();
 
-    irr_driver->grabAllTextures(m_tire);
+    irr_driver->dropAllTextures(m_tire);
     // Remove the mesh from the cache so that the mesh is properly
     // freed once all refernces to it (which will happen once all
     // karts are being freed, which would have a pointer to this mesh)
@@ -77,25 +93,38 @@ ThreeStrikesBattle::~ThreeStrikesBattle()
 //-----------------------------------------------------------------------------
 /** Called when a battle is restarted.
  */
-void ThreeStrikesBattle::reset()
+void ThreeStrikesBattle::reset(bool restart)
 {
-    WorldWithRank::reset();
+    WorldWithRank::reset(restart);
+
+    float next_spawn_time =
+        race_manager->getDifficulty() == RaceManager::DIFFICULTY_BEST ? 40.0f :
+        race_manager->getDifficulty() == RaceManager::DIFFICULTY_HARD ? 30.0f :
+        race_manager->getDifficulty() == RaceManager::DIFFICULTY_MEDIUM ?
+        25.0f : 20.0f;
+    m_next_sta_spawn_ticks = stk_config->time2Ticks(next_spawn_time);
 
     const unsigned int kart_amount = (unsigned int)m_karts.size();
-
     for(unsigned int n=0; n<kart_amount; n++)
     {
-        m_kart_info[n].m_lives    = 3;
-        m_kart_info[n].m_on_node  = BattleGraph::UNKNOWN_POLY;
+        if (dynamic_cast<SpareTireAI*>(m_karts[n]->getController()) != NULL)
+        {
+            // STA has no life
+            m_kart_info[n].m_lives = 0;
+        }
+        else
+        {
+            m_kart_info[n].m_lives = 3;
+        }
 
         // no positions in this mode
         m_karts[n]->setPosition(-1);
 
         scene::ISceneNode* kart_node = m_karts[n]->getNode();
 
-        // FIXME: sorry for this ugly const_cast, irrlicht doesn't seem to allow getting a writable list of children, wtf??
-        core::list<scene::ISceneNode*>& children = const_cast<core::list<scene::ISceneNode*>&>(kart_node->getChildren());
-        for (core::list<scene::ISceneNode*>::Iterator it = children.begin(); it != children.end(); it++)
+        core::list<scene::ISceneNode*>& children = kart_node->getChildren();
+        for (core::list<scene::ISceneNode*>::Iterator it = children.begin();
+            it != children.end(); it++)
         {
             scene::ISceneNode* curr = *it;
 
@@ -123,9 +152,21 @@ void ThreeStrikesBattle::reset()
     TrackObject *obj;
     for_in(obj, m_tires)
     {
-        m_track->getTrackObjectManager()->removeObject(obj);
+        Track::getCurrentTrack()->getTrackObjectManager()->removeObject(obj);
     }
     m_tires.clearWithoutDeleting();
+
+    // Finish all spare tire karts first
+    if (!m_spare_tire_karts.empty())
+    {
+        updateKartRanks();
+        for (unsigned int i = 0; i < m_spare_tire_karts.size(); i++)
+        {
+             m_spare_tire_karts[i]->finishedRace(0.0f);
+             m_spare_tire_karts[i]->getNode()->setVisible(false);
+             m_eliminated_karts++;
+        }
+    }
 }   // reset
 
 //-----------------------------------------------------------------------------
@@ -136,9 +177,23 @@ void ThreeStrikesBattle::reset()
  */
 void ThreeStrikesBattle::kartAdded(AbstractKart* kart, scene::ISceneNode* node)
 {
+    if (kart->getType() == RaceManager::KartType::KT_SPARE_TIRE)
+    {
+        // Add heart billboard above it
+        std::string heart_path =
+            file_manager->getAsset(FileManager::GUI_ICON, "heart.png");
+        float height = kart->getKartHeight() + 0.5f;
+
+        scene::ISceneNode* billboard = irr_driver->addBillboard
+            (core::dimension2d<irr::f32>(0.8f, 0.8f), heart_path,
+            kart->getNode());
+        billboard->setPosition(core::vector3df(0, height, 0));
+        return;
+    }
+
     float coord = -kart->getKartLength()*0.5f;
 
-    scene::IMeshSceneNode* tire_node = irr_driver->addMesh(m_tire, "3strikestire", node);
+    scene::ISceneNode* tire_node = irr_driver->addMesh(m_tire, "3strikestire", node);
     tire_node->setPosition(core::vector3df(-0.16f, 0.3f, coord - 0.25f));
     tire_node->setScale(core::vector3df(0.4f, 0.4f, 0.4f));
     tire_node->setRotation(core::vector3df(90.0f, 0.0f, 0.0f));
@@ -154,14 +209,27 @@ void ThreeStrikesBattle::kartAdded(AbstractKart* kart, scene::ISceneNode* node)
 //-----------------------------------------------------------------------------
 /** Called when a kart is hit.
  *  \param kart_id The world kart id of the kart that was hit.
+ *  \param hitter The world kart id of the kart who hit(-1 if none).
  */
-void ThreeStrikesBattle::kartHit(const unsigned int kart_id)
+bool ThreeStrikesBattle::kartHit(int kart_id, int hitter)
 {
-    if (isRaceOver()) return;
+    if (isRaceOver()) return false;
 
-    assert(kart_id < m_karts.size());
-    // make kart lose a life
-    m_kart_info[kart_id].m_lives--;
+    SpareTireAI* sta =
+        dynamic_cast<SpareTireAI*>(m_karts[kart_id]->getController());
+    if (sta)
+    {
+        // Unspawn the spare tire kart if it get hit
+        sta->unspawn();
+        return false;
+    }
+
+    assert(kart_id < (int)m_karts.size());
+    // make kart lose a life, ignore if in profiling mode
+    if (!UserConfigParams::m_arena_ai_stats)
+        m_kart_info[kart_id].m_lives--;
+    else
+        m_total_hit++;
 
     // record event
     BattleEvent evt;
@@ -190,7 +258,7 @@ void ThreeStrikesBattle::kartHit(const unsigned int kart_id)
         {
             AbstractKart * const kart = getKart(i);
             if(kart->isEliminated() || kart->hasFinishedRace() ||
-                kart->getWorldKartId()==kart_id) continue;
+                kart->getWorldKartId()==(unsigned)kart_id) continue;
             if(m_kart_info[i].m_lives > max_lives)
             {
                 leader = kart;
@@ -204,7 +272,7 @@ void ThreeStrikesBattle::kartHit(const unsigned int kart_id)
             for(unsigned int i=0; i<Camera::getNumCameras(); i++)
             {
                 Camera *camera = Camera::getCamera(i);
-                if(camera->getKart()->getWorldKartId()==kart_id)
+                if(camera->getKart()->getWorldKartId()==(unsigned)kart_id)
                 {
                     camera->setMode(Camera::CM_NORMAL);
                     camera->setKart(leader);
@@ -230,11 +298,7 @@ void ThreeStrikesBattle::kartHit(const unsigned int kart_id)
     }
 
     scene::ISceneNode* kart_node = m_karts[kart_id]->getNode();
-
-    // FIXME: sorry for this ugly const_cast, irrlicht doesn't seem to allow
-    // getting a writable list of children, wtf??
-    core::list<scene::ISceneNode*>& children =
-        const_cast<core::list<scene::ISceneNode*>&>(kart_node->getChildren());
+    core::list<scene::ISceneNode*>& children = kart_node->getChildren();
     for (core::list<scene::ISceneNode*>::Iterator it = children.begin();
                                                   it != children.end(); it++)
     {
@@ -275,7 +339,7 @@ void ThreeStrikesBattle::kartHit(const unsigned int kart_id)
     m_tire_dir = m_karts[kart_id]->getKartProperties()->getKartDir();
     if(m_insert_tire == 5 && m_karts[kart_id]->isWheeless())
         m_insert_tire = 0;
-
+    return true;
 }   // kartHit
 
 //-----------------------------------------------------------------------------
@@ -288,15 +352,16 @@ const std::string& ThreeStrikesBattle::getIdent() const
 
 //-----------------------------------------------------------------------------
 /** Update the world and the track.
- *  \param dt Time step size.
+ *  \param ticks Number of physics time step - should be 1.
  */
-void ThreeStrikesBattle::update(float dt)
+void ThreeStrikesBattle::update(int ticks)
 {
-    WorldWithRank::update(dt);
-    WorldWithRank::updateTrack(dt);
+    WorldWithRank::update(ticks);
+    WorldWithRank::updateTrack(ticks);
 
-    if (m_track->hasNavMesh())
-        updateKartNodes();
+    spawnSpareTireKarts();
+    if (Track::getCurrentTrack()->hasNavMesh())
+        updateSectorForKarts();
 
     // insert blown away tire(s) now if was requested
     while (m_insert_tire > 0)
@@ -309,7 +374,7 @@ void ThreeStrikesBattle::update(float dt)
         if(m_insert_tire == 1)
         {
             tire_offset = core::vector3df(0.0f, 0.0f, 0.0f);
-            tire = file_manager->getAsset(FileManager::MODEL,"tire.b3d");
+            tire = file_manager->getAsset(FileManager::MODEL,"tire.spm");
             scale = 0.5f;
             radius = 0.5f;
             body_shape = PhysicalObject::MP_CYLINDER_Y;
@@ -321,13 +386,13 @@ void ThreeStrikesBattle::update(float dt)
             radius = m_tire_radius[m_insert_tire-2];
             tire_offset = m_tire_offsets[m_insert_tire-2];
             if     (m_insert_tire == 2)
-                tire = m_tire_dir+"/wheel-rear-left.b3d";
+                tire = m_tire_dir+"/wheel-rear-left.spm";
             else if(m_insert_tire == 3)
-                tire = m_tire_dir+"/wheel-front-left.b3d";
+                tire = m_tire_dir+"/wheel-front-left.spm";
             else if(m_insert_tire == 4)
-                tire = m_tire_dir+"/wheel-front-right.b3d";
+                tire = m_tire_dir+"/wheel-front-right.spm";
             else if(m_insert_tire == 5)
-                tire = m_tire_dir+"/wheel-rear-right.b3d";
+                tire = m_tire_dir+"/wheel-rear-right.spm";
             if(!file_manager->fileExists(tire))
             {
                 m_insert_tire--;
@@ -357,7 +422,7 @@ void ThreeStrikesBattle::update(float dt)
                                                 "movable", tire_presentation,
                                                 true /* is_dynamic */,
                                                 &physics_settings);
-        getTrack()->getTrackObjectManager()->insertObject(tire_obj);
+        Track::getCurrentTrack()->getTrackObjectManager()->insertObject(tire_obj);
 
         // FIXME: orient the force relative to kart orientation
         tire_obj->getPhysicalObject()->getBody()
@@ -369,6 +434,9 @@ void ThreeStrikesBattle::update(float dt)
 
         m_tires.push_back(tire_obj);
     }   // while
+    if (UserConfigParams::m_arena_ai_stats)
+        m_frame_count++;
+
 }   // update
 
 //-----------------------------------------------------------------------------
@@ -382,45 +450,24 @@ void ThreeStrikesBattle::updateKartRanks()
 
     const unsigned int NUM_KARTS = getNumKarts();
 
-    int *karts_list = new int[NUM_KARTS];
-    for( unsigned int n = 0; n < NUM_KARTS; ++n ) karts_list[n] = n;
-
-    bool sorted=false;
-    do
+    std::vector<KartValues> karts_list;
+    for( unsigned int n = 0; n < NUM_KARTS; ++n )
     {
-        sorted = true;
-        for( unsigned int n = 0; n < NUM_KARTS-1; ++n )
-        {
-            const int this_karts_time =
-                  m_karts[karts_list[n]]->hasFinishedRace()
-                ? (int)m_karts[karts_list[n]]->getFinishTime()
-                : (int)WorldStatus::getTime();
-            const int next_karts_time =
-                   m_karts[karts_list[n+1]]->hasFinishedRace()
-                ? (int)m_karts[karts_list[n+1]]->getFinishTime()
-                : (int)WorldStatus::getTime();
+        KartValues k;
+        k.id = n;
+        k.time = m_karts[n]->hasFinishedRace() ? (int)m_karts[n]->getFinishTime()
+                                               : (int)WorldStatus::getTime();
+        k.lives = m_kart_info[n].m_lives;
+        karts_list.push_back(k);
+    }
 
-            // Swap if next kart survived longer or has more lives
-            bool swap = next_karts_time > this_karts_time ||
-                        m_kart_info[karts_list[n+1]].m_lives
-                        > m_kart_info[karts_list[n]].m_lives;
-
-            if(swap)
-            {
-                int tmp = karts_list[n+1];
-                karts_list[n+1] = karts_list[n];
-                karts_list[n] = tmp;
-                sorted = false;
-                break;
-            }
-        }   // for n = 0; n < NUM_KARTS-1
-    } while(!sorted);
+    std::sort(karts_list.rbegin(), karts_list.rend());
 
     for( unsigned int n = 0; n < NUM_KARTS; ++n )
     {
-        setKartPosition(karts_list[n], n+1);
+        setKartPosition(karts_list[n].id, n+1);
     }
-    delete [] karts_list;
+
     endSetKartPositions();
 }   // updateKartRank
 
@@ -429,8 +476,11 @@ void ThreeStrikesBattle::updateKartRanks()
  */
 bool ThreeStrikesBattle::isRaceOver()
 {
+    if (UserConfigParams::m_arena_ai_stats)
+        return (irr_driver->getRealTime()-m_start_time)*0.001f > 20.0f;
+
     // for tests : never over when we have a single player there :)
-    if (race_manager->getNumberOfKarts()==1 &&
+    if (race_manager->getNumberOfKarts() - m_spare_tire_karts.size () ==1 &&
         getCurrentNumKarts()==1 &&
         UserConfigParams::m_artist_debug_mode)
     {
@@ -439,33 +489,6 @@ bool ThreeStrikesBattle::isRaceOver()
 
     return getCurrentNumKarts()==1 || getCurrentNumPlayers()==0;
 }   // isRaceOver
-
-//-----------------------------------------------------------------------------
-/** Updates the m_on_node value of each kart to localize it
- *  on the navigation mesh.
- */
-void ThreeStrikesBattle::updateKartNodes()
-{
-    if (isRaceOver()) return;
-
-    const unsigned int n = getNumKarts();
-    for (unsigned int i = 0; i < n; i++)
-    {
-        if (m_karts[i]->isEliminated()) continue;
-
-        m_kart_info[i].m_on_node = BattleGraph::get()
-            ->pointToNode(m_kart_info[i].m_on_node,
-                          m_karts[i]->getXYZ(), false/*ignore_vertical*/);
-    }
-}
-
-//-----------------------------------------------------------------------------
-/** Get the which node the kart located in navigation mesh.
- */
-int ThreeStrikesBattle::getKartNode(unsigned int kart_id) const
-{
-    return m_kart_info[kart_id].m_on_node;
-}   // getKartNode
 
 //-----------------------------------------------------------------------------
 /** Called when the race finishes, i.e. after playing (if necessary) an
@@ -515,3 +538,188 @@ void ThreeStrikesBattle::getKartsDisplayInfo(
     }
 }   // getKartsDisplayInfo
 
+//-----------------------------------------------------------------------------
+void ThreeStrikesBattle::enterRaceOverState()
+{
+    WorldWithRank::enterRaceOverState();
+
+    // Unspawn all spare tire karts if neccesary
+    for (unsigned int i = 0; i < m_spare_tire_karts.size(); i++)
+    {
+        SpareTireAI* sta =
+            dynamic_cast<SpareTireAI*>(m_spare_tire_karts[i]->getController());
+        assert(sta);
+        if (sta->isMoving())
+            sta->unspawn();
+    }
+
+    if (UserConfigParams::m_arena_ai_stats)
+    {
+        float runtime = (irr_driver->getRealTime()-m_start_time)*0.001f;
+        Log::verbose("Battle AI profiling", "Number of frames: %d, Average FPS: %f",
+            m_frame_count, (float)m_frame_count/runtime);
+        Log::verbose("Battle AI profiling", "Total rescue: %d , hits %d in %f seconds",
+            m_total_rescue, m_total_hit, runtime);
+        delete this;
+        main_loop->abort();
+    }
+
+}   // enterRaceOverState
+
+//-----------------------------------------------------------------------------
+bool ThreeStrikesBattle::spareTireKartsSpawned() const
+{
+    if (m_spare_tire_karts.empty()) return false;
+
+    // Spare tire karts are spawned if at least 1 of them needs update
+    SpareTireAI* sta =
+        dynamic_cast<SpareTireAI*>(m_spare_tire_karts[0]->getController());
+    assert(sta);
+
+    return sta->isMoving();
+}   // spareTireKartsSpawned
+
+//-----------------------------------------------------------------------------
+void ThreeStrikesBattle::addKartLife(unsigned int id)
+{
+    m_kart_info[id].m_lives++;
+    updateKartRanks();
+
+    scene::ISceneNode* kart_node = m_karts[id]->getNode();
+    core::list<scene::ISceneNode*>& children = kart_node->getChildren();
+    for (core::list<scene::ISceneNode*>::Iterator it = children.begin();
+                                                  it != children.end(); it++)
+    {
+        scene::ISceneNode* curr = *it;
+        if (core::stringc(curr->getName()) == "tire1")
+        {
+            curr->setVisible(m_kart_info[id].m_lives >= 3);
+        }
+        else if (core::stringc(curr->getName()) == "tire2")
+        {
+            curr->setVisible(m_kart_info[id].m_lives >= 2);
+        }
+    }
+
+}   // addKartLife
+
+//-----------------------------------------------------------------------------
+void ThreeStrikesBattle::spawnSpareTireKarts()
+{
+    if (m_spare_tire_karts.empty() ||
+        getTicksSinceStart() < m_next_sta_spawn_ticks)
+        return;
+
+    // The lifespan for sta: inc_factor / period * 1000 / 2
+    // So in easier mode the sta lasts longer than spawn period
+    float inc_factor, lifespan;
+    switch (race_manager->getDifficulty())
+    {
+    case RaceManager::DIFFICULTY_BEST: inc_factor = 0.7f;  lifespan = 17.5f;  break;
+    case RaceManager::DIFFICULTY_HARD: inc_factor = 0.65f; lifespan = 21.66f; break;
+    case RaceManager::DIFFICULTY_EASY: inc_factor = 0.6f;  lifespan = 24.0f;  break;
+    default:                           inc_factor = 0.55f; lifespan = 27.5f;  break;
+    }
+
+    int lifespan_ticks = stk_config->time2Ticks(lifespan);
+    // Spawn spare tire kart when necessary
+    m_next_sta_spawn_ticks = int( lifespan_ticks
+                                + getTicksSinceStart() * inc_factor
+                                + getTicksSinceStart()             );
+    int kart_has_few_lives = 0;
+    for (unsigned int i = 0; i < m_kart_info.size(); i++)
+    {
+        if (m_kart_info[i].m_lives > 0 && m_kart_info[i].m_lives < 3)
+            kart_has_few_lives++;
+    }
+
+    float ratio = kart_has_few_lives / (inc_factor * 2);
+    if (ratio < 1.5f) return;
+    unsigned int spawn_sta = unsigned(ratio);
+    if (spawn_sta > m_spare_tire_karts.size())
+        spawn_sta = (int)m_spare_tire_karts.size();
+    m_race_gui->addMessage(_P("%i spare tire kart has been spawned!",
+                              "%i spare tire karts have been spawned!",
+                              spawn_sta), NULL, 2.0f);
+    for (unsigned int i = 0; i < spawn_sta; i++)
+    {
+        SpareTireAI* sta = dynamic_cast<SpareTireAI*>
+            (m_spare_tire_karts[i]->getController());
+        assert(sta);
+        sta->spawn(lifespan_ticks);
+    }
+}   // spawnSpareTireKarts
+
+//-----------------------------------------------------------------------------
+void ThreeStrikesBattle::loadCustomModels()
+{
+    // Pre-add spare tire karts if there are more than certain number of karts
+    ArenaGraph* ag = ArenaGraph::get();
+    if (ag && m_karts.size() > 4)
+    {
+        // Spare tire karts only added with large arena
+        const int all_nodes = ag->getNumNodes();
+        if (all_nodes > 500)
+        {
+            // Don't create too many spare tire karts
+            const unsigned int max_sta_num = unsigned(m_karts.size() * 0.8f);
+            unsigned int pos_created = 0;
+            std::vector<int> used;
+            std::vector<btTransform> pos;
+
+            // Fill all current starting position into used first
+            for (unsigned int i = 0; i < getNumberOfRescuePositions(); i++)
+            {
+                int node = -1;
+                ag->findRoadSector(getRescueTransform(i).getOrigin(), &node,
+                    NULL, true);
+                assert(node != -1);
+                used.push_back(node);
+            }
+
+            // Find random nodes to pre-spawn spare tire karts
+            RandomGenerator random;
+            while (true)
+            {
+                const int node = random.get(all_nodes);
+                if (std::find(used.begin(), used.end(), node) != used.end())
+                    continue;
+                const ArenaNode* n = ag->getNode(node);
+                btTransform t;
+                t.setOrigin(n->getCenter());
+                t.setRotation(shortestArcQuat(Vec3(0, 1, 0), n->getNormal()));
+                pos.push_back(t);
+                pos_created++;
+                used.push_back(node);
+                if (pos_created >= max_sta_num) break;
+            }
+
+            // Compute a random kart list
+            std::vector<std::string> sta_list;
+            kart_properties_manager->getRandomKartList((int)pos.size(), NULL,
+                                                       &sta_list);
+
+            assert(sta_list.size() == pos.size());
+            // Now add them
+            for (unsigned int i = 0; i < pos.size(); i++)
+            {
+                auto sta = std::make_shared<Kart>(sta_list[i], (int)m_karts.size(),
+                    (int)m_karts.size() + 1, pos[i], HANDICAP_NONE,
+                    std::make_shared<RenderInfo>(1.0f));
+                sta->init(RaceManager::KartType::KT_SPARE_TIRE);
+                sta->setController(new SpareTireAI(sta.get()));
+
+                m_karts.push_back(sta);
+                race_manager->addSpareTireKart(sta_list[i]);
+
+                // Copy STA pointer to m_spare_tire_karts array, allowing them
+                // to respawn easily
+                m_spare_tire_karts.push_back(sta.get());
+            }
+            unsigned int sta_num = race_manager->getNumSpareTireKarts();
+            assert(m_spare_tire_karts.size() == sta_num);
+            Log::info("ThreeStrikesBattle","%d spare tire kart(s) created.",
+                sta_num);
+        }
+    }
+}   // loadCustomModels

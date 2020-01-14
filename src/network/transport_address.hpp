@@ -22,8 +22,6 @@
 #ifndef HEADER_TRANSPORT_ADDRESS_HPP
 #define HEADER_TRANSPORT_ADDRESS_HPP
 
-#include "utils/no_copy.hpp"
-#include "utils/string_utils.hpp"
 #include "utils/types.hpp"
 
 #include "enet/enet.h"
@@ -35,7 +33,7 @@
  *  \brief Describes a transport-layer address.
  *  For IP networks, a transport address is the couple ip:port.
  */
-class TransportAddress : public NoCopy
+class TransportAddress
 {
 private:
     uint32_t m_ip;    //!< The IPv4 address
@@ -50,6 +48,14 @@ public:
     }   // TransportAddress
 
     // ------------------------------------------------------------------------
+    TransportAddress(uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4,
+                     uint16_t port=0)
+    {
+        m_ip   = (b1 << 24) + (b2 << 16) + (b3 << 8) + b4;
+        m_port = port;
+    }   // TransportAddress(uint8_t,...)
+
+    // ------------------------------------------------------------------------
     /** Construct an transport address from an ENetAddress. */
     TransportAddress(const ENetAddress &a)
     {
@@ -58,27 +64,22 @@ public:
     }   // TransportAddress(EnetAddress)
 
     // ------------------------------------------------------------------------
+    TransportAddress(const std::string& str, uint16_t port_number);
+    // ------------------------------------------------------------------------
+    TransportAddress(const std::string& str);
+    // ------------------------------------------------------------------------
     ~TransportAddress() {}
     // ------------------------------------------------------------------------
-private:
-    friend class NetworkConfig;
-    /** The copy constructor is private, so that the friend class
-     *  NetworkConfig can access it to create a copy (getMyAddress), but
-     *  no other class can. */
-    TransportAddress(const TransportAddress &other)
-    {
-        copy(other);
-    }   // TransportAddress(const TransportAddress&)
+    static void unitTesting();
 public:
     // ------------------------------------------------------------------------
-    /** A copy function (to replace the copy constructor which is disabled
-     *  using NoCopy): it copies the data from the argument into this object.*/
-    void copy(const TransportAddress &other)
-    {
-        m_ip   = other.m_ip;
-        m_port = other.m_port;
-    }   // copy
-
+    static TransportAddress fromDomain(const std::string& str);
+    // ------------------------------------------------------------------------
+    bool isPublicAddressLocalhost() const;
+    // ------------------------------------------------------------------------
+    bool isLAN() const;
+    // ------------------------------------------------------------------------
+    bool isUnset() const { return m_ip == 0 || m_port == 0; }
     // ------------------------------------------------------------------------
     /** Resets ip and port to 0. */
     void clear()
@@ -136,21 +137,7 @@ public:
         return other.m_ip != m_ip || other.m_port != m_port;
     }   // operator!=
     // ------------------------------------------------------------------------
-    /** Returns a std::string representing the ip address and port in human
-     *  readable format.
-     *  \param show_port True if the port should be shown as well, otherwise
-     *         only the ip address will be returned.
-     */
-    std::string toString(bool show_port = true) const
-    {
-        std::string s = 
-            StringUtils::insertValues("%d.%d.%d.%d",
-                                 ((m_ip >> 24) & 0xff), ((m_ip >> 16) & 0xff),
-                                 ((m_ip >>  8) & 0xff), ((m_ip >>  0) & 0xff));
-        if (show_port)
-            s += StringUtils::insertValues(":%d", m_port);
-        return s;
-    }   // toString
+    std::string toString(bool show_port = true) const;
 };   // TransportAddress
 
 #endif // TYPES_HPP

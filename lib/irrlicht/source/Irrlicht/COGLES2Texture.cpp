@@ -15,10 +15,12 @@
 #include "os.h"
 #include "CImage.h"
 #include "CColorConverter.h"
+#include "IAttributes.h"
+#include "IrrlichtDevice.h"
 
 #include "irrString.h"
 
-#if !defined(_IRR_COMPILE_WITH_IPHONE_DEVICE_)
+#if !defined(_IRR_COMPILE_WITH_IOS_DEVICE_)
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 #include <EGL/egl.h>
@@ -171,6 +173,17 @@ void COGLES2Texture::getImageValues(IImage* image)
 		ImageSize.Width = (u32)(Driver->MaxTextureSize*ratio);
 	}
 	TextureSize=ImageSize.getOptimalSize(false);
+    const core::dimension2du max_size = Driver->getDriverAttributes()
+                                 .getAttributeAsDimension2d("MAX_TEXTURE_SIZE");
+
+    if (max_size.Width> 0 && TextureSize.Width > max_size.Width)
+    {
+        TextureSize.Width = max_size.Width;
+    }
+    if (max_size.Height> 0 && TextureSize.Height > max_size.Height)
+    {
+        TextureSize.Height = max_size.Height;
+    }
 
 	ColorFormat = getBestColorFormat(image->getColorFormat());
 }
@@ -235,14 +248,14 @@ void COGLES2Texture::uploadTexture(bool newTexture, void* mipmapData, u32 level)
 			break;
 	}
 	// Hack for iPhone SDK, which requires a different InternalFormat
-#ifdef _IRR_IPHONE_PLATFORM_
+#ifdef _IRR_IOS_PLATFORM_
 	if (InternalFormat==GL_BGRA)
 		InternalFormat=GL_RGBA;
 #endif
 	// make sure we don't change the internal format of existing matrices
 	if (!newTexture)
 		InternalFormat=oldInternalFormat;
-        
+
     Driver->setActiveTexture(0, this);
 	Driver->getBridgeCalls()->setTexture(0);
 
@@ -278,7 +291,7 @@ void COGLES2Texture::uploadTexture(bool newTexture, void* mipmapData, u32 level)
 			// enable bilinear mipmap filter
 			glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_NEAREST );
 			glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            
+
             StatesCache.BilinearFilter = true;
             StatesCache.TrilinearFilter = false;
             StatesCache.MipMapStatus = true;
@@ -292,7 +305,7 @@ void COGLES2Texture::uploadTexture(bool newTexture, void* mipmapData, u32 level)
 			// enable bilinear filter without mipmaps
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            
+
             StatesCache.BilinearFilter = true;
             StatesCache.TrilinearFilter = false;
             StatesCache.MipMapStatus = false;
@@ -564,18 +577,18 @@ COGLES2FBOTexture::COGLES2FBOTexture(const core::dimension2d<u32>& size,
 
 	// generate color texture
 	glGenTextures(1, &TextureName);
-    
+
     Driver->setActiveTexture(0, this);
 	Driver->getBridgeCalls()->setTexture(0);
-    
+
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    
-	StatesCache.BilinearFilter = true;        
+
+	StatesCache.BilinearFilter = true;
     StatesCache.WrapU = ETC_CLAMP_TO_EDGE;
     StatesCache.WrapV = ETC_CLAMP_TO_EDGE;
-            
+
 	glTexImage2D(GL_TEXTURE_2D, 0, InternalFormat, ImageSize.Width, ImageSize.Height, 0, PixelFormat, PixelType, 0);
 
 #ifdef _DEBUG
@@ -621,7 +634,7 @@ void COGLES2FBOTexture::bindRTT()
 void COGLES2FBOTexture::unbindRTT()
 {
 	if (ColorFrameBuffer != 0)
-		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		glBindFramebuffer(GL_FRAMEBUFFER, Driver->getDefaultFramebuffer());
 }
 
 
@@ -711,6 +724,7 @@ bool COGLES2FBODepthTexture::attach(ITexture* renderTex)
 		return false;
 	}
 	rtt->DepthTexture=this;
+	rtt->DepthBufferTexture = DepthRenderBuffer;
 	grab(); // grab the depth buffer, not the RTT
 	rtt->unbindRTT();
 	return true;

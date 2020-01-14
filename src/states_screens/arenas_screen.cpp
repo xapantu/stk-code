@@ -29,6 +29,7 @@
 #include "tracks/track.hpp"
 #include "tracks/track_manager.hpp"
 #include "utils/random_generator.hpp"
+#include "utils/string_utils.hpp"
 #include "utils/translation.hpp"
 
 #include <iostream>
@@ -36,8 +37,6 @@
 using namespace GUIEngine;
 using namespace irr::core;
 using namespace irr::video;
-
-DEFINE_SCREEN_SINGLETON( ArenasScreen );
 
 static const char ALL_ARENA_GROUPS_ID[] = "all";
 
@@ -277,7 +276,7 @@ void ArenasScreen::buildTrackList()
             }
             else
             {
-                w->addItem( curr->getName(), curr->getIdent(), curr->getScreenshotFile(), 0,
+                w->addItem(curr->getName(), curr->getIdent(), curr->getScreenshotFile(), 0,
                            IconButtonWidget::ICON_PATH_TYPE_ABSOLUTE );
             }
         }
@@ -329,20 +328,20 @@ void ArenasScreen::buildTrackList()
             }
             else
             {
-                w->addItem( curr->getName(), curr->getIdent(), curr->getScreenshotFile(), 0,
+                w->addItem(curr->getName(), curr->getIdent(), curr->getScreenshotFile(), 0,
                            IconButtonWidget::ICON_PATH_TYPE_ABSOLUTE );
             }
         }
     }
     if (arenas_have_navmesh || race_manager->getNumLocalPlayers() > 1 ||
         UserConfigParams::m_artist_debug_mode)
-        w->addItem(_("Random Arena"), "random_track", "/gui/track_random.png");
+        w->addItem(_("Random Arena"), "random_track", "/gui/icons/track_random.png");
     w->updateItemDisplay();
 
     if (m_unsupported_arena.size() > 0)
         w->setText( _P("%d arena unavailable in single player.",
                        "%d arenas unavailable in single player.",
-                       m_unsupported_arena.size()) );
+                       (int)m_unsupported_arena.size()) );
 }
 
 // ------------------------------------------------------------------------------------------------------

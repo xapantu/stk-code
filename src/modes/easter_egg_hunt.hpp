@@ -21,6 +21,7 @@
 
 #include "modes/linear_world.hpp"
 #include "states_screens/race_gui_base.hpp"
+#include "utils/cpp2011.hpp"
 
 #include <string>
 #include <vector>
@@ -40,8 +41,12 @@ private:
     /** Overall number of easter eggs. */
     int   m_number_of_eggs;
 
-    /** Number of eggs found so far. */
+    /** Number of eggs found so far by players. */
     int   m_eggs_found;
+
+    bool  m_only_ghosts;
+
+    float m_finish_time;
 public:
              EasterEggHunt();
     virtual ~EasterEggHunt();
@@ -51,18 +56,23 @@ public:
     virtual bool isRaceOver() OVERRIDE;
 
     // overriding World methods
-    virtual void reset() OVERRIDE;
+    virtual void reset(bool restart=false) OVERRIDE;
 
     virtual bool raceHasLaps() OVERRIDE { return false; }
 
     virtual const std::string& getIdent() const OVERRIDE;
     virtual void terminateRace() OVERRIDE;
-    virtual void update(float dt) OVERRIDE;
+    virtual void update(int ticks) OVERRIDE;
     virtual void getKartsDisplayInfo(
-                          std::vector<RaceGUIBase::KartIconDisplayInfo> *info) OVERRIDE;
+                 std::vector<RaceGUIBase::KartIconDisplayInfo> *info) OVERRIDE;
+    virtual void collectedItem(const AbstractKart *kart,
+                               const ItemState *item     ) OVERRIDE;
+    void collectedEasterEggGhost(int world_id);
+
+    const int  numberOfEggsFound() { return m_eggs_found; }
+    const int  numberOfEggsToFind() { return m_number_of_eggs; }
 
     void updateKartRanks();
-    void collectedEasterEgg(const AbstractKart *kart);
     void readData(const std::string &filename);
 
     virtual void checkForWrongDirection(unsigned int i, float dt) OVERRIDE;

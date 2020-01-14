@@ -20,19 +20,19 @@
 #include <math.h>
 #include "karts/moveable.hpp"
 
+#include "config/stk_config.hpp"
 #include "graphics/irr_driver.hpp"
 #include "graphics/material.hpp"
 #include "graphics/material_manager.hpp"
 #include "modes/world.hpp"
+#include "network/network_config.hpp"
+#include "network/rewind_manager.hpp"
 #include "tracks/track.hpp"
 
 #include "ISceneNode.h"
 
 Moveable::Moveable()
 {
-    m_body            = 0;
-    m_motion_state    = 0;
-    m_mesh            = NULL;
     m_node            = NULL;
     m_heading         = 0;
 }   // Moveable
@@ -41,10 +41,7 @@ Moveable::Moveable()
 Moveable::~Moveable()
 {
     // The body is being removed from the world in kart/projectile
-    if(m_body)         delete m_body;
-    if(m_motion_state) delete m_motion_state;
     if(m_node) irr_driver->removeNode(m_node);
-    if(m_mesh) irr_driver->removeMeshFromCache(m_mesh);
 }   // ~Moveable
 
 //-----------------------------------------------------------------------------
@@ -57,24 +54,46 @@ void Moveable::setNode(scene::ISceneNode *n)
 }   // setNode
 
 //-----------------------------------------------------------------------------
+void Moveable::updateSmoothedGraphics(float dt)
+{
+    Vec3 velocity;
+    if (m_body)
+        velocity = m_body->getLinearVelocity();
+    SmoothNetworkBody::updateSmoothedGraphics(m_transform, velocity, dt);
+#undef DEBUG_SMOOTHING
+#ifdef DEBUG_SMOOTHING
+    // Gnuplot compare command
+    // plot "stdout.log" u 6:8 w lp lw 2, "stdout.log" u 10:12 w lp lw 2
+    Log::verbose("Smoothing", "%s smoothed-xyz(6-8) %f %f %f "
+        "xyz(10-12) %f %f %f", getIdent().c_str(),
+        getSmoothedTrans().getOrigin().getX(),
+        getSmoothedTrans().getOrigin().getY(),
+        getSmoothedTrans().getOrigin().getZ(),
+        getXYZ().getX(), getXYZ().getY(), getXYZ().getZ());
+#endif
+}   // updateSmoothedGraphics
+
+//-----------------------------------------------------------------------------
 /** Updates the graphics model. Mainly set the graphical position to be the
  *  same as the physics position, but uses offsets to position and rotation
  *  for special gfx effects (e.g. skidding will turn the karts more).
  *  \param offset_xyz Offset to be added to the position.
  *  \param rotation Additional rotation.
  */
-void Moveable::updateGraphics(float dt, const Vec3& offset_xyz,
+void Moveable::updateGraphics(const Vec3& offset_xyz,
                               const btQuaternion& rotation)
 {
-    Vec3 xyz=getXYZ()+offset_xyz;
+#ifndef SERVER_ONLY
+    Vec3 xyz = getSmoothedTrans().getOrigin() + offset_xyz;
     m_node->setPosition(xyz.toIrrVector());
-    btQuaternion r_all = getRotation()*rotation;
+    btQuaternion r_all = getSmoothedTrans().getRotation() * rotation;
     if(btFuzzyZero(r_all.getX()) && btFuzzyZero(r_all.getY()-0.70710677f) &&
        btFuzzyZero(r_all.getZ()) && btFuzzyZero(r_all.getW()-0.70710677f)   )
         r_all.setX(0.000001f);
     Vec3 hpr;
     hpr.setHPR(r_all);
     m_node->setRotation(hpr.toIrrHPR());
+#endif
 }   // updateGraphics
 
 //-----------------------------------------------------------------------------
@@ -88,8 +107,12 @@ void Moveable::reset()
         m_body->setAngularVelocity(btVector3(0, 0, 0));
         m_body->setCenterOfMassTransform(m_transform);
     }
+#ifndef SERVER_ONLY
     m_node->setVisible(true);  // In case that the objects was eliminated
+#endif
 
+    SmoothNetworkBody::reset();
+    SmoothNetworkBody::setSmoothedTransform(m_transform);
     Vec3 up       = getTrans().getBasis().getColumn(1);
     m_pitch       = atan2(up.getZ(), fabsf(up.getY()));
     m_roll        = atan2(up.getX(), up.getY());
@@ -116,21 +139,30 @@ void Moveable::flyDown()
 // ----------------------------------------------------------------------------
 void Moveable::stopFlying()
 {
-    m_body->setGravity(btVector3(0.0, -World::getWorld()->getTrack()->getGravity(), 0.0));
+    m_body->setGravity(btVector3(0.0, -Track::getCurrentTrack()->getGravity(), 0.0));
 }   // stopFlying
 
 //-----------------------------------------------------------------------------
 /** Updates the current position and rotation from the corresponding physics
  *  body, and then calls updateGraphics to position the model correctly.
- *  \param float dt Time step size.
+ *  \param ticks Number of physics time steps - should be 1.
  */
-void Moveable::update(float dt)
+void Moveable::update(int ticks)
 {
     if(m_body->getInvMass()!=0)
         m_motion_state->getWorldTransform(m_transform);
-    m_velocityLC  = getVelocity()*m_transform.getBasis();
-    Vec3 forw_vec = m_transform.getBasis().getColumn(0);
-    m_heading     = -atan2f(forw_vec.getZ(), forw_vec.getX());
+    m_velocityLC = getVelocity()*m_transform.getBasis();
+    updatePosition();
+}   // update
+
+//-----------------------------------------------------------------------------
+/** Updates the current position and rotation. This function is also called
+ *  by ghost karts for getHeading() to work.
+ */
+void Moveable::updatePosition()
+{
+    Vec3 forw_vec = m_transform.getBasis().getColumn(2);
+    m_heading     = atan2f(forw_vec.getX(), forw_vec.getZ());
 
     // The pitch in hpr is in between -pi and pi. But for the camera it
     // must be restricted to -pi/2 and pi/2 - so recompute it by restricting
@@ -138,9 +170,7 @@ void Moveable::update(float dt)
     Vec3 up       = getTrans().getBasis().getColumn(1);
     m_pitch       = atan2(up.getZ(), fabsf(up.getY()));
     m_roll        = atan2(up.getX(), up.getY());
-
-    updateGraphics(dt, Vec3(0,0,0), btQuaternion(0, 0, 0, 1));
-}   // update
+}   // updatePosition
 
 //-----------------------------------------------------------------------------
 /** Creates the bullet rigid body for this moveable.
@@ -155,15 +185,16 @@ void Moveable::createBody(float mass, btTransform& trans,
     btVector3 inertia;
     shape->calculateLocalInertia(mass, inertia);
     m_transform = trans;
-    m_motion_state = new KartMotionState(trans);
+    m_motion_state.reset(new KartMotionState(trans));
 
-    btRigidBody::btRigidBodyConstructionInfo info(mass, m_motion_state,
+    btRigidBody::btRigidBodyConstructionInfo info(mass, m_motion_state.get(),
                                                   shape, inertia);
     info.m_restitution = restitution;
+    info.m_friction = stk_config->m_default_moveable_friction;
 
     // Then create a rigid body
     // ------------------------
-    m_body = new btRigidBody(info);
+    m_body.reset(new btRigidBody(info));
     if(mass==0)
     {
         // Create a kinematic object

@@ -20,7 +20,6 @@
 #include "guiengine/engine.hpp"
 #include "guiengine/scalable_font.hpp"
 #include "guiengine/skin.hpp"
-#include "utils/translation.hpp"
 
 #include <IGUIElement.h>
 #include <IGUIEnvironment.h>
@@ -66,7 +65,10 @@ void LabelWidget::add()
     EGUI_ALIGNMENT align = EGUIA_UPPERLEFT;
     if      (m_properties[PROP_TEXT_ALIGN] == "center") align = EGUIA_CENTER;
     else if (m_properties[PROP_TEXT_ALIGN] == "right")  align = EGUIA_LOWERRIGHT;
-    EGUI_ALIGNMENT valign = EGUIA_CENTER ; //TODO: make label v-align configurable through XML file?
+
+    EGUI_ALIGNMENT valign = EGUIA_CENTER ;
+    if (m_properties[PROP_TEXT_VALIGN] == "top") valign = EGUIA_UPPERLEFT;
+    if (m_properties[PROP_TEXT_VALIGN] == "bottom") valign = EGUIA_LOWERRIGHT;
 
     IGUIStaticText* irrwidget;
     if (m_scroll_speed != 0)
@@ -82,7 +84,6 @@ void LabelWidget::add()
                                                           false, word_wrap, m_parent, -1);
         irrwidget->setTextRestrainedInside(false);
     }
-    irrwidget->setRightToLeft(translations->isRTLText(message));
 
     m_element = irrwidget;
     irrwidget->setTextAlignment( align, valign );
@@ -107,18 +108,22 @@ void LabelWidget::add()
 
     if (m_scroll_speed <= 0)
         m_element->setNotClipped(true);
+
+    if (!m_is_visible)
+        m_element->setVisible(false);
 }   // add
 
 // ----------------------------------------------------------------------------
 
-void LabelWidget::setText(const wchar_t *text, bool expandIfNeeded)
+void LabelWidget::setText(const core::stringw& text, bool expandIfNeeded)
 {
     m_scroll_offset = 0;
 
     if (expandIfNeeded)
     {
         assert(m_element != NULL);
-        const int fwidth = (m_title_font ? GUIEngine::getTitleFont() : GUIEngine::getFont())->getDimension(text).Width;
+        const int fwidth = (m_title_font ? GUIEngine::getTitleFont() : GUIEngine::getFont())
+            ->getDimension(text.c_str()).Width;
         core::rect<s32> rect = m_element->getRelativePosition();
 
         if (rect.getWidth() < fwidth)
@@ -133,8 +138,6 @@ void LabelWidget::setText(const wchar_t *text, bool expandIfNeeded)
         m_scroll_offset = (float)m_w;
 
     Widget::setText(text);
-    if (m_element)
-        getIrrlichtElement<IGUIStaticText>()->setRightToLeft(translations->isRTLText(getText()));
 }   // setText
 
 // ----------------------------------------------------------------------------

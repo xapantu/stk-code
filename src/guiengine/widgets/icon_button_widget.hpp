@@ -33,6 +33,7 @@ namespace irr
 
 #include "guiengine/widget.hpp"
 #include "utils/leak_check.hpp"
+#include "utils/cpp2011.hpp"
 
 namespace GUIEngine
 {
@@ -42,6 +43,7 @@ namespace GUIEngine
     class IconButtonWidget : public Widget
     {
     private:
+        irr::core::rect<s32>  m_list_header_icon_rect;
         irr::video::ITexture* m_texture;
         irr::video::ITexture* m_deactivated_texture;
         irr::video::ITexture* m_highlight_texture;
@@ -54,6 +56,7 @@ namespace GUIEngine
         enum ScaleMode
         {
             SCALE_MODE_STRETCH,
+            SCALE_MODE_LIST_WIDGET,
             SCALE_MODE_KEEP_TEXTURE_ASPECT_RATIO,
             SCALE_MODE_KEEP_CUSTOM_ASPECT_RATIO
         };
@@ -93,7 +96,7 @@ namespace GUIEngine
         virtual ~IconButtonWidget() {};
 
         /** \brief Implement callback from base class Widget */
-        virtual void add();
+        virtual void add() OVERRIDE;
 
         /**
           * \brief Call this if scale mode is SCALE_MODE_KEEP_CUSTOM_ASPECT_RATIO.
@@ -153,14 +156,27 @@ namespace GUIEngine
 
         // --------------------------------------------------------------------
         /** \brief override from base class */
-        virtual EventPropagation focused(const int playerID);
+        virtual EventPropagation focused(const int playerID) OVERRIDE;
 
         // --------------------------------------------------------------------
         /** \brief override from base class */
-        virtual void unfocused(const int playerID, Widget* new_focus);
+        virtual void unfocused(const int playerID, Widget* new_focus) OVERRIDE;
         // --------------------------------------------------------------------
         /** Returns the texture of this button. */
         const video::ITexture* getTexture();
+        // --------------------------------------------------------------------
+        virtual void setVisible(bool visible) OVERRIDE;
+        // --------------------------------------------------------------------
+        virtual void elementRemoved() OVERRIDE
+        {
+            Widget::elementRemoved();
+            m_label = NULL;
+        }
+        // --------------------------------------------------------------------
+        const irr::core::rect<s32>& getListHeaderIconRect() const
+        {
+            return m_list_header_icon_rect;
+        }
     };
 }
 

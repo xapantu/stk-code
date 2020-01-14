@@ -127,6 +127,9 @@ private:
     /** Distance between each row of the race results */
     unsigned int               m_distance_between_rows;
 
+    /** Distance between each row of the highscore, race data, etc.*/
+    unsigned int               m_distance_between_meta_rows;
+
     /** The size of the kart icons. */
     unsigned int               m_width_icon;
 
@@ -160,7 +163,7 @@ private:
     bool                       m_gp_position_was_changed;
 
     /** The previous monospace state of the font. */
-    bool                       m_was_monospace;
+    //bool                       m_was_monospace;
 
     /** Sound effect at end of race. */
     SFXBase                   *m_finish_sound;
@@ -191,7 +194,8 @@ private:
     void addGPProgressWidget(GUIEngine::Widget* widget);
     void displayGPProgress();
     void cleanupGPProgress();
-    void displayHighScores();
+    void displayPostRaceInfo();
+    void displayCTFResults();
     void displaySoccerResults();
     void displayScreenShots();
 
@@ -213,6 +217,7 @@ public:
                                Input::InputType type, int playerId) OVERRIDE;
     void eventCallback(GUIEngine::Widget* widget, const std::string& name,
                        const int playerID) OVERRIDE;
+    void backToLobby();
 
 
     friend class GUIEngine::ScreenSingleton<RaceResultGUI>;
@@ -225,6 +230,7 @@ public:
     virtual void renderPlayerView(const Camera *camera, float dt) OVERRIDE {}
 
     virtual void onUpdate(float dt) OVERRIDE;
+    virtual void onDraw(float dt) OVERRIDE;
 
     /** No more messages need to be displayed, but the function might still be
      *  called (e.g. 'new lap' message if the end controller is used for more
@@ -236,7 +242,8 @@ public:
                             const video::SColor &color=
                                 video::SColor(255, 255, 0, 255),
                             bool important=true,
-                            bool big_font=false) OVERRIDE { }
+                            bool big_font=false,
+                            bool outline=false) OVERRIDE { }
 
     void nextPhase();
 

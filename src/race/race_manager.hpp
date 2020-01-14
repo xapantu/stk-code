@@ -32,10 +32,10 @@
 
 #include "network/remote_kart_info.hpp"
 #include "race/grand_prix_data.hpp"
-#include "utils/translation.hpp"
 #include "utils/vec3.hpp"
 
 class AbstractKart;
+class NetworkString;
 class SavedGrandPrix;
 class Track;
 
@@ -43,8 +43,11 @@ static const std::string IDENT_STD      ("STANDARD"        );
 static const std::string IDENT_TTRIAL   ("STD_TIMETRIAL"   );
 static const std::string IDENT_FTL      ("FOLLOW_LEADER"   );
 static const std::string IDENT_STRIKES  ("BATTLE_3_STRIKES");
+static const std::string IDENT_FFA      ("BATTLE_FFA"      );
+static const std::string IDENT_CTF      ("BATTLE_CTF"      );
 static const std::string IDENT_EASTER   ("EASTER_EGG_HUNT" );
 static const std::string IDENT_SOCCER   ("SOCCER"          );
+static const std::string IDENT_GHOST    ("GHOST"           );
 static const std::string IDENT_OVERWORLD("OVERWORLD"       );
 static const std::string IDENT_CUTSCENE ("CUTSCENE"        );
 
@@ -86,7 +89,7 @@ public:
     */
     enum MajorRaceModeType
     {
-        MAJOR_MODE_GRAND_PRIX,
+        MAJOR_MODE_GRAND_PRIX = 0,
         MAJOR_MODE_SINGLE
     };
 
@@ -96,27 +99,32 @@ public:
 #define LINEAR_RACE(ID, COUNT_LAPSES) (1000+ID+100*COUNT_LAPSES)
 #define BATTLE_ARENA(ID) (2000+ID)
 #define EASTER_EGG(ID)   (3000+ID)
+#define MISC(ID)         (4000+ID)
 
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     /** Minor variants to the major types of race.
      *  Make sure to use the 'LINEAR_RACE/BATTLE_ARENA' macros. */
     enum MinorRaceModeType
     {
-        MINOR_MODE_NONE          = -1,
+        MINOR_MODE_NONE             = -1,
 
-        MINOR_MODE_NORMAL_RACE   = LINEAR_RACE(0, true),
-        MINOR_MODE_TIME_TRIAL    = LINEAR_RACE(1, true),
-        MINOR_MODE_FOLLOW_LEADER = LINEAR_RACE(2, false),
-        MINOR_MODE_OVERWORLD     = LINEAR_RACE(3, false),
-        MINOR_MODE_TUTORIAL      = LINEAR_RACE(4, false),
+        MINOR_MODE_NORMAL_RACE      = LINEAR_RACE(0, true),
+        MINOR_MODE_TIME_TRIAL       = LINEAR_RACE(1, true),
+        MINOR_MODE_FOLLOW_LEADER    = LINEAR_RACE(2, false),
 
-        MINOR_MODE_3_STRIKES     = BATTLE_ARENA(0),
-        MINOR_MODE_SOCCER        = BATTLE_ARENA(1),
-        MINOR_MODE_CUTSCENE      = BATTLE_ARENA(2),
-        MINOR_MODE_EASTER_EGG    = EASTER_EGG(0)
+        MINOR_MODE_3_STRIKES        = BATTLE_ARENA(0),
+        MINOR_MODE_FREE_FOR_ALL     = BATTLE_ARENA(1),
+        MINOR_MODE_CAPTURE_THE_FLAG = BATTLE_ARENA(2),
+        MINOR_MODE_SOCCER           = BATTLE_ARENA(3),
+
+        MINOR_MODE_EASTER_EGG       = EASTER_EGG(0),
+
+        MINOR_MODE_OVERWORLD        = MISC(0),
+        MINOR_MODE_TUTORIAL         = MISC(1),
+        MINOR_MODE_CUTSCENE         = MISC(2)
     };
 
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     /** True if the AI should have additional abbilities, e.g.
      *  nolok will get special bubble gums in the final challenge. */
     enum AISuperPower
@@ -125,7 +133,7 @@ public:
         SUPERPOWER_NOLOK_BOSS = 1
     };
 
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     /** Returns a string identifier for each minor race mode.
      *  \param mode Minor race mode.
      */
@@ -133,18 +141,20 @@ public:
     {
         switch (mode)
         {
-            case MINOR_MODE_NORMAL_RACE:    return IDENT_STD;
-            case MINOR_MODE_TIME_TRIAL:     return IDENT_TTRIAL;
-            case MINOR_MODE_FOLLOW_LEADER:  return IDENT_FTL;
-            case MINOR_MODE_3_STRIKES:      return IDENT_STRIKES;
-            case MINOR_MODE_EASTER_EGG:     return IDENT_EASTER;
-            case MINOR_MODE_SOCCER:         return IDENT_SOCCER;
+            case MINOR_MODE_NORMAL_RACE:      return IDENT_STD;
+            case MINOR_MODE_TIME_TRIAL:       return IDENT_TTRIAL;
+            case MINOR_MODE_FOLLOW_LEADER:    return IDENT_FTL;
+            case MINOR_MODE_3_STRIKES:        return IDENT_STRIKES;
+            case MINOR_MODE_FREE_FOR_ALL:     return IDENT_FFA;
+            case MINOR_MODE_CAPTURE_THE_FLAG: return IDENT_CTF;
+            case MINOR_MODE_EASTER_EGG:       return IDENT_EASTER;
+            case MINOR_MODE_SOCCER:           return IDENT_SOCCER;
             default: assert(false);
                      return IDENT_STD;  // stop compiler warning
         }
     }   // getIdentOf
 
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     /** Returns the icon for a minor race mode.
      *  \param mode Minor race mode.
      */
@@ -152,41 +162,21 @@ public:
     {
         switch (mode)
         {
-            case MINOR_MODE_NORMAL_RACE:    return "/gui/mode_normal.png";
-            case MINOR_MODE_TIME_TRIAL:     return "/gui/mode_tt.png";
-            case MINOR_MODE_FOLLOW_LEADER:  return "/gui/mode_ftl.png";
-            case MINOR_MODE_3_STRIKES:      return "/gui/mode_3strikes.png";
-            case MINOR_MODE_EASTER_EGG:     return "/gui/mode_easter.png";
-            case MINOR_MODE_SOCCER:         return "/gui/mode_soccer.png";
+            case MINOR_MODE_NORMAL_RACE:    return "/gui/icons/mode_normal.png";
+            case MINOR_MODE_TIME_TRIAL:     return "/gui/icons/mode_tt.png";
+            case MINOR_MODE_FOLLOW_LEADER:  return "/gui/icons/mode_ftl.png";
+            case MINOR_MODE_3_STRIKES:      return "/gui/icons/mode_3strikes.png";
+            case MINOR_MODE_FREE_FOR_ALL:   return "/gui/icons/mode_weapons.png";
+            case MINOR_MODE_CAPTURE_THE_FLAG: return "/gui/icons/mode_weapons.png";
+            case MINOR_MODE_EASTER_EGG:     return "/gui/icons/mode_easter.png";
+            case MINOR_MODE_SOCCER:         return "/gui/icons/mode_soccer.png";
             default: assert(false); return NULL;
         }
     }   // getIconOf
 
-    // ------------------------------------------------------------------------
-    /** Returns a (translated) name of a minor race mode.
-     *  \param mode Minor race mode.
-     */
-    static const core::stringw getNameOf(const MinorRaceModeType mode)
-    {
-        switch (mode)
-        {
-            //I18N: Game mode
-            case MINOR_MODE_NORMAL_RACE:    return _("Normal Race");
-            //I18N: Game mode
-            case MINOR_MODE_TIME_TRIAL:     return _("Time Trial");
-            //I18N: Game mode
-            case MINOR_MODE_FOLLOW_LEADER:  return _("Follow the Leader");
-            //I18N: Game mode
-            case MINOR_MODE_3_STRIKES:      return _("3 Strikes Battle");
-            //I18N: Game mode
-            case MINOR_MODE_EASTER_EGG:     return _("Egg Hunt");
-            //I18N: Game mode
-            case MINOR_MODE_SOCCER:         return _("Soccer");
-            default: assert(false); return L"";
-        }
-    }   // getNameOf
-
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
+    static const core::stringw getNameOf(const MinorRaceModeType mode);
+    // ----------------------------------------------------------------------------------------
     /** Returns if the currently set minor game mode can be used by the AI. */
     bool hasAI()
     {
@@ -196,6 +186,8 @@ public:
             case MINOR_MODE_TIME_TRIAL:     return true;
             case MINOR_MODE_FOLLOW_LEADER:  return true;
             case MINOR_MODE_3_STRIKES:      return true;
+            case MINOR_MODE_FREE_FOR_ALL:   return false;
+            case MINOR_MODE_CAPTURE_THE_FLAG: return false;
             case MINOR_MODE_EASTER_EGG:     return false;
             case MINOR_MODE_SOCCER:         return true;
             default: assert(false);         return false;
@@ -203,7 +195,7 @@ public:
     }   // hasAI
 
 
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     /** Returns the minor mode id from a string identifier. This function is
      *  used from challenge_data, which reads the mode from a challenge file.
      *  \param name The name of the minor mode.
@@ -215,6 +207,8 @@ public:
         else if (name==IDENT_TTRIAL ) return MINOR_MODE_TIME_TRIAL;
         else if (name==IDENT_FTL    ) return MINOR_MODE_FOLLOW_LEADER;
         else if (name==IDENT_STRIKES) return MINOR_MODE_3_STRIKES;
+        else if (name==IDENT_FFA)     return MINOR_MODE_FREE_FOR_ALL;
+        else if (name==IDENT_CTF)     return MINOR_MODE_CAPTURE_THE_FLAG;
         else if (name==IDENT_EASTER ) return MINOR_MODE_EASTER_EGG;
         else if (name==IDENT_SOCCER)  return MINOR_MODE_SOCCER;
 
@@ -224,20 +218,23 @@ public:
 
 #undef LINEAR_RACE
 #undef BATTLE_ARENA
+#undef MISC
 
     /** Game difficulty. */
-    enum Difficulty     { DIFFICULTY_EASY,
+    enum Difficulty     { DIFFICULTY_EASY = 0,
                           DIFFICULTY_FIRST = DIFFICULTY_EASY,
                           DIFFICULTY_MEDIUM,
                           DIFFICULTY_HARD,
                           DIFFICULTY_BEST,
                           DIFFICULTY_LAST = DIFFICULTY_BEST,
-                          DIFFICULTY_COUNT};
+                          DIFFICULTY_COUNT,
+                          DIFFICULTY_NONE};
 
     /** Different kart types: A local player, a player connected via network,
-     *  an AI kart, the leader kart (currently not used), a ghost kart. */
+     *  an AI kart, the leader kart (currently not used), a ghost kart and
+     *  spare tire karts which allow gain life in battle mode */
     enum KartType       { KT_PLAYER, KT_NETWORK_PLAYER, KT_AI, KT_LEADER,
-                          KT_GHOST };
+                          KT_GHOST, KT_SPARE_TIRE };
 private:
 
     bool m_started_from_overworld;
@@ -269,20 +266,23 @@ public:
         /** In GPs, at the end, will hold the overall rank of this kart
          *  (0<=m_gp_rank < num_karts-1). */
         int         m_gp_rank;
-        /** The difficulty for this player. */
-        PerPlayerDifficulty m_difficulty;
-
+        /** Boosted status (AI only). */
+        bool        m_boosted_ai;
+        /** The handicap for this player. */
+        HandicapLevel m_handicap;
+        /** Kart color of player (used in gp win / lose screen). */
+        float       m_color;
         KartStatus(const std::string& ident, const int& prev_finish_pos,
                    int local_player_id, int global_player_id,
                    int init_gp_rank, KartType kt,
-                   PerPlayerDifficulty difficulty) :
+                   HandicapLevel handicap) :
                    m_ident(ident), m_score(0), m_last_score(0),
                    m_overall_time(0.0f), m_last_time(0.0f),
                    m_kart_type(kt),
                    m_local_player_id(local_player_id),
                    m_global_player_id(global_player_id),
-                   m_gp_rank(init_gp_rank), m_difficulty(difficulty)
-                {}
+                   m_gp_rank(init_gp_rank), m_handicap(handicap)
+                { m_boosted_ai = false; m_color = 0.0f; }
 
     };   // KartStatus
 private:
@@ -301,7 +301,6 @@ private:
     /** Stores remote kart information about all player karts. */
     std::vector<RemoteKartInfo>      m_player_karts;
     std::vector<std::string>         m_tracks;
-    std::vector<int>                 m_host_ids;
 
     /** Number of local players. */
     unsigned int m_num_local_players;
@@ -328,13 +327,18 @@ private:
     GrandPrixData                    m_grand_prix;
     SavedGrandPrix*                  m_saved_gp;
     int                              m_num_karts;
+    unsigned int                     m_num_red_ai;
+    unsigned int                     m_num_blue_ai;
+    unsigned int                     m_num_ghost_karts;
+    unsigned int                     m_num_spare_tire_karts;
     unsigned int                     m_num_finished_karts;
     unsigned int                     m_num_finished_players;
+    unsigned                         m_flag_return_ticks;
+    unsigned                         m_flag_deactivated_ticks;
     int                              m_coin_target;
-    bool                             m_has_time_target;
     float                            m_time_target;
     int                              m_goal_target;
-
+    int                              m_hit_capture_limit;
     void startNextRace();    // start a next race
 
     friend bool operator< (const KartStatus& left, const KartStatus& right)
@@ -350,6 +354,11 @@ private:
     /** Determines if saved GP should be continued or not*/
     bool m_continue_saved_gp;
 
+    bool m_is_recording_race;
+
+    bool m_has_ghost_karts;
+
+    bool m_watching_replay;
 public:
          RaceManager();
         ~RaceManager();
@@ -359,13 +368,13 @@ public:
     void setPlayerKart(unsigned int player_id,
                        const RemoteKartInfo& ki);
 
-    /** Sets additional information for a player to indicate which soccer team it belong to
+    /** Sets additional information for a player to indicate which team it belong to
     */
-    void setKartSoccerTeam(unsigned int player_id, SoccerTeam team);
+    void setKartTeam(unsigned int player_id, KartTeam team);
 
-    /** Sets the per-player difficulty for a player.
+    /** Sets the handicap for a player.
      */
-    void setPlayerDifficulty(unsigned int player_id, PerPlayerDifficulty difficulty);
+    void setPlayerHandicap(unsigned int player_id, HandicapLevel handicap);
 
     /** In case of non GP mode set the track to use.
      *  \param track Pointer to the track to use.
@@ -403,95 +412,150 @@ public:
     void saveGP();
     void startSingleRace(const std::string &track_ident, const int num_laps,
                           bool from_overworld);
+    void startWatchingReplay(const std::string &track_ident, const int num_laps);
     void setupPlayerKartInfo();
     void kartFinishedRace(const AbstractKart* kart, float time);
     void setNumPlayers(int players, int local_players=-1);
     void setDefaultAIKartList(const std::vector<std::string> &ai_list);
     void computeRandomKartList();
 
-    // ------------------------------------------------------------------------
-    bool hasTimeTarget() const { return m_has_time_target; }
-    // ------------------------------------------------------------------------
-    void setMaxGoal(int maxGoal){ m_goal_target = maxGoal; }
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
+    bool hasTimeTarget() const { return m_time_target > 0.0f; }
+    // ----------------------------------------------------------------------------------------
+    void setMaxGoal(int max_goal)
+    {
+        m_time_target = 0.0f;
+        m_goal_target = max_goal;
+    }   // setMaxGoal
+    // ----------------------------------------------------------------------------------------
     int getMaxGoal(){ return m_goal_target; }
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     void setCoinTarget(int num)   { m_coin_target = num; }
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     void setGrandPrix(const GrandPrixData &gp)
     {
         m_grand_prix = gp;
         setCoinTarget(0);
     }   // setGrandPrix
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     void setAIKartOverride(const std::string& kart)
     {
         m_ai_kart_override = kart;
     }   // setAIKartOverride
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     void setAISuperPower(AISuperPower superpower)
     {
         m_ai_superpower = superpower;
     }   // setAISuperPower
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     AISuperPower getAISuperPower() const { return m_ai_superpower; }
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     void setNumLaps(int num)
     {
         m_num_laps.clear();
         m_num_laps.push_back(num);
     }   // setNumLaps
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     void setReverseTrack(bool r_t)
     {
         m_reverse_track.clear();
         m_reverse_track.push_back(r_t);
     }   // setReverseTrack
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     void setMajorMode(MajorRaceModeType mode) { m_major_mode = mode; }
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     void setMinorMode(MinorRaceModeType mode)
-    { 
+    {
         m_minor_mode = mode;
-        m_has_time_target = false;
     }   // setMinorMode
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     void setNumKarts(int num)
     {
         m_num_karts = num;
         m_ai_kart_override = "";
         m_ai_superpower = SUPERPOWER_NONE;
     }   // setNumKarts
-    // ------------------------------------------------------------------------
-    void setTimeTarget(float num)
+    // ----------------------------------------------------------------------------------------
+    void setNumRedAI(unsigned int num)
     {
-        m_has_time_target = true;
-        m_time_target = num;
+        m_num_red_ai = num;
+    }   // setNumRedAI
+    // ----------------------------------------------------------------------------------------
+    void setNumBlueAI(unsigned int num)
+    {
+        m_num_blue_ai = num;
+    }   // setNumBlueAI
+    // ----------------------------------------------------------------------------------------
+    void setTimeTarget(float time)
+    {
+        m_goal_target = 0;
+        m_time_target = time;
     }   // setTimeTarget
-    // ------------------------------------------------------------------------
-    const RemoteKartInfo& getKartInfo(unsigned int n) const
+    // ----------------------------------------------------------------------------------------
+    RemoteKartInfo& getKartInfo(unsigned int n)
     {
         return m_player_karts[n];
     }   // getKartInfo
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     unsigned int getNumLocalPlayers() const
     {
         return m_num_local_players;
     }   // getNumLocalPlayers
-    // ------------------------------------------------------------------------
+    
+    // ----------------------------------------------------------------------------------------
+    /** Returns true if the split screen display leaves an empty space that
+     *  can be used to display the minimap.
+     */
+    bool getIfEmptyScreenSpaceExists() const
+    {
+        const float sqrt_num_players = sqrtf((float)getNumLocalPlayers());
+        const int rows = (int)ceil(sqrt_num_players);
+        const int cols = (int)round(sqrt_num_players);
+        const int total_spaces = rows * cols;
+        return (total_spaces - getNumLocalPlayers() > 0);
+    }   // getIfEmptyScreenSpaceExists
+    // ----------------------------------------------------------------------------------------
     /** Returns the selected number of karts (selected number of players and
      *  AI karts. */
-    unsigned int getNumberOfKarts() const {return m_num_karts; }
-    // ------------------------------------------------------------------------
+    unsigned int getNumberOfKarts() const { return m_num_karts; }
+    // ----------------------------------------------------------------------------------------
+    unsigned int getNumberOfAIKarts() const
+    {
+        return (unsigned int)m_ai_kart_list.size(); 
+    }   // getNumberOfAIKarts
+    // ----------------------------------------------------------------------------------------
+    unsigned int getNumberOfRedAIKarts() const { return m_num_red_ai; }
+    // ----------------------------------------------------------------------------------------
+    unsigned int getNumberOfBlueAIKarts() const { return m_num_blue_ai; }
+    // ----------------------------------------------------------------------------------------
+    unsigned int getNumNonGhostKarts() const
+                                    { return m_num_karts - m_num_ghost_karts; }
+    // ----------------------------------------------------------------------------------------
     MajorRaceModeType getMajorMode() const { return m_major_mode; }
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     MinorRaceModeType getMinorMode() const { return m_minor_mode; }
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
+    std::string getMinorModeName() const
+    {
+        switch (m_minor_mode)
+        {
+            case MINOR_MODE_NORMAL_RACE:    return "normal";
+            case MINOR_MODE_TIME_TRIAL:     return "time-trial";
+            case MINOR_MODE_FOLLOW_LEADER:  return "follow-the-leader";
+            case MINOR_MODE_3_STRIKES:      return "battle";
+            case MINOR_MODE_FREE_FOR_ALL:   return "ffa";
+            case MINOR_MODE_CAPTURE_THE_FLAG: return "ctf";
+            case MINOR_MODE_EASTER_EGG:     return "egg-hunt";
+            case MINOR_MODE_SOCCER:         return "soccer";
+            default: assert(false);         return "";
+        }
+    }
+    // ----------------------------------------------------------------------------------------
     unsigned int getNumPlayers() const 
-    { 
+    {
         return (unsigned int) m_player_karts.size(); 
     }   // getNumPlayers
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     /** \brief Returns the number lf laps.
      *  In case of FTL or battle mode always return 9999, since they don't
      *  have laps. This avoids problems in FTL GP, since in this case no laps
@@ -500,18 +564,18 @@ public:
      */
     int getNumLaps() const
     {
-        if(m_minor_mode==MINOR_MODE_3_STRIKES     ||
-            m_minor_mode==MINOR_MODE_FOLLOW_LEADER    )
-            return 9999;
-        return m_num_laps[m_track_number];
+        if(modeHasLaps())
+            return m_num_laps[m_track_number];
+        // else
+        return 9999;
     }   // getNumLaps
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     /** \return whether the track should be reversed */
     bool getReverseTrack() const { return m_reverse_track[m_track_number]; }
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     /** Returns the difficulty. */
     Difficulty getDifficulty() const { return m_difficulty; }
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     /** Returns the specified difficulty as a string. */
     std::string getDifficultyAsString(Difficulty diff) const
     {
@@ -525,78 +589,98 @@ public:
         }
         return "";
     }   // getDifficultyAsString
-    // ------------------------------------------------------------------------
+
+    // ----------------------------------------------------------------------------------------
+    core::stringw getDifficultyName(Difficulty diff) const;
+    // ----------------------------------------------------------------------------------------
     const std::string& getTrackName() const { return m_tracks[m_track_number];}
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     const GrandPrixData& getGrandPrix() const { return m_grand_prix; }
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     unsigned int getFinishedKarts() const { return m_num_finished_karts; }
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     unsigned int getFinishedPlayers() const { return m_num_finished_players; }
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     int getKartGPRank(const int kart_id)const
     {
         return m_kart_status[kart_id].m_gp_rank;
     }   // getKartGPRank
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     const std::string& getKartIdent(int kart) const
     {
         return m_kart_status[kart].m_ident;
     }   // getKartIdent
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     int getKartScore(int krt) const { return m_kart_status[krt].m_score; }
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     int getKartPrevScore(int krt) const
     {
         return m_kart_status[krt].m_last_score;
     }   // getKartPrevScore
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     int getKartLocalPlayerId(int k) const
     {
         return m_kart_status[k].m_local_player_id;
     }   // getKartLocalPlayerId
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     int getKartGlobalPlayerId(int k) const
     {
         return m_kart_status[k].m_global_player_id;
     }   // getKartGlobalPlayerId
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     float getOverallTime(int kart) const
     {
         return m_kart_status[kart].m_overall_time;
     }   // getOverallTime
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     float getKartRaceTime(int kart) const
     {
         return m_kart_status[kart].m_last_time;
     }   // getKartRaceTime
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     KartType getKartType(int kart) const
     {
         return m_kart_status[kart].m_kart_type;
     }   // getKartType
-    // ------------------------------------------------------------------------
-    PerPlayerDifficulty getPlayerDifficulty(int kart) const
+    // ----------------------------------------------------------------------------------------
+    HandicapLevel getPlayerHandicap(int kart) const
     {
-        return m_kart_status[kart].m_difficulty;
-    }   // getPlayerDifficulty
-    // ------------------------------------------------------------------------
+        return m_kart_status[kart].m_handicap;
+    }   // getPlayerHandicap
+    // ----------------------------------------------------------------------------------------
+    bool hasBoostedAI(int kart) const
+    {
+        return m_kart_status[kart].m_boosted_ai;
+    }   // getKartRaceTime
+    // ----------------------------------------------------------------------------------------
+    void setKartColor(int kart, float color)
+    {
+        m_kart_status[kart].m_color = color;
+    }   // setKartColor
+    // ----------------------------------------------------------------------------------------
+    float getKartColor(int kart) const
+    {
+        return m_kart_status[kart].m_color;
+    }   // getKartColor
+    // ----------------------------------------------------------------------------------------
     int getCoinTarget() const { return m_coin_target; }
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     float getTimeTarget() const { return m_time_target; }
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     int getTrackNumber() const { return m_track_number; }
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
+    int getNumOfTracks() const { return (int)m_tracks.size(); }
+    // ----------------------------------------------------------------------------------------
     /** Returns the list of AI karts to use. Used for networking, and for
     *  the --ai= command line option. */
     const std::vector<std::string>& getAIKartList() const
     {
         return m_ai_kart_list;
     }   // getAIKartList
-    // ------------------------------------------------------------------------
-    /** \brief get information about given mode (returns true if 'mode' is of
+    // ----------------------------------------------------------------------------------------
+    /** \brief get information about current mode (returns true if 'mode' is of
     *  linear races type) */
-    bool isLinearRaceMode()
+    bool isLinearRaceMode() const
     {
         const int id = (int)m_minor_mode;
         // info is stored in its ID for conveniance, see the macros LINEAR_RACE
@@ -604,44 +688,72 @@ public:
         if(id > 999 && id < 2000) return true;
         else return false;
     }   // isLinearRaceMode
-    // ------------------------------------------------------------------------
+
+    // ----------------------------------------------------------------------------------------
+    /** \brief get information about given mode (returns true if 'mode' is of
+    *  linear races type) */
+    bool isLinearRaceMode(const MinorRaceModeType mode) const
+    {
+        const int id = (int)mode;
+        // info is stored in its ID for conveniance, see the macros LINEAR_RACE
+        // and BATTLE_ARENA above for exact meaning.
+        if(id > 999 && id < 2000) return true;
+        else return false;
+    }   // isLinearRaceMode
+
+    // ----------------------------------------------------------------------------------------
     /** \brief Returns true if the current mode is a battle mode. */
-    bool isBattleMode()
+    bool isBattleMode() const
     {
         const int id = (int)m_minor_mode;
         // This uses the  numerical id of the mode, see the macros
         // LINEAR_RACE and BATTLE_ARENA above for exact meaning.
-        if (id >= 2000 && id != 2001) return true;
+        if (id >= 2000 && id <= 2002) return true;
         else            return false;
     }   // isBattleMode
 
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     /** \brief Returns true if the current mode is a soccer mode. */
-    bool isSoccerMode()
+    bool isSoccerMode() const
     {
         const int id = (int)m_minor_mode;
         // This uses the  numerical id of the mode, see the macros
         // LINEAR_RACE and BATTLE_ARENA above for exact meaning.
-        if (id == 2001) return true;
+        if (id == 2003) return true;
         else            return false;
     }   // isSoccerMode
 
-    // ------------------------------------------------------------------------
-    bool isTutorialMode()
+    // ----------------------------------------------------------------------------------------
+    bool isTutorialMode() const  { return m_minor_mode == MINOR_MODE_TUTORIAL; }
+
+    // ----------------------------------------------------------------------------------------
+    bool isFollowMode() const    { return m_minor_mode == MINOR_MODE_FOLLOW_LEADER; }
+
+    // ----------------------------------------------------------------------------------------
+    bool isCTFMode() const       { return m_minor_mode == MINOR_MODE_CAPTURE_THE_FLAG; }
+ 
+    // ----------------------------------------------------------------------------------------
+    bool isEggHuntMode() const   { return m_minor_mode == MINOR_MODE_EASTER_EGG; }
+
+    // ----------------------------------------------------------------------------------------
+    bool isTimeTrialMode() const { return m_minor_mode == MINOR_MODE_TIME_TRIAL; }
+    // ----------------------------------------------------------------------------------------
+     /** \brief Returns the number of second's decimals to display */
+    int currentModeTimePrecision() const
     {
-        return m_minor_mode == MINOR_MODE_TUTORIAL;
-    }   // isTutorialMode
-    // ------------------------------------------------------------------------
+        return 3; // display milliseconds
+    }   // currentModeTimePrecision
+    // ----------------------------------------------------------------------------------------
     /** \brief Returns true if the current mode has laps. */
-    bool modeHasLaps()
+    bool modeHasLaps() const
     {
-        if (isBattleMode() || isSoccerMode()) return false;
+        if (!isLinearRaceMode()) return false;
         const int id = (int)m_minor_mode;
         // See meaning of IDs above
         const int answer = (id-1000)/100;
         return answer!=0;
     }   // modeHasLaps
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     /** Returns true if the currently selected minor mode has highscores. */
     bool modeHasHighscores()
     {
@@ -649,17 +761,17 @@ public:
         //       and each World may set m_use_highscores to true or false.
         //       The reason for this duplication is that we might want to know
         //       whether to display highscores without creating a World.
-        return m_minor_mode != MINOR_MODE_3_STRIKES &&
-               m_minor_mode != MINOR_MODE_SOCCER &&
+        return !isBattleMode() &&
+               !isSoccerMode() &&
                m_minor_mode != MINOR_MODE_FOLLOW_LEADER;
     }   // modeHasHighscore
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     bool raceWasStartedFromOverworld() const
     {
         return m_started_from_overworld;
     }   // raceWasStartedFromOverworld
 
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     /** \name Callbacks from the race classes
      * These methods are to be used by the classes that manage the various
      *  races, to let the race manager know about current status
@@ -668,7 +780,7 @@ public:
     {
         return m_num_finished_players == m_player_karts.size();
     }   // allPlayerFinished
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     /** Sets the AI to use. This is used in networking mode to set the karts
      *  that will be used by the server to the client. It will take precedence
      *  over the random selection. */
@@ -676,28 +788,112 @@ public:
     {
         m_ai_kart_list = rkl;
     }   // setAIKartList
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     bool haveKartLastPositionOnOverworld()
     {
         return m_have_kart_last_position_on_overworld;
     }   // haveKartLastPositionOnOverworld
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     void setKartLastPositionOnOverworld(const Vec3 &pos)
     {
         m_have_kart_last_position_on_overworld = true;
         m_kart_last_position_on_overworld = pos;
     }   // setKartLastPositionOnOverworld
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     void clearKartLastPositionOnOverworld()
     {
         m_have_kart_last_position_on_overworld = false;
     }   // clearKartLastPositionOnOverworld
-    // ------------------------------------------------------------------------
+    // ----------------------------------------------------------------------------------------
     Vec3 getKartLastPositionOnOverworld()
     {
         return m_kart_last_position_on_overworld;
     }   // getKartLastPositionOnOverworld
-
+    // ----------------------------------------------------------------------------------------
+    void setRecordRace(bool record)
+    {
+        m_is_recording_race = record;
+    }   // setRecordRace
+    // ----------------------------------------------------------------------------------------
+    void setRaceGhostKarts(bool ghost)
+    {
+        m_has_ghost_karts = ghost;
+    }   // setRaceGhostKarts
+    // ----------------------------------------------------------------------------------------
+    void setWatchingReplay(bool watch)
+    {
+        m_watching_replay = watch;
+    }   // setWatchingReplay
+    // ----------------------------------------------------------------------------------------
+    bool isRecordingRace() const
+    {
+        return m_is_recording_race;
+    }   // isRecordingRace
+    // ----------------------------------------------------------------------------------------
+    bool hasGhostKarts() const
+    {
+        return m_has_ghost_karts;
+    }   // hasGhostKarts
+    // ----------------------------------------------------------------------------------------
+    bool isWatchingReplay() const
+    {
+        return m_watching_replay;
+    }   // isWatchingReplay
+    // ----------------------------------------------------------------------------------------
+    void addSpareTireKart(const std::string& name)
+    {
+        m_kart_status.push_back(KartStatus(name, 0, -1, -1,
+            -1, KT_SPARE_TIRE, HANDICAP_NONE));
+        m_num_spare_tire_karts++;
+        m_num_karts++;
+    }   // addSpareTireKart
+    // ----------------------------------------------------------------------------------------
+    void setSpareTireKartNum(unsigned int i)
+    {
+        m_num_spare_tire_karts = i;
+    }   // setSpareTireKartNum
+    // ----------------------------------------------------------------------------------------
+    unsigned int getNumSpareTireKarts() const
+    {
+        return m_num_spare_tire_karts;
+    }   // getNumSpareTireKarts
+    // ----------------------------------------------------------------------------------------
+    void configGrandPrixResultFromNetwork(NetworkString& ns);
+    // ----------------------------------------------------------------------------------------
+    void clearNetworkGrandPrixResult();
+    // ----------------------------------------------------------------------------------------
+    void setHitCaptureTime(int hc, float time)
+    {
+        m_hit_capture_limit = hc;
+        m_time_target = time;
+    }
+    // ----------------------------------------------------------------------------------------
+    int getHitCaptureLimit() const              { return m_hit_capture_limit; }
+    // ----------------------------------------------------------------------------------------
+    bool teamEnabled() const
+    {
+        return m_minor_mode == MINOR_MODE_SOCCER ||
+            m_minor_mode == MINOR_MODE_CAPTURE_THE_FLAG;
+    }
+    // ----------------------------------------------------------------------------------------
+    void setFlagReturnTicks(unsigned ticks)    { m_flag_return_ticks = ticks; }
+    // ----------------------------------------------------------------------------------------
+    unsigned getFlagReturnTicks() const         { return m_flag_return_ticks; }
+    // ----------------------------------------------------------------------------------------
+    void setFlagDeactivatedTicks(unsigned ticks)
+                                          { m_flag_deactivated_ticks = ticks; }
+    // ----------------------------------------------------------------------------------------
+    unsigned getFlagDeactivatedTicks() const
+                                           { return m_flag_deactivated_ticks; }
+    // ----------------------------------------------------------------------------------------
+    /** Whether the current game mode allow live joining even the current game
+     *. started in network*/
+    bool supportsLiveJoining() const
+    {
+        return m_minor_mode == MINOR_MODE_SOCCER ||
+            m_minor_mode == MINOR_MODE_CAPTURE_THE_FLAG ||
+            m_minor_mode == MINOR_MODE_FREE_FOR_ALL;
+    }
 };   // RaceManager
 
 extern RaceManager *race_manager;

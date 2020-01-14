@@ -33,7 +33,7 @@ class Vec3;
 /**
  * \brief The base class for sound effects.
  *  It gets a sound buffer from the sound
- *  manager, which is shared between all instances. Do create a new sound
+ *  manager, which is shared between all instances. To create a new sound
  *  effect object, use sfx_manager->getSFX(...); do not create an instance
  *  with new, since SFXManager makes sure to stop/restart all SFX (esp.
  *  looping sfx like engine sounds) when necessary.
@@ -64,9 +64,9 @@ public:
     virtual void       setLoop(bool status)                 = 0;
     virtual void       reallySetLoop(bool status)           = 0;
     virtual void       play()                               = 0;
-    virtual void       reallyPlayNow()                      = 0;
-    virtual void       play(const Vec3 &xyz)                = 0;
-    virtual void       reallyPlayNow(const Vec3 &xyz)       = 0;
+    virtual void       reallyPlayNow(SFXBuffer* buffer = NULL) = 0;
+    virtual void       play(const Vec3 &xyz, SFXBuffer* buffer = NULL) = 0;
+    virtual void       reallyPlayNow(const Vec3 &xyz, SFXBuffer* buffer = NULL) = 0;
     virtual void       stop()                               = 0;
     virtual void       reallyStopNow()                      = 0;
     virtual void       pause()                              = 0;

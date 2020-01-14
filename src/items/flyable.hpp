@@ -22,18 +22,21 @@
 #ifndef HEADER_FLYABLE_HPP
 #define HEADER_FLYABLE_HPP
 
+#include "items/powerup_manager.hpp"
+#include "karts/moveable.hpp"
+#include "network/rewinder.hpp"
+#include "tracks/terrain_info.hpp"
+#include "utils/cpp2011.hpp"
+
+#include <irrString.h>
 namespace irr
 {
     namespace scene { class IMesh; }
 }
-#include <irrString.h>
 using namespace irr;
 
-#include "items/powerup_manager.hpp"
-#include "karts/moveable.hpp"
-#include "tracks/terrain_info.hpp"
-
 class AbstractKart;
+class AbstractKartAnimation;
 class HitEffect;
 class PhysicalObject;
 class XMLNode;
@@ -41,9 +44,9 @@ class XMLNode;
 /**
   * \ingroup items
   */
-class Flyable : public Moveable, public TerrainInfo
+class Flyable : public Moveable, public TerrainInfo,
+                public Rewinder
 {
-public:
 private:
     bool              m_has_hit_something;
 
@@ -64,6 +67,14 @@ private:
      *  terrain yourself (e.g. order of operations is important)
      *  set this to false with a call do setDoTerrainInfo(). */
     bool              m_do_terrain_info;
+
+    /* Used in network to restore previous gravity in compressed form. */
+    uint32_t          m_compressed_gravity_vector;
+
+    /** If the flyable is in a cannon, this is the pointer to the cannon
+     *  animation. NULL otherwise. */
+    AbstractKartAnimation *m_animation;
+
 protected:
     /** Kart which shot this flyable. */
     AbstractKart*     m_owner;
@@ -91,10 +102,32 @@ protected:
     float             m_speed;
 
     /** Mass of this Flyable. */
-    float             m_mass;
+    const float       m_mass;
 
     /** Size of this flyable. */
     Vec3              m_extend;
+
+    /** Time since thrown. used so a kart can't hit himself when trying
+     *  something, and also to put some time limit to some collectibles */
+    uint16_t          m_ticks_since_thrown;
+
+    /* True if this flyable exists in server, and will trigger a rewind.
+     * For each local state it will reset it to false and call moveToInfinity,
+     * and for each restoreState it will set it to true. Also when re-fire the
+     * flyable during rewind it will set to true too. */
+    bool              m_has_server_state;
+
+    /** If set to true, the kart that throwns this flyable can't collide
+     *  with it for a short time. */
+    bool              m_owner_has_temporary_immunity;
+
+    /* Set to true once when onDeleteFlyable, this is used to create HitEffect
+     * only once. */
+    bool              m_deleted_once;
+
+    /* Save the locally detected deleted ticks, if the confirmed state world
+     * ticks in computeError > this, the flyable can be deleted in client. */
+    int               m_last_deleted_ticks;
 
     // The flyable class stores the values for each flyable type, e.g.
     // speed, min_height, max_height. These variables must be static,
@@ -119,17 +152,12 @@ protected:
     /** Size of the model. */
     static Vec3       m_st_extend[PowerupManager::POWERUP_MAX];
 
-    /** Time since thrown. used so a kart can't hit himself when trying
-     *  something, and also to put some time limit to some collectibles */
-    float             m_time_since_thrown;
-
     /** Set to something > -1 if this flyable should auto-destrcut after
-     *  a while. */
-    float             m_max_lifespan;
+     *  that may ticks. */
+    int               m_max_lifespan;
 
-    /** If set to true, the kart that throwns this flyable can't collide
-     *  with it for a short time. */
-    bool              m_owner_has_temporary_immunity;
+    /* For debugging purpose */
+    int               m_created_ticks;
 
     void              getClosestKart(const AbstractKart **minKart,
                                      float *minDistSquared,
@@ -149,10 +177,13 @@ protected:
                                     const Vec3 &velocity,
                                     btCollisionShape *shape,
                                     float restitution,
-                                    const float gravity=0.0f,
+                                    const btVector3& gravity=btVector3(0.0f,0.0f,0.0f),
                                     const bool rotates=false,
                                     const bool turn_around=false,
                                     const btTransform* customDirection=NULL);
+
+    void              moveToInfinity(bool set_moveable_trans = true);
+    void              removePhysics();
 public:
 
                  Flyable     (AbstractKart* kart,
@@ -161,12 +192,18 @@ public:
     virtual     ~Flyable     ();
     static void  init        (const XMLNode &node, scene::IMesh *model,
                               PowerupManager::PowerupType type);
-    virtual bool              updateAndDelete(float);
+    void                      updateGraphics(float dt) OVERRIDE;
+    virtual bool              updateAndDelete(int ticks);
+    virtual void              setAnimation(AbstractKartAnimation *animation);
     virtual HitEffect*        getHitEffect() const;
     bool                      isOwnerImmunity(const AbstractKart *kart_hit) const;
     virtual bool              hit(AbstractKart* kart, PhysicalObject* obj=NULL);
     void                      explode(AbstractKart* kart, PhysicalObject* obj=NULL,
                                       bool secondary_hits=true);
+    unsigned int              getOwnerId();
+    // ------------------------------------------------------------------------
+    /** Returns if this flyable has an animation playing (e.g. cannon). */
+    bool hasAnimation() const { return m_animation != NULL;  }
     // ------------------------------------------------------------------------
     /** If true the up velocity of the flyable will be adjust so that the
      *  flyable stays at a height close to the average height.
@@ -191,18 +228,50 @@ public:
     void         setHasHit   () { m_has_hit_something = true; }
     // ------------------------------------------------------------------------
     /** Resets this flyable. */
-    void         reset       () { Moveable::reset();          }
+    void         reset() OVERRIDE { Moveable::reset();          }
     // ------------------------------------------------------------------------
     /** Returns the type of flyable. */
-    PowerupManager::PowerupType
-                  getType() const {return m_type;}
+    PowerupManager::PowerupType getType() const {return m_type;}
+
+    // ------------------------------------------------------------------------
+    /** Returns the owner's kart */
+    AbstractKart *getOwner() const { return m_owner;}  
     // ------------------------------------------------------------------------
     /** Sets wether Flyable should update TerrainInfo as part of its update
      *  call, or if the inheriting object will update TerrainInfo itself
      *  (or perhaps not at all if it is not needed). */
     void setDoTerrainInfo(bool d) { m_do_terrain_info = d; }
     // ------------------------------------------------------------------------
-    unsigned int getOwnerId();
+    /** Returns the size (extend) of the mesh. */
+    const Vec3 &getExtend() const { return m_extend;  }
+    // ------------------------------------------------------------------------
+    void addForRewind(const std::string& uid);
+    // ------------------------------------------------------------------------
+    virtual void undoEvent(BareNetworkString *buffer) OVERRIDE {}
+    // ------------------------------------------------------------------------
+    virtual void rewindToEvent(BareNetworkString *buffer) OVERRIDE {}
+    // ------------------------------------------------------------------------
+    virtual void undoState(BareNetworkString *buffer) OVERRIDE {}
+    // ------------------------------------------------------------------------
+    virtual void saveTransform() OVERRIDE;
+    // ------------------------------------------------------------------------
+    virtual void computeError() OVERRIDE;
+    // ------------------------------------------------------------------------
+    virtual BareNetworkString* saveState(std::vector<std::string>* ru)
+        OVERRIDE;
+    // ------------------------------------------------------------------------
+    virtual void restoreState(BareNetworkString *buffer, int count) OVERRIDE;
+    // ------------------------------------------------------------------------
+    /* Return true if still in game state, or otherwise can be deleted. */
+    bool hasServerState() const                  { return m_has_server_state; }
+    // ------------------------------------------------------------------------
+    /** Call when the item is (re-)fired (during rewind if needed) by
+     *  projectile_manager. */
+    virtual void onFireFlyable();
+    // ------------------------------------------------------------------------
+    virtual void onDeleteFlyable();
+    // ------------------------------------------------------------------------
+    void setCreatedTicks(int ticks)                { m_created_ticks = ticks; }
 };   // Flyable
 
 #endif

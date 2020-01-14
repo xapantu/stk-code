@@ -19,16 +19,20 @@
 #ifndef HEADER_ATTACHMENT_HPP
 #define HEADER_ATTACHMENT_HPP
 
-#include "config/stk_config.hpp"
 #include "items/attachment_plugin.hpp"
 #include "utils/no_copy.hpp"
-#include "utils/random_generator.hpp"
+#include "utils/types.hpp"
 
-#include <IAnimatedMeshSceneNode.h>
 using namespace irr;
 
+namespace irr
+{
+    namespace scene { class IAnimatedMeshSceneNode; }
+}
+
 class AbstractKart;
-class Item;
+class BareNetworkString;
+class ItemState;
 class SFXBase;
 
 /** This objects is permanently available in a kart and stores information
@@ -44,7 +48,7 @@ class SFXBase;
  *  a scene node).
  *  \ingroup items
  */
-class Attachment: public NoCopy, public scene::IAnimationEndCallBack
+class Attachment: public NoCopy
 {
 public:
     // Some loop in attachment.cpp depend on ATTACH_FIRST and ATTACH_MAX.
@@ -53,12 +57,18 @@ public:
     enum AttachmentType
     {
         ATTACH_FIRST = 0,
+        // It is important that parachute, bomb and anvil stay in this order,
+        // since the attachment type is mapped to a random integer (and bomb
+        // must be last, since a bomb will not be given in battle mode).
         ATTACH_PARACHUTE = 0,
-        ATTACH_BOMB,
-        ATTACH_ANVIL,
+        ATTACH_ANVIL = 1,
+        ATTACH_BOMB = 2,
+        // End of fixed order attachments, the rest can be changed.
         ATTACH_SWATTER,
+        // Note that the next 2 symbols are only used as an index into the mesh
+        // array; it will NEVER be actually assigned as an attachment type
         ATTACH_NOLOKS_SWATTER,
-        ATTACH_TINYTUX,
+        ATTACH_SWATTER_ANIM,
         ATTACH_BUBBLEGUM_SHIELD,
         ATTACH_NOLOK_BUBBLEGUM_SHIELD,
         ATTACH_MAX,
@@ -69,17 +79,20 @@ private:
     /** Attachment type. */
     AttachmentType  m_type;
 
+    /** Graphical Attachment type (comparing in updateGraphics). */
+    AttachmentType m_graphical_type;
+
     /** Kart the attachment is attached to. */
     AbstractKart   *m_kart;
 
     /** Time left till attachment expires. */
-    float           m_time_left;
+    int16_t         m_ticks_left;
 
-    /** For parachutes only. */
-    float           m_initial_speed;
+    /** For parachutes only, stored in cm/s for networking. */
+    int16_t         m_initial_speed;
 
     /** For zoom-in animation */
-    float           m_node_scale;
+    int             m_scaling_end_ticks;
 
     /** Scene node of the attachment, which will be attached to the kart's
      *  scene node. */
@@ -93,37 +106,40 @@ private:
      *  for certain attachments. */
     AttachmentPlugin *m_plugin;
 
-    /** Pseudo random number generator. */
-    RandomGenerator   m_random;
-
     /** Ticking sound for the bomb */
     SFXBase          *m_bomb_sound;
 
-    /** Soung for exploding bubble gum shield */
+    /** Sound for exploding bubble gum shield */
     SFXBase          *m_bubble_explode_sound;
-    
+
 public:
           Attachment(AbstractKart* kart);
          ~Attachment();
-    void  clear ();
-    void  hitBanana(Item *item, int new_attachment=-1);
-    void  update (float dt);
+    void  clear();
+    void  hitBanana(ItemState *item);
+    void  updateGraphics(float dt);
+
+    void  update(int ticks);
     void  handleCollisionWithKart(AbstractKart *other);
-    void  set (AttachmentType type, float time,
-               AbstractKart *previous_kart=NULL);
+    void  set (AttachmentType type, int ticks,
+               AbstractKart *previous_kart=NULL,
+               bool set_by_rewind_parachute = false);
+    void rewindTo(BareNetworkString *buffer);
+    void saveState(BareNetworkString *buffer) const;
 
     // ------------------------------------------------------------------------
     /** Sets the type of the attachment, but keeps the old time left value. */
-    void  set (AttachmentType type) { set(type, m_time_left); }
+    void  set (AttachmentType type) { set(type, m_ticks_left); }
     // ------------------------------------------------------------------------
     /** Returns the type of this attachment. */
     AttachmentType getType() const { return m_type; }
     // ------------------------------------------------------------------------
-    /** Returns how much time is left before this attachment is removed. */
-    float getTimeLeft() const { return m_time_left;      }
+    /** Returns how much time (in ticks) is left before this attachment is 
+     *  removed. */
+    int16_t getTicksLeft() const                       { return m_ticks_left; }
     // ------------------------------------------------------------------------
     /** Sets how long this attachment will remain attached. */
-    void  setTimeLeft(float t){ m_time_left = t;         }
+    void setTicksLeft(int16_t t)                          { m_ticks_left = t; }
     // ------------------------------------------------------------------------
     /** Returns the previous owner of this attachment, used in bombs that
      *  are being passed between karts. */
@@ -135,8 +151,12 @@ public:
     /** Return the currently associated scene node (used by e.g the swatter) */
     scene::IAnimatedMeshSceneNode* getNode() {return m_node;}
     // ------------------------------------------------------------------------
-    /** Implement IAnimatedMeshSceneNode */
-    virtual void OnAnimationEnd(scene::IAnimatedMeshSceneNode* node);
+    void reset()
+    {
+        clear();
+        m_scaling_end_ticks = -1;
+    }
+
 };   // Attachment
 
 #endif

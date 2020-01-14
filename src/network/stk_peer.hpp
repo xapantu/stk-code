@@ -23,14 +23,44 @@
 #ifndef STK_PEER_HPP
 #define STK_PEER_HPP
 
+#include "network/transport_address.hpp"
 #include "utils/no_copy.hpp"
+#include "utils/time.hpp"
 #include "utils/types.hpp"
 
 #include <enet/enet.h>
 
+#include <array>
+#include <atomic>
+#include <deque>
+#include <memory>
+#include <numeric>
+#include <set>
+#include <string>
+#include <vector>
+
+class Crypto;
 class NetworkPlayerProfile;
 class NetworkString;
+class STKHost;
 class TransportAddress;
+
+enum PeerDisconnectInfo : unsigned int
+{
+    PDI_TIMEOUT = 0, //!< Timeout disconnected (default in enet).
+    PDI_NORMAL = 1, //!< Normal disconnction with acknowledgement
+    PDI_KICK = 2, //!< Kick disconnection
+    PDI_KICK_HIGH_PING = 3, //!< Too high ping, kicked by server
+};   // PeerDisconnectInfo
+
+enum AddonScore : int
+{
+    AS_KART = 0,
+    AS_TRACK = 1,
+    AS_ARENA = 2,
+    AS_SOCCER = 3,
+    AS_TOTAL = 4,
+};   // AddonScore
 
 /*! \class STKPeer
  *  \brief Represents a peer.
@@ -42,74 +72,227 @@ protected:
     /** Pointer to the corresponding ENet peer data structure. */
     ENetPeer* m_enet_peer;
 
-    NetworkPlayerProfile* m_player_profile;
+    /** True if this peer is validated by server. */
+    std::atomic_bool m_validated;
 
-    /** The token of this client. */
-    uint32_t m_client_server_token;
+    /** True if this peer is waiting for game. */
+    std::atomic_bool m_waiting_for_game;
 
-    /** True if the token for this peer has been set. */
-    bool m_token_set;
+    std::atomic_bool m_spectator;
+
+    std::atomic_bool m_disconnected;
+
+    std::atomic_bool m_warned_for_high_ping;
 
     /** Host id of this peer. */
-    int m_host_id;
+    uint32_t m_host_id;
 
-    /** True if this peer is authorised to control a server. */
-    bool m_is_authorised;
+    TransportAddress m_peer_address;
+
+    STKHost* m_host;
+
+    std::vector<std::shared_ptr<NetworkPlayerProfile> > m_players;
+
+    uint64_t m_connected_time;
+
+    std::atomic<int64_t> m_last_activity;
+
+    std::atomic<int64_t> m_last_message;
+
+    int m_consecutive_messages;
+
+    /** Available karts and tracks from this peer */
+    std::pair<std::set<std::string>, std::set<std::string> > m_available_kts;
+
+    std::unique_ptr<Crypto> m_crypto;
+
+    std::deque<uint32_t> m_previous_pings;
+
+    std::atomic<uint32_t> m_average_ping;
+
+    std::atomic<int> m_packet_loss;
+
+    std::set<unsigned> m_available_kart_ids;
+
+    std::string m_user_version;
+
+    std::string m_ipv6_address;
+
+    /** List of client capabilities set when connecting it, to determine
+     *  features available in same version. */
+    std::set<std::string> m_client_capabilities;
+
+    std::array<int, AS_TOTAL> m_addons_scores;
 public:
-             STKPeer(ENetPeer *enet_peer);
-    virtual ~STKPeer();
-
-    virtual void sendPacket(const NetworkString& data, bool reliable = true);
+    STKPeer(ENetPeer *enet_peer, STKHost* host, uint32_t host_id);
+    // ------------------------------------------------------------------------
+    ~STKPeer();
+    // ------------------------------------------------------------------------
+    void sendPacket(NetworkString *data, bool reliable = true,
+                    bool encrypted = true);
+    // ------------------------------------------------------------------------
     void disconnect();
+    // ------------------------------------------------------------------------
+    void kick();
+    // ------------------------------------------------------------------------
+    void reset();
+    // ------------------------------------------------------------------------
     bool isConnected() const;
-    bool exists() const;
-    uint32_t getAddress() const;
-    uint16_t getPort() const;
+    const TransportAddress& getAddress() const { return m_peer_address; }
+    // ------------------------------------------------------------------------
+    const std::string& getIPV6Address() const  { return m_ipv6_address; }
+    // ------------------------------------------------------------------------
+    std::string getRealAddress() const;
+    // ------------------------------------------------------------------------
     bool isSamePeer(const STKPeer* peer) const;
     bool isSamePeer(const ENetPeer* peer) const;
-
     // ------------------------------------------------------------------------
-    /** Sets the token for this client. */
-    void setClientServerToken(const uint32_t& token)
-    {
-        m_client_server_token = token; 
-        m_token_set = true; 
-    }   // setClientServerToken
+    std::vector<std::shared_ptr<NetworkPlayerProfile> >& getPlayerProfiles()
+                                                          { return m_players; }
     // ------------------------------------------------------------------------
-    void unsetClientServerToken() { m_token_set = false; }
+    bool hasPlayerProfiles() const               { return !m_players.empty(); }
     // ------------------------------------------------------------------------
-    void setPlayerProfile(NetworkPlayerProfile* profile)
-    {
-        m_player_profile = profile; 
-    }   // setPlayerProfile
+    void cleanPlayerProfiles()                           { m_players.clear(); }
     // ------------------------------------------------------------------------
-    /** Returns the player profile of this peer. */
-    NetworkPlayerProfile* getPlayerProfile() 
-    {
-        return m_player_profile;
-    }   // getPlayerProfile
+    void addPlayer(std::shared_ptr<NetworkPlayerProfile> p)
+                                                    { m_players.push_back(p); }
     // ------------------------------------------------------------------------
-    /** Returns the token of this client. */
-    uint32_t getClientServerToken() const { return m_client_server_token; }
+    void setValidated(bool val)                     { m_validated.store(val); }
     // ------------------------------------------------------------------------
-    /** Returns if the token for this client is known. */
-    bool isClientServerTokenSet() const { return m_token_set; }
-    // ------------------------------------------------------------------------
-    /** Sets the host if of this peer. */
-    void setHostId(int host_id) { m_host_id = host_id; }
+    /** Returns if the client is validated by server. */
+    bool isValidated() const                     { return m_validated.load(); }
     // ------------------------------------------------------------------------
     /** Returns the host id of this peer. */
-    int getHostId() const { return m_host_id; }
+    uint32_t getHostId() const                            { return m_host_id; }
     // ------------------------------------------------------------------------
-    /** Sets if this peer is authorised to control the server. */
-    void setAuthorised(bool authorised) { m_is_authorised = authorised; }
+    float getConnectedTime() const
+       { return float(StkTime::getMonoTimeMs() - m_connected_time) / 1000.0f; }
     // ------------------------------------------------------------------------
-    /** Returns if this peer is authorised to control the server. The server
-     *  uses this to check if a peer is allowed certain commands; and a client
-     *  uses this function (in which case this peer is actually the server
-     *  peer) to see if this client is allowed certain command (i.e. to
-     *  display additional GUI elements). */
-    bool isAuthorised() const { return m_is_authorised; }
+    void setAvailableKartsTracks(std::set<std::string>& k,
+                                 std::set<std::string>& t)
+              { m_available_kts = std::make_pair(std::move(k), std::move(t)); }
+    // ------------------------------------------------------------------------
+    void eraseServerKarts(const std::set<std::string>& server_karts,
+                          std::set<std::string>& karts_erase) const
+    {
+        if (m_available_kts.first.empty())
+            return;
+        for (const std::string& server_kart : server_karts)
+        {
+            if (m_available_kts.first.find(server_kart) ==
+                m_available_kts.first.end())
+            {
+                karts_erase.insert(server_kart);
+            }
+        }
+    }
+    // ------------------------------------------------------------------------
+    void eraseServerTracks(const std::set<std::string>& server_tracks,
+                           std::set<std::string>& tracks_erase) const
+    {
+        if (m_available_kts.second.empty())
+            return;
+        for (const std::string& server_track : server_tracks)
+        {
+            if (m_available_kts.second.find(server_track) ==
+                m_available_kts.second.end())
+            {
+                tracks_erase.insert(server_track);
+            }
+        }
+    }
+    // ------------------------------------------------------------------------
+    std::pair<std::set<std::string>, std::set<std::string> >
+                            getClientAssets() const { return m_available_kts; }
+    // ------------------------------------------------------------------------
+    void setPingInterval(uint32_t interval)
+                            { enet_peer_ping_interval(m_enet_peer, interval); }
+    // ------------------------------------------------------------------------
+    uint32_t getPing();
+    // ------------------------------------------------------------------------
+    Crypto* getCrypto() const                        { return m_crypto.get(); }
+    // ------------------------------------------------------------------------
+    void setCrypto(std::unique_ptr<Crypto>&& c);
+    // ------------------------------------------------------------------------
+    uint32_t getAveragePing() const           { return m_average_ping.load(); }
+    // ------------------------------------------------------------------------
+    ENetPeer* getENetPeer() const                       { return m_enet_peer; }
+    // ------------------------------------------------------------------------
+    void setWaitingForGame(bool val)         { m_waiting_for_game.store(val); }
+    // ------------------------------------------------------------------------
+    bool isWaitingForGame() const         { return m_waiting_for_game.load(); }
+    // ------------------------------------------------------------------------
+    void setSpectator(bool val)                     { m_spectator.store(val); }
+    // ------------------------------------------------------------------------
+    bool isSpectator() const                     { return m_spectator.load(); }
+    // ------------------------------------------------------------------------
+    bool isDisconnected() const               { return m_disconnected.load(); }
+    // ------------------------------------------------------------------------
+    void setDisconnected(bool val)        { return m_disconnected.store(val); }
+    // ------------------------------------------------------------------------
+    bool hasWarnedForHighPing() const { return m_warned_for_high_ping.load(); }
+    // ------------------------------------------------------------------------
+    void setWarnedForHighPing(bool val)  { m_warned_for_high_ping.store(val); }
+    // ------------------------------------------------------------------------
+    void clearAvailableKartIDs()              { m_available_kart_ids.clear(); }
+    // ------------------------------------------------------------------------
+    void addAvailableKartID(unsigned id)   { m_available_kart_ids.insert(id); }
+    // ------------------------------------------------------------------------
+    bool availableKartID(unsigned id)
+        { return m_available_kart_ids.find(id) != m_available_kart_ids.end(); }
+    // ------------------------------------------------------------------------
+    const std::set<unsigned>& getAvailableKartIDs() const
+                                               { return m_available_kart_ids; }
+    // ------------------------------------------------------------------------
+    void setUserVersion(const std::string& uv)         { m_user_version = uv; }
+    // ------------------------------------------------------------------------
+    const std::string& getUserVersion() const        { return m_user_version; }
+    // ------------------------------------------------------------------------
+    void updateLastActivity()
+                  { m_last_activity.store((int64_t)StkTime::getMonoTimeMs()); }
+    // ------------------------------------------------------------------------
+    int idleForSeconds() const
+    {
+        int64_t diff =
+            (int64_t)StkTime::getMonoTimeMs() - m_last_activity.load();
+        if (diff < 0)
+            return 0;
+        return (int)(diff / 1000);
+    }
+    // ------------------------------------------------------------------------
+    void setClientCapabilities(std::set<std::string>& caps)
+                                   { m_client_capabilities = std::move(caps); }
+    // ------------------------------------------------------------------------
+    const std::set<std::string>& getClientCapabilities() const
+                                              { return m_client_capabilities; }
+    // ------------------------------------------------------------------------
+    bool isAIPeer() const                    { return m_user_version == "AI"; }
+    // ------------------------------------------------------------------------
+    void setPacketLoss(int loss)                 { m_packet_loss.store(loss); }
+    // ------------------------------------------------------------------------
+    int getPacketLoss() const                  { return m_packet_loss.load(); }
+    // ------------------------------------------------------------------------
+    const std::array<int, AS_TOTAL>& getAddonsScores() const
+                                                    { return m_addons_scores; }
+    // ------------------------------------------------------------------------
+    void setAddonsScores(const std::array<int, AS_TOTAL>& scores)
+                                                  { m_addons_scores = scores; }
+    // ------------------------------------------------------------------------
+    void updateLastMessage()
+                   { m_last_message.store((int64_t)StkTime::getMonoTimeMs()); }
+    // ------------------------------------------------------------------------
+    int64_t getLastMessage() const
+                                                     { return m_last_message; }
+    // ------------------------------------------------------------------------
+    void updateConsecutiveMessages(bool too_fast)
+    {
+        if (too_fast)
+            m_consecutive_messages++;
+        else
+            m_consecutive_messages = 0;
+    }
+    // ------------------------------------------------------------------------
+    int getConsecutiveMessages() const       { return m_consecutive_messages; }
 };   // STKPeer
 
 #endif // STK_PEER_HPP

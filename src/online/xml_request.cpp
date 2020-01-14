@@ -17,13 +17,16 @@
 #include "online/xml_request.hpp"
 
 #include "config/user_config.hpp"
-#include "online/request_manager.hpp"
+#include "io/file_manager.hpp"
+#include "io/xml_node.hpp"
 #include "utils/constants.hpp"
+#include "utils/log.hpp"
 #include "utils/translation.hpp"
 
 #ifdef WIN32
 #  include <winsock2.h>
 #endif
+#include <curl/curl.h>
 
 #include <assert.h>
 
@@ -31,13 +34,11 @@ namespace Online
 {
     /** Creates a HTTP(S) request that will automatically parse the answer into
      *  a XML structure.
-     *  \param manage_memory whether or not the RequestManager should take care of
-     *         deleting the object after all callbacks have been done.
      *  \param priority by what priority should the RequestManager take care of
      *         this request.
      */
-    XMLRequest::XMLRequest(bool manage_memory, int priority)
-              : HTTPRequest(manage_memory, priority)
+    XMLRequest::XMLRequest(int priority)
+              : HTTPRequest(priority)
     {
         m_info     = "";
         m_success  = false;

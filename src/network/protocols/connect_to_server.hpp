@@ -22,49 +22,52 @@
 #include "network/protocol.hpp"
 #include "network/transport_address.hpp"
 #include "utils/cpp2011.hpp"
+#include <atomic>
+#include <memory>
 #include <string>
 
-class ConnectToServer : public Protocol, public CallbackObject
+#include "irrString.h"
+
+namespace Online
+{
+    class Request;
+}
+
+class Server;
+
+class ConnectToServer : public Protocol
 {
 private:
-    TransportAddress m_server_address;
-    uint32_t m_server_id;
-    uint32_t m_host_id;
+    std::shared_ptr<Server> m_server;
 
-    /** Protocol currently being monitored. */
-    Protocol *m_current_protocol;
-    bool m_quick_join;
+    irr::core::stringw m_quick_play_err_msg;
 
     /** State for finite state machine. */
-    enum
+    enum ConnectState : unsigned int
     {
-        NONE,
-        GETTING_SELF_ADDRESS,
+        SET_PUBLIC_ADDRESS,
         GOT_SERVER_ADDRESS,
-        REQUESTING_CONNECTION,
-        QUICK_JOIN,
-        CONNECTING,
-        CONNECTED,
-        HIDING_ADDRESS,
         DONE,
         EXITING
-    } m_state;
+    };
+    std::atomic<ConnectState> m_state;
 
+    void getClientServerInfo();
     void registerWithSTKServer();
-    void handleQuickConnect();
-    void handleSameLAN();
-
+    bool tryConnect(int timeout, int retry, bool another_port = false,
+                    bool ipv6 = false);
+    static TransportAddress m_server_address;
+    static int interceptCallback(ENetHost* host, ENetEvent* event);
+    static int m_retry_count;
+    static bool m_done_intecept;
 public:
-             ConnectToServer();
-             ConnectToServer(uint32_t server_id, uint32_t host_id);
+    static std::weak_ptr<Online::Request> m_previous_unjoin;
+             ConnectToServer(std::shared_ptr<Server> server);
     virtual ~ConnectToServer();
-
-    virtual bool notifyEventAsynchronous(Event* event) OVERRIDE;
     virtual void setup() OVERRIDE;
     virtual void asynchronousUpdate() OVERRIDE;
-    virtual void callback(Protocol *protocol) OVERRIDE;
-    virtual void update() OVERRIDE {}
-    void setServerAddress(const TransportAddress &address);
+    virtual void update(int ticks) OVERRIDE;
+
 };   // class ConnectToServer
 
 #endif // CONNECT_TO_SERVER_HPP

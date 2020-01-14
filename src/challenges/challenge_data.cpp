@@ -21,6 +21,7 @@
 #include <sstream>
 
 #include "challenges/unlock_manager.hpp"
+#include "io/file_manager.hpp"
 #include "karts/abstract_kart.hpp"
 #include "karts/kart_properties.hpp"
 #include "karts/kart_properties_manager.hpp"
@@ -28,8 +29,11 @@
 #include "race/grand_prix_data.hpp"
 #include "race/grand_prix_manager.hpp"
 #include "race/race_manager.hpp"
+#include "replay/replay_play.hpp"
 #include "tracks/track.hpp"
 #include "tracks/track_manager.hpp"
+#include "utils/string_utils.hpp"
+#include "utils/translation.hpp"
 
 ChallengeData::ChallengeData(const std::string& filename)
 {
@@ -37,14 +41,20 @@ ChallengeData::ChallengeData(const std::string& filename)
     m_mode         = CM_SINGLE_RACE;
     m_minor        = RaceManager::MINOR_MODE_NORMAL_RACE;
     m_num_laps     = -1;
+    m_reverse      = false;
     m_track_id     = "";
     m_gp_id        = "";
     m_version      = 0;
     m_num_trophies = 0;
+    m_num_completed_challenges = 0;
+    m_is_unlock_list  = false;
+    m_is_ghost_replay = false;
+    m_unlock_special_type = SPECIAL_NONE;
+    m_unlock_special_value = -1;
 
     for (int d=0; d<RaceManager::DIFFICULTY_COUNT; d++)
     {
-        m_num_karts[d] = -1;
+        m_default_num_karts[d] = -1;
         m_position[d]  = -1;
         m_time[d]      = -1.0f;
         m_energy[d]    = -1;
@@ -63,7 +73,7 @@ ChallengeData::ChallengeData(const std::string& filename)
         throw std::runtime_error(msg.str());
     }
 
-    setId(StringUtils::removeExtension(StringUtils::getBasename(filename)));
+    setChallengeId(StringUtils::removeExtension(StringUtils::getBasename(filename)));
 
     root->get("version", &m_version);
     // No need to get the rest of the data if this challenge
@@ -76,7 +86,60 @@ ChallengeData::ChallengeData(const std::string& filename)
         return;
     }
 
+    m_is_unlock_list = false;
+    const XMLNode* unlock_list_node = root->getNode("unlock_list");
+    if (unlock_list_node != NULL)
+    {
+        std::string list;
+        unlock_list_node->get("list", &list);
+        m_is_unlock_list = (list=="true");
+    }
 
+    std::vector<XMLNode*> unlocks;
+    root->getNodes("unlock", unlocks);
+    for(unsigned int i=0; i<unlocks.size(); i++)
+    {
+        std::string s;
+        if(unlocks[i]->get("kart", &s))
+            setUnlocks(s, ChallengeData::UNLOCK_KART);
+        else if(unlocks[i]->get("track", &s))
+            addUnlockTrackReward(s);
+        else if(unlocks[i]->get("gp", &s))
+            setUnlocks(s, ChallengeData::UNLOCK_GP);
+        else if(unlocks[i]->get("mode", &s))
+            setUnlocks(s, ChallengeData::UNLOCK_MODE);
+        else if(unlocks[i]->get("difficulty", &s))
+            setUnlocks(s, ChallengeData::UNLOCK_DIFFICULTY);
+        else
+        {
+            Log::warn("ChallengeData", "Unknown unlock entry. Must be one of kart, track, gp, mode, difficulty.");
+            throw std::runtime_error("Unknown unlock entry");
+        }
+    }
+
+    const XMLNode* requirements_node = root->getNode("requirements");
+    if (requirements_node == NULL)
+    {
+        throw std::runtime_error("Challenge file " + filename +
+                                 " has no <requirements> node!");
+    }
+    requirements_node->get("trophies", &m_num_trophies);
+
+    requirements_node->get("challenges", &m_num_completed_challenges);
+
+    if (m_is_unlock_list)
+    {
+        requirements_node = root->getNode("alt_requirements");
+        if (requirements_node != NULL)
+        {
+            if(requirements_node->get("max-req-in-lower-diff", &m_unlock_special_value))
+                m_unlock_special_type = SPECIAL_MAX_REQ_IN_LOWER_DIFF;
+        }
+    }
+
+    //Don't check further if this is an unlock list
+    if(m_is_unlock_list)
+        return;
 
     const XMLNode* mode_node = root->getNode("mode");
     if (mode_node == NULL)
@@ -137,6 +200,12 @@ ChallengeData::ChallengeData(const std::string& filename)
         {
             error("laps");
         }
+        if (!track_node->get("reverse", &m_reverse))
+        {
+            Log::warn("Challenge Data",
+                      "No reverse mode specified for challenge %s, defaulting to normal",
+                      filename.c_str());
+        }
     }
     else if (gp_node != NULL)
     {
@@ -146,34 +215,33 @@ ChallengeData::ChallengeData(const std::string& filename)
         }
     }
 
-    const XMLNode* requirements_node = root->getNode("requirements");
-    if (requirements_node == NULL)
-    {
-        throw std::runtime_error("Challenge file " + filename +
-                                 " has no <requirements> node!");
-    }
-    requirements_node->get("trophies", &m_num_trophies);
-
     const XMLNode* difficulties[RaceManager::DIFFICULTY_COUNT];
     difficulties[0] = root->getNode("easy");
     difficulties[1] = root->getNode("medium");
     difficulties[2] = root->getNode("hard");
+    difficulties[3] = root->getNode("best");
 
-    // Note that the challenges can only be done in three difficulties
     if (difficulties[0] == NULL || difficulties[1] == NULL ||
-        difficulties[2] == NULL)
+        difficulties[2] == NULL || difficulties[3] == NULL)
     {
-        error("<easy> or <medium> or <hard>");
+        error("<easy> or <medium> or <hard> or <best>");
     }
 
-    for (int d=0; d<=RaceManager::DIFFICULTY_HARD; d++)
+    for (int d=0; d<=RaceManager::DIFFICULTY_BEST; d++)
     {
         const XMLNode* karts_node = difficulties[d]->getNode("karts");
         if (karts_node == NULL) error("<karts .../>");
 
         int num_karts = -1;
         if (!karts_node->get("number", &num_karts)) error("karts");
-        m_num_karts[d] = num_karts;
+        m_default_num_karts[d] = num_karts;
+
+        std::string replay_file;
+        if (karts_node->get("replay_file", &replay_file))
+        {
+            m_is_ghost_replay = true;
+            m_replay_files[d] = replay_file;
+        }
 
         std::string ai_kart_ident;
         if (karts_node->get("aiIdent", &ai_kart_ident))
@@ -217,46 +285,46 @@ ChallengeData::ChallengeData(const std::string& filename)
         // This is optional
         int energy = -1;
         if (requirements_node->get("energy", &energy)) m_energy[d] = energy;
-
     }
-
-    std::vector<XMLNode*> unlocks;
-    root->getNodes("unlock", unlocks);
-    for(unsigned int i=0; i<unlocks.size(); i++)
-    {
-        std::string s;
-        if(unlocks[i]->get("kart", &s))
-            setUnlocks(s, ChallengeData::UNLOCK_KART);
-        else if(unlocks[i]->get("track", &s))
-            addUnlockTrackReward(s);
-        else if(unlocks[i]->get("gp", &s))
-            setUnlocks(s, ChallengeData::UNLOCK_GP);
-        else if(unlocks[i]->get("mode", &s))
-            setUnlocks(s, ChallengeData::UNLOCK_MODE);
-        else if(unlocks[i]->get("difficulty", &s))
-            setUnlocks(s, ChallengeData::UNLOCK_DIFFICULTY);
-        else
-        {
-            Log::warn("ChallengeData", "Unknown unlock entry. Must be one of kart, track, gp, mode, difficulty.");
-            throw std::runtime_error("Unknown unlock entry");
-        }
-    }
-
-    core::stringw description;
-    if (track_node != NULL && m_minor!=RaceManager::MINOR_MODE_FOLLOW_LEADER)
-    {
-        //I18N: number of laps to race in a challenge
-        description += _("Laps : %i", m_num_laps);
-        description += core::stringw(L"\n");
-    }
-    else if (track_node)
-    {
-        // Follow the leader mode:
-        description = _("Follow the leader");
-    }
-
-    m_challenge_description = description;
 }   // ChallengeData
+
+// ----------------------------------------------------------------------------
+
+const irr::core::stringw ChallengeData::getChallengeDescription() const
+{
+    core::stringw description;
+
+    if (m_is_unlock_list)
+        return description;
+
+    if (m_mode == CM_GRAND_PRIX)
+    {
+        if (m_minor == RaceManager::MINOR_MODE_NORMAL_RACE)
+            description = _("Normal Race (Grand Prix)");
+        else if (m_minor == RaceManager::MINOR_MODE_TIME_TRIAL)
+            description = _("Time-Trial (Grand Prix)");
+    }
+    else if (!m_track_id.empty())
+    {
+        if (m_is_ghost_replay)
+            description = _("Time-Trial - beat the replay");
+        else if (m_energy[0] > 0)
+            description = _("Time-Trial - nitro challenge");
+        else if (m_minor == RaceManager::MINOR_MODE_NORMAL_RACE)
+            description = _("Normal Race (single race)");
+        else if (m_minor == RaceManager::MINOR_MODE_TIME_TRIAL)
+            description = _("Time-Trial (single race)");
+        else if (m_minor == RaceManager::MINOR_MODE_FOLLOW_LEADER)
+            description = _("Follow the Leader (single race)");
+    }
+
+    if (m_reverse == true)
+    {
+        description += core::stringw(L"\n");
+        description += _("Mode: Reverse");
+    }
+    return description;
+}   // getChallengeDescription
 
 // ----------------------------------------------------------------------------
 void ChallengeData::error(const char *id) const
@@ -368,14 +436,19 @@ void ChallengeData::setRace(RaceManager::Difficulty d) const
         race_manager->setMinorMode(m_minor);
         race_manager->setTrack(m_track_id);
         race_manager->setNumLaps(m_num_laps);
-        race_manager->setNumKarts(m_num_karts[d]);
+        race_manager->setReverseTrack(m_reverse);
+        race_manager->setNumKarts(m_default_num_karts[d]);
         race_manager->setNumPlayers(1);
         race_manager->setCoinTarget(m_energy[d]);
         race_manager->setDifficulty(d);
 
         if (m_time[d] >= 0.0f)
         {
-          race_manager->setTimeTarget(m_time[d]);
+            race_manager->setTimeTarget(m_time[d]);
+        }
+        else
+        {
+            race_manager->setTimeTarget(0.0f);
         }
     }
     else if(m_mode==CM_GRAND_PRIX)
@@ -383,8 +456,18 @@ void ChallengeData::setRace(RaceManager::Difficulty d) const
         race_manager->setMinorMode(m_minor);
         race_manager->setGrandPrix(*grand_prix_manager->getGrandPrix(m_gp_id));
         race_manager->setDifficulty(d);
-        race_manager->setNumKarts(m_num_karts[d]);
+        race_manager->setNumKarts(m_default_num_karts[d]);
         race_manager->setNumPlayers(1);
+    }
+
+    if (m_is_ghost_replay)
+    {
+        const bool result = ReplayPlay::get()->addReplayFile(file_manager
+            ->getAsset(FileManager::REPLAY, m_replay_files[d]),
+            true/*custom_replay*/);
+        if (!result)
+            Log::fatal("ChallengeData", "Can't open replay for challenge!");
+        race_manager->setRaceGhostKarts(true);
     }
 
     if (m_ai_kart_ident[d] != "")
@@ -399,8 +482,12 @@ void ChallengeData::setRace(RaceManager::Difficulty d) const
 
 // ----------------------------------------------------------------------------
 /** Returns true if this (non-GP) challenge is fulfilled.
+ *  \param check_best : if true, check if the requirement
+ *         for the best difficulty are met at a lower one.
+ *         (requires SuperTux challenges to have a time
+ ù          requirement to make sense)
  */
-bool ChallengeData::isChallengeFulfilled() const
+bool ChallengeData::isChallengeFulfilled(bool check_best) const
 {
     // GP's use the grandPrixFinished() function,
     // so they can't be fulfilled here.
@@ -409,17 +496,18 @@ bool ChallengeData::isChallengeFulfilled() const
     // Single races
     // ------------
     World *world = World::getWorld();
-    std::string track_name = world->getTrack()->getIdent();
+    std::string track_name = Track::getCurrentTrack()->getIdent();
 
-    int d = race_manager->getDifficulty();
+    int d = (check_best) ? RaceManager::DIFFICULTY_BEST :
+                           race_manager->getDifficulty();
 
     AbstractKart* kart = world->getPlayerKart(0);
 
-    if (kart->isEliminated()                                    ) return false;
-    if (track_name != m_track_id                                ) return false;
-    if ((int)world->getNumKarts() < m_num_karts[d]              ) return false;
-    if (m_energy[d] > 0   && kart->getEnergy() < m_energy[d]    ) return false;
-    if (m_position[d] > 0 && kart->getPosition() > m_position[d]) return false;
+    if (kart->isEliminated()                                               ) return false;
+    if (track_name != m_track_id                                           ) return false;
+    if (((int)world->getNumKarts() < m_default_num_karts[d]) && !check_best) return false;
+    if (m_energy[d] > 0   && kart->getEnergy() < m_energy[d]               ) return false;
+    if (m_position[d] > 0 && kart->getPosition() > m_position[d]           ) return false;
 
     // Follow the leader
     // -----------------
@@ -443,6 +531,17 @@ bool ChallengeData::isChallengeFulfilled() const
     // too slow
     if (m_time[d] > 0.0f && kart->getFinishTime() > m_time[d]) return false;
 
+    // too slow
+    if (m_is_ghost_replay)
+    {
+        ReplayPlay::get()->addReplayFile(file_manager
+            ->getAsset(FileManager::REPLAY, m_replay_files[d]),
+            true/*custom_replay*/);
+        const ReplayPlay::ReplayData& rd = ReplayPlay::get()->getCurrentReplayData();
+        if (kart->getFinishTime() > rd.m_min_time)
+            return false;
+    }
+
     if (m_ai_superpower[d] != RaceManager::SUPERPOWER_NONE &&
         race_manager->getAISuperPower() != m_ai_superpower[d])
     {
@@ -455,7 +554,7 @@ bool ChallengeData::isChallengeFulfilled() const
 // ----------------------------------------------------------------------------
 /** Returns true if this GP challenge is fulfilled.
  */
-bool ChallengeData::isGPFulfilled() const
+ChallengeData::GPLevel ChallengeData::isGPFulfilled() const
 {
     int d = race_manager->getDifficulty();
 
@@ -464,15 +563,26 @@ bool ChallengeData::isGPFulfilled() const
     if (race_manager->getMajorMode()  != RaceManager::MAJOR_MODE_GRAND_PRIX  ||
         race_manager->getMinorMode()  != m_minor                             ||
         race_manager->getGrandPrix().getId() != m_gp_id                      ||
-        race_manager->getNumberOfKarts() < (unsigned int)m_num_karts[d]      ||
-        race_manager->getNumPlayers() > 1) return false;
+        race_manager->getNumberOfKarts() < (unsigned int)m_default_num_karts[d]      ||
+        race_manager->getNumPlayers() > 1) return GP_NONE;
 
     // check if the player came first.
+    // rank == 0 if first, 1 if second, etc.
     const int rank = race_manager->getLocalPlayerGPRank(0);
 
-    if (rank != 0) return false;
-
-    return true;
+    // In superior difficulty levels, losing a place means
+    // getting a cup of the inferior level rather than
+    // nothing at all
+    int unlock_level = d - rank;
+    if (unlock_level == 3)
+        return GP_BEST;
+    if (unlock_level == 2)
+        return GP_HARD;
+    if (unlock_level == 1)
+        return GP_MEDIUM;
+    if (unlock_level == 0)
+        return GP_EASY;
+    return GP_NONE;
 }   // isGPFulfilled
 
 // ----------------------------------------------------------------------------
@@ -489,7 +599,6 @@ const irr::core::stringw
             if (track == NULL) return irr::core::stringw( L"????" );
 
             return _("New track '%s' now available", track->getName());
-            break;
         }
         case UNLOCK_MODE:
         {
@@ -611,4 +720,3 @@ void ChallengeData::addUnlockKartReward(const std::string &internal_name,
     feature.m_user_name = user_name;
     m_feature.push_back(feature);
 }   // addUnlockKartReward
-

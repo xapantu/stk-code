@@ -56,9 +56,9 @@ ThreeDAnimation::ThreeDAnimation(const XMLNode &node, TrackObject* object) : Ani
                         object->getInitRotation() );
     m_hpr = object->getInitRotation();
 
-    assert(!isnan(m_hpr.getX()));
-    assert(!isnan(m_hpr.getY()));
-    assert(!isnan(m_hpr.getZ()));
+    assert(!std::isnan(m_hpr.getX()));
+    assert(!std::isnan(m_hpr.getY()));
+    assert(!std::isnan(m_hpr.getZ()));
 }   // ThreeDAnimation
 
 // ----------------------------------------------------------------------------
@@ -69,46 +69,52 @@ ThreeDAnimation::~ThreeDAnimation()
 
 // ----------------------------------------------------------------------------
 /** Updates position and rotation of this model. Called once per time step.
- *  \param dt Time since last call.
  */
-void ThreeDAnimation::update(float dt)
+void ThreeDAnimation::updateWithWorldTicks(bool has_physics)
 {
-    //if ( UserConfigParams::m_graphical_effects || m_important_animation )
+    const bool track_object_with_physics =
+        m_object->getPhysicalObject() != nullptr;
+
+    if ((has_physics && !track_object_with_physics) ||
+        (!has_physics && track_object_with_physics))
+        return;
+
+    Vec3 xyz   = m_object->getPosition();
+    Vec3 scale = m_object->getScale();
+
+    if (!m_is_paused)
     {
-        Vec3 xyz   = m_object->getPosition();
-        Vec3 scale = m_object->getScale();
+        int cur_ticks = World::getWorld()->getTicksSinceStart();
+        m_current_time = stk_config->ticks2Time(cur_ticks);
+    }
 
-        //make the object think no time has passed to pause it's animation
-        if (m_is_paused)dt = 0;
+    AnimationBase::getAt(m_current_time, &xyz, &m_hpr, &scale);     //updates all IPOs
+    //m_node->setPosition(xyz.toIrrVector());
+    //m_node->setScale(scale.toIrrVector());
 
-        AnimationBase::update(dt, &xyz, &m_hpr, &scale);     //updates all IPOs
-        //m_node->setPosition(xyz.toIrrVector());
-        //m_node->setScale(scale.toIrrVector());
+    if (!m_playing) return;
 
-        if (!m_playing) return;
+    // Note that the rotation order of irrlicht is different from the one
+    // in blender. So in order to reproduce the blender IPO rotations
+    // correctly, we have to get the rotations around each axis and combine
+    // them in the right order for irrlicht
+    core::matrix4 m;
+    m.makeIdentity();
+    core::matrix4 mx;
+    assert(!std::isnan(m_hpr.getX()));
+    assert(!std::isnan(m_hpr.getY()));
+    assert(!std::isnan(m_hpr.getZ()));
+    mx.setRotationDegrees(core::vector3df(m_hpr.getX(), 0, 0));
+    core::matrix4 my;
+    my.setRotationDegrees(core::vector3df(0, m_hpr.getY(), 0));
+    core::matrix4 mz;
+    mz.setRotationDegrees(core::vector3df(0, 0, m_hpr.getZ()));
+    m = my*mz*mx;
+    core::vector3df hpr = m.getRotationDegrees();
+    //m_node->setRotation(hpr);
 
-        // Note that the rotation order of irrlicht is different from the one
-        // in blender. So in order to reproduce the blender IPO rotations
-        // correctly, we have to get the rotations around each axis and combine
-        // them in the right order for irrlicht
-        core::matrix4 m;
-        m.makeIdentity();
-        core::matrix4 mx;
-        assert(!isnan(m_hpr.getX()));
-        assert(!isnan(m_hpr.getY()));
-        assert(!isnan(m_hpr.getZ()));
-        mx.setRotationDegrees(core::vector3df(m_hpr.getX(), 0, 0));
-        core::matrix4 my;
-        my.setRotationDegrees(core::vector3df(0, m_hpr.getY(), 0));
-        core::matrix4 mz;
-        mz.setRotationDegrees(core::vector3df(0, 0, m_hpr.getZ()));
-        m = my*mz*mx;
-        core::vector3df hpr = m.getRotationDegrees();
-        //m_node->setRotation(hpr);
-
-        if (m_object)
-        {
-            m_object->move(xyz.toIrrVector(), hpr, scale.toIrrVector(), true, false);
-        }
+    if (m_object)
+    {
+        m_object->move(xyz.toIrrVector(), hpr, scale.toIrrVector(), true, false);
     }
 }   // update

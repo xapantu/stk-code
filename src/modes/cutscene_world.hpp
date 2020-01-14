@@ -65,12 +65,14 @@ public:
 
     virtual void init() OVERRIDE;
 
+    virtual void reset(bool restart=false) OVERRIDE;
+
     // clock events
     virtual bool isRaceOver() OVERRIDE;
 
     virtual const std::string& getIdent() const OVERRIDE;
 
-    virtual void update(float dt) OVERRIDE;
+    virtual void update(int ticks) OVERRIDE;
 
     virtual void createRaceGUI() OVERRIDE;
 

@@ -25,6 +25,7 @@
 	#pragma comment(lib, "OpenGL32.lib")
 #endif
 #elif defined(_IRR_OSX_PLATFORM_)
+	#define GL_SILENCE_DEPRECATION
 	#include <OpenGL/gl.h>
 #elif defined(_IRR_COMPILE_WITH_SDL_DEVICE_)
 	#define NO_SDL_GLEXT
@@ -78,7 +79,9 @@ public:
 	virtual u32 getPitch() const;
 
 	//! return open gl texture name
-	GLuint getOpenGLTextureName() const;
+	virtual u32 getOpenGLTextureName() const;
+
+	virtual u64 getHandle() { return 0; }
 
 	//! return whether this texture has mipmaps
 	virtual bool hasMipMaps() const;
@@ -102,6 +105,13 @@ public:
 
 	//! sets whether this texture is intended to be used as a render target.
 	void setIsRenderTarget(bool isTarget);
+
+	void setImage(IImage* new_image)
+	{
+		if (Image)
+			Image->drop();
+		Image = new_image;
+	}
 
 protected:
 

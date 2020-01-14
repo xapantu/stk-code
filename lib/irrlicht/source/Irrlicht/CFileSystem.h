@@ -80,6 +80,8 @@ public:
 	//! gets an archive
 	virtual IFileArchive* getFileArchive(u32 index);
 
+	virtual void removeAllFileArchives();
+
 	//! removes an archive from the file system.
 	virtual bool removeFileArchive(u32 index);
 
@@ -120,6 +122,10 @@ public:
 	//! Creates a list of files and directories in the current working directory
 	//! and returns it.
 	virtual IFileList* createFileList();
+
+	//! Creates a list of files and directories in specified directory
+	//! and returns it.
+	virtual IFileList* createFileList(const io::path& directory);
 
 	//! Creates an empty filelist
 	virtual IFileList* createEmptyFileList(const io::path& path, bool ignoreCase, bool ignorePaths);

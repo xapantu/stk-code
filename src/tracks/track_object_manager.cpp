@@ -20,9 +20,11 @@
 
 #include "animations/ipo.hpp"
 #include "animations/three_d_animation.hpp"
+#include "config/stk_config.hpp"
 #include "graphics/lod_node.hpp"
 #include "graphics/material_manager.hpp"
 #include "io/xml_node.hpp"
+#include "network/network_config.hpp"
 #include "physics/physical_object.hpp"
 #include "tracks/track_object.hpp"
 #include "utils/log.hpp"
@@ -66,11 +68,40 @@ void TrackObjectManager::add(const XMLNode &xml_node, scene::ISceneNode* parent,
  */
 void TrackObjectManager::init()
 {
-    for_var_in(TrackObject*, curr, m_all_objects)
+    int moveable_objects = 0;
+    bool warned = false;
+    for (unsigned i = 0; i < m_all_objects.m_contents_vector.size(); i++)
     {
+        TrackObject* curr = m_all_objects.m_contents_vector[i];
         curr->onWorldReady();
+
+        if (moveable_objects > stk_config->m_max_moveable_objects)
+        {
+            if (!warned)
+            {
+                Log::warn("TrackObjectManager",
+                    "Too many moveable objects (>%d) in networking.",
+                    stk_config->m_max_moveable_objects);
+                warned = true;
+            }
+            curr->setInitiallyVisible(false);
+            curr->setEnabled(false);
+            continue;
+        }
+
+        // onWorldReady will hide some track objects using scripting
+        if (NetworkConfig::get()->isNetworking() &&
+            curr->isEnabled() && curr->getPhysicalObject() &&
+            curr->getPhysicalObject()->isDynamic())
+        {
+            curr->getPhysicalObject()->getBody()
+                ->setActivationState(DISABLE_DEACTIVATION);
+            curr->getPhysicalObject()->addForRewind();
+            moveable_objects++;
+        }
     }
-}   // reset
+}   // init
+
 // ----------------------------------------------------------------------------
 /** Initialises all track objects.
  */
@@ -82,6 +113,7 @@ void TrackObjectManager::reset()
         curr->resetEnabled();
     }
 }   // reset
+
 // ----------------------------------------------------------------------------
 /** returns a reference to the track object
  *  with a particular ID
@@ -141,6 +173,19 @@ void TrackObjectManager::handleExplosion(const Vec3 &pos, const PhysicalObject *
 /** Updates all track objects.
  *  \param dt Time step size.
  */
+void TrackObjectManager::updateGraphics(float dt)
+{
+    TrackObject* curr;
+    for_in(curr, m_all_objects)
+    {
+        curr->updateGraphics(dt);
+    }
+}   // updateGraphics
+
+// ----------------------------------------------------------------------------
+/** Updates all track objects.
+ *  \param dt Time step size.
+ */
 void TrackObjectManager::update(float dt)
 {
     TrackObject* curr;
@@ -149,6 +194,16 @@ void TrackObjectManager::update(float dt)
         curr->update(dt);
     }
 }   // update
+
+// ----------------------------------------------------------------------------
+void TrackObjectManager::resetAfterRewind()
+{
+    TrackObject* curr;
+    for_in (curr, m_all_objects)
+    {
+        curr->resetAfterRewind();
+    }
+}   // resetAfterRewind
 
 // ----------------------------------------------------------------------------
 /** Does a raycast against all driveable objects. This way part of the track
@@ -170,12 +225,13 @@ void TrackObjectManager::update(float dt)
  *          variable will be set.
  
  */
-void TrackObjectManager::castRay(const btVector3 &from, 
-                                 const btVector3 &to, btVector3 *hit_point, 
+bool TrackObjectManager::castRay(const btVector3 &from,
+                                 const btVector3 &to, btVector3 *hit_point,
                                  const Material **material,
                                  btVector3 *normal,
                                  bool interpolate_normal) const
 {
+    bool result = false;
     float distance = 9999.9f;
     // If there was a hit already, compute the current distance
     if(*material)
@@ -184,6 +240,11 @@ void TrackObjectManager::castRay(const btVector3 &from,
     }
     for (const TrackObject* curr : m_driveable_objects)
     {
+        if (!curr->isEnabled())
+        {
+            // For example jumping pad in cocoa temple
+            continue;
+        }
         btVector3 new_hit_point;
         const Material *new_material;
         btVector3 new_normal;
@@ -199,79 +260,14 @@ void TrackObjectManager::castRay(const btVector3 &from,
                 *hit_point = new_hit_point;
                 *normal    = new_normal;
                 distance   = new_distance;
+                result = true;
             }   // if new_distance < distance
         }   // if hit
     }   // for all track objects.
+    return result;
 }   // castRay
 
 // ----------------------------------------------------------------------------
-/** Enables or disables fog for a given scene node.
- *  \param node The node to adjust.
- *  \param enable True if fog is enabled, otherwise fog is disabled.
- */
-void adjustForFog(scene::ISceneNode *node, bool enable)
-{
-    if (node->getType() == scene::ESNT_MESH   ||
-        node->getType() == scene::ESNT_OCTREE ||
-        node->getType() == scene::ESNT_ANIMATED_MESH)
-    {
-        scene::IMesh* mesh;
-        if (node->getType() == scene::ESNT_ANIMATED_MESH) {
-            mesh = ((scene::IAnimatedMeshSceneNode*)node)->getMesh();
-        }
-        else {
-            mesh = ((scene::IMeshSceneNode*)node)->getMesh();
-        }
-
-        unsigned int n = mesh->getMeshBufferCount();
-        for (unsigned int i=0; i<n; i++)
-        {
-            scene::IMeshBuffer *mb = mesh->getMeshBuffer(i);
-            video::SMaterial &irr_material=mb->getMaterial();
-            for (unsigned int j=0; j<video::MATERIAL_MAX_TEXTURES; j++)
-            {
-                video::ITexture* t = irr_material.getTexture(j);
-                if (t) material_manager->adjustForFog(t, mb, node, enable);
-
-            }   // for j<MATERIAL_MAX_TEXTURES
-        }  // for i<getMeshBufferCount()
-    }
-    else
-    {
-        node->setMaterialFlag(video::EMF_FOG_ENABLE, enable);
-    }
-
-    if (node->getType() == scene::ESNT_LOD_NODE)
-    {
-        std::vector<scene::ISceneNode*>&
-            subnodes = ((LODNode*)node)->getAllNodes();
-        for (unsigned int n=0; n<subnodes.size(); n++)
-        {
-            adjustForFog(subnodes[n], enable);
-        }
-    }
-}   // adjustForFog
-
-
-// ----------------------------------------------------------------------------
-/** Enable or disable fog on objects.
-  */
-void TrackObjectManager::enableFog(bool enable)
-{
-    TrackObject* curr;
-    for_in (curr, m_all_objects)
-    {
-        TrackObjectPresentationMesh* meshPresentation =
-            curr->getPresentation<TrackObjectPresentationMesh>();
-        if (meshPresentation!= NULL)
-        {
-            adjustForFog(meshPresentation->getNode(), enable);
-        }
-    }
-}   // enableFog
-
-// ----------------------------------------------------------------------------
-
 void TrackObjectManager::insertObject(TrackObject* object)
 {
     m_all_objects.push_back(object);
@@ -287,7 +283,3 @@ void TrackObjectManager::removeObject(TrackObject* obj)
     m_all_objects.remove(obj);
     delete obj;
 }   // removeObject
-
-// ----------------------------------------------------------------------------
-
-

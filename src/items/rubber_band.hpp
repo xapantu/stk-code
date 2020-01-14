@@ -22,11 +22,13 @@
 #include "utils/no_copy.hpp"
 #include "utils/vec3.hpp"
 
-namespace irr
+#include <cinttypes>
+#include <memory>
+
+namespace SP
 {
-    namespace scene { class ISceneNode; class IMesh; class IMeshBuffer; }
+    class SPDynamicDrawCall;
 }
-using namespace irr;
 
 class AbstractKart;
 class Plunger;
@@ -37,12 +39,14 @@ class Plunger;
  */
 class RubberBand : public NoCopy
 {
+public:
+enum RubberBandTo
+{
+    RB_TO_PLUNGER = 0, /**< Rubber band is attached to plunger.    */
+    RB_TO_KART,        /**< Rubber band is attached to a kart hit. */
+    RB_TO_TRACK        /**< Rubber band is attached to track.      */
+};
 private:
-    enum {RB_TO_PLUNGER,         /**< Rubber band is attached to plunger.    */
-          RB_TO_KART,            /**< Rubber band is attached to a kart hit. */
-          RB_TO_TRACK}           /**< Rubber band is attached to track.      */
-                        m_attached_state;
-
     /** If rubber band is attached to track, the coordinates. */
     Vec3                m_hit_position;
     /** The plunger the rubber band is attached to. */
@@ -50,12 +54,10 @@ private:
     /** The kart who shot this plunger. */
     AbstractKart       *m_owner;
 
-    /** The scene node for the rubber band. */
-    scene::ISceneNode  *m_node;
-    /** The mesh of the rubber band. */
-    scene::IMesh       *m_mesh;
-    /** The mesh buffer containing the actual vertices of the rubber band. */
-    scene::IMeshBuffer *m_buffer;
+    RubberBandTo        m_attached_state;
+
+    /** The dynamic draw call of the rubber band. */
+    std::shared_ptr<SP::SPDynamicDrawCall> m_dy_dc;
 
     /** The kart a plunger might have hit. */
     AbstractKart       *m_hit_kart;
@@ -69,7 +71,12 @@ private:
 public:
          RubberBand(Plunger *plunger, AbstractKart *kart);
         ~RubberBand();
-    void update(float dt);
+    void reset();
+    void updateGraphics(float dt);
+    void update(int ticks);
     void hit(AbstractKart *kart_hit, const Vec3 *track_xyz=NULL);
+    uint8_t get8BitState() const;
+    void set8BitState(uint8_t bit_state);
+    void remove();
 };   // RubberBand
 #endif

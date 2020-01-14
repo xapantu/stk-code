@@ -28,11 +28,10 @@
 #include "states_screens/state_manager.hpp"
 #include "tracks/track.hpp"
 #include "tracks/track_manager.hpp"
-
+#include "utils/string_utils.hpp"
+#include "utils/translation.hpp"
 
 using namespace GUIEngine;
-
-DEFINE_SCREEN_SINGLETON( EditGPScreen );
 
 // -----------------------------------------------------------------------------
 EditGPScreen::EditGPScreen() : Screen("edit_gp.stkgui"), m_gp(NULL),
@@ -60,12 +59,6 @@ void EditGPScreen::loadedFromFile()
 {
     if (m_icon_bank == NULL)
         m_icon_bank = new irr::gui::STKModifiedSpriteBank(GUIEngine::getGUIEnv());
-
-    m_list = getWidget<ListWidget>("tracks");
-    assert(m_list != NULL);
-    m_list->addColumn(_("Track"), 3);
-    m_list->addColumn(_("Laps"), 1);
-    m_list->addColumn(_("Reversed"), 1);
 }   // loadedFromFile
 
 // -----------------------------------------------------------------------------
@@ -150,13 +143,24 @@ void EditGPScreen::eventCallback(GUIEngine::Widget* widget,
 }   // eventCallback
 
 // -----------------------------------------------------------------------------
+void EditGPScreen::beforeAddingWidget()
+{
+    m_list = getWidget<ListWidget>("tracks");
+    assert(m_list != NULL);
+    m_list->clearColumns();
+    m_list->addColumn(_("Track"), 3);
+    m_list->addColumn(_("Laps"), 1);
+    m_list->addColumn(_("Reversed"), 1);
+}
+
+// -----------------------------------------------------------------------------
 void EditGPScreen::init()
 {
     if (m_action.empty())
     {
         LabelWidget* header = getWidget<LabelWidget>("title");
         assert(header != NULL);
-        header->setText(translations->fribidize(m_gp->getName()), true);
+        header->setText(m_gp->getName(), true);
 
         IconButtonWidget* button = getWidget<IconButtonWidget>("save");
         assert(button != NULL);
@@ -230,8 +234,8 @@ void EditGPScreen::loadList(const int selected)
     m_list->clear();
     m_icons.clear();
     m_icon_bank->clear();
-    m_icon_bank->scaleToHeight (64);
-    m_list->setIcons(m_icon_bank, 64);
+    m_icon_bank->scaleToHeight (GUIEngine::getFontHeight() * 3 / 2);
+    m_list->setIcons(m_icon_bank, GUIEngine::getFontHeight() * 3 / 2);
 
     for (unsigned int i = 0; i < m_gp->getNumberOfTracks(true); i++)
     {
@@ -244,13 +248,13 @@ void EditGPScreen::loadList(const int selected)
         if (screenShot == NULL)
         {
             screenShot = irr_driver->getTexture(
-                file_manager->getAsset(FileManager::GUI, "main_help.png"));
+                file_manager->getAsset(FileManager::GUI_ICON, "main_help.png"));
         }
         assert (screenShot != NULL);
         m_icons.push_back(m_icon_bank->addTextureAsSprite(screenShot));
 
         row.push_back(GUIEngine::ListWidget::ListCell(
-            _LTR(m_gp->getTrackName(i).c_str()), m_icons[i], 3, false));
+            _(m_gp->getTrackName(i).c_str()), m_icons[i], 3, false));
         row.push_back(GUIEngine::ListWidget::ListCell(
             StringUtils::toWString<unsigned int>(m_gp->getLaps(i)), -1, 1, true));
         row.push_back(GUIEngine::ListWidget::ListCell(
@@ -283,7 +287,8 @@ void EditGPScreen::setModified(const bool modified)
     LabelWidget* header = getWidget<LabelWidget>("title");
     assert(header != NULL);
     //I18N: Indicate that the grand prix is modified and not saved
-    header->setText(modified ? _(L"%s (+)", m_gp->getName()) : L"", true);
+    header->setText(modified ? _(L"%s (+)", m_gp->getName()) 
+                             : m_gp->getName(), true);
 
     enableButtons();
 }   // setModified

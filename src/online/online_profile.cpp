@@ -20,10 +20,12 @@
 
 #include "config/player_manager.hpp"
 #include "config/user_config.hpp"
+#include "io/xml_node.hpp"
 #include "online/profile_manager.hpp"
 #include "online/request_manager.hpp"
+#include "online/xml_request.hpp"
 #include "utils/log.hpp"
-#include "utils/translation.hpp"
+#include "utils/string_utils.hpp"
 
 #include <sstream>
 #include <stdlib.h>
@@ -65,7 +67,7 @@ OnlineProfile::OnlineProfile(const uint32_t  & userid,
     m_id                       = userid;
     m_is_current_user          = is_current_user;
     m_username                 = username;
-    m_has_fetched_friends      = false;
+    m_has_fetched_friends.store(false);
     m_has_fetched_achievements = false;
     m_relation_info            = NULL;
     m_is_friend                = false;
@@ -85,7 +87,7 @@ OnlineProfile::OnlineProfile(const XMLNode * xml, ConstructorType type)
     m_relation_info            = NULL;
     m_is_friend                = false;
     m_cache_bit                = true;
-    m_has_fetched_friends      = false;
+    m_has_fetched_friends.store(false);
     m_has_fetched_achievements = false;
     if (type == C_RELATION_INFO)
     {
@@ -140,7 +142,7 @@ void OnlineProfile::fetchAchievements()
     class AchievementsRequest : public XMLRequest
     {
     public:
-        AchievementsRequest() : XMLRequest(true, true) {}
+        AchievementsRequest() : XMLRequest() {}
         virtual void callback()
         {
             uint32_t user_id = 0;
@@ -152,7 +154,7 @@ void OnlineProfile::fetchAchievements()
     };   // class AchievementsRequest
     // ------------------------------------------------------------------------
 
-    AchievementsRequest * request = new AchievementsRequest();
+    auto request = std::make_shared<AchievementsRequest>();
     PlayerManager::setUserDetails(request, "get-achievements");
     request->addParameter("visitingid", m_id);
     RequestManager::get()->addRequest(request);
@@ -184,7 +186,7 @@ void OnlineProfile::storeAchievements(const XMLNode * input)
 void OnlineProfile::fetchFriends()
 {
     assert(PlayerManager::isCurrentLoggedIn());
-    if (m_has_fetched_friends)
+    if (m_has_fetched_friends.load())
         return;
 
     m_state = State(m_state | S_FETCHING_FRIENDS);
@@ -193,7 +195,7 @@ void OnlineProfile::fetchFriends()
     class FriendsListRequest : public XMLRequest
     {
     public:
-        FriendsListRequest() : XMLRequest(true, true) {}
+        FriendsListRequest() : XMLRequest() {}
         virtual void callback()
         {
             uint32_t user_id = 0;
@@ -205,7 +207,7 @@ void OnlineProfile::fetchFriends()
     };   // class FriendsListRequest
     // ------------------------------------------------------------------------
 
-    FriendsListRequest * request = new FriendsListRequest();
+    auto request = std::make_shared<FriendsListRequest>();
     PlayerManager::setUserDetails(request, "get-friends-list");
     request->addParameter("visitingid", m_id);
     RequestManager::get()->addRequest(request);
@@ -238,8 +240,8 @@ void OnlineProfile::storeFriends(const XMLNode * input)
             ProfileManager::get()->addToCache(profile);
         }
     }   // for i in nodes
-    m_has_fetched_friends = true;
     m_state = State(m_state & ~S_FETCHING_FRIENDS);
+    m_has_fetched_friends.store(true);
 }   // storeFriends
 
 // ----------------------------------------------------------------------------
@@ -248,7 +250,7 @@ void OnlineProfile::storeFriends(const XMLNode * input)
  */
 void OnlineProfile::removeFriend(const uint32_t id)
 {
-    assert(m_has_fetched_friends);
+    assert(m_has_fetched_friends.load());
     IDList::iterator iter;
     for (iter = m_friends.begin(); iter != m_friends.end();)
     {
@@ -270,7 +272,7 @@ void OnlineProfile::removeFriend(const uint32_t id)
  */
 void OnlineProfile::addFriend(const uint32_t id)
 {
-    assert(m_has_fetched_friends);
+    assert(m_has_fetched_friends.load());
 
     // find if friend id is is already in the user list
     for (unsigned int i = 0; i < m_friends.size(); i++)
@@ -296,7 +298,7 @@ void OnlineProfile::deleteRelationalInfo()
  */
 const OnlineProfile::IDList& OnlineProfile::getFriends()
 {
-    assert(m_has_fetched_friends            && 
+    assert(m_has_fetched_friends.load()        && 
            (m_state & S_FETCHING_FRIENDS) == 0);
     return m_friends;
 }    // getFriends
@@ -322,7 +324,8 @@ void OnlineProfile::merge(OnlineProfile *profile)
     assert(profile != NULL);
 
     // profile has fetched friends, use that instead
-    if (!m_has_fetched_friends && profile->m_has_fetched_friends)
+    if (!m_has_fetched_friends.load() &&
+        profile->m_has_fetched_friends.load())
         m_friends = profile->m_friends;
 
     // profile has fetched achievements, use that instead

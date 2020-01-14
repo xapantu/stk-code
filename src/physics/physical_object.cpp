@@ -18,27 +18,35 @@
 
 #include "physics/physical_object.hpp"
 
-#include <memory>
-#include <string>
-#include <vector>
-
-using namespace irr;
-
+#include "config/stk_config.hpp"
+#include "graphics/central_settings.hpp"
+#include "graphics/irr_driver.hpp"
+#include "graphics/material.hpp"
 #include "graphics/material_manager.hpp"
 #include "graphics/mesh_tools.hpp"
+#include "graphics/sp/sp_mesh_buffer.hpp"
 #include "io/file_manager.hpp"
 #include "io/xml_node.hpp"
-#include "modes/world.hpp"
 #include "physics/physics.hpp"
 #include "physics/triangle_mesh.hpp"
+#include "network/compress_network_body.hpp"
+#include "network/network_config.hpp"
+#include "network/protocols/lobby_protocol.hpp"
 #include "tracks/track.hpp"
 #include "tracks/track_object.hpp"
 #include "utils/constants.hpp"
+#include "utils/mini_glm.hpp"
 #include "utils/string_utils.hpp"
 
 #include <ISceneManager.h>
 #include <IMeshSceneNode.h>
 #include <ITexture.h>
+using namespace irr;
+
+#include <algorithm>
+#include <memory>
+#include <string>
+#include <vector>
 
 /** Creates a physical Settings object with the given type, radius and mass.
  */
@@ -57,13 +65,21 @@ PhysicalObject::Settings::Settings(const XMLNode &xml_node)
 {
     init();
     std::string shape;
-    xml_node.get("id",      &m_id          );
-    xml_node.get("mass",    &m_mass        );
-    xml_node.get("radius",  &m_radius      );
-    xml_node.get("shape",   &shape         );
-    xml_node.get("reset",   &m_crash_reset );
-    xml_node.get("explode", &m_knock_kart  );
-    xml_node.get("flatten", &m_flatten_kart);
+    xml_node.get("id",                &m_id               );
+    xml_node.get("mass",              &m_mass             );
+    xml_node.get("radius",            &m_radius           );
+    xml_node.get("height",            &m_height           );
+    xml_node.get("friction",          &m_friction         );
+    xml_node.get("restitution",       &m_restitution      );
+    xml_node.get("linear-factor",     &m_linear_factor    );
+    xml_node.get("angular-factor",    &m_angular_factor   );
+    xml_node.get("linear-damping",    &m_linear_damping   );
+    xml_node.get("angular-damping",   &m_angular_damping  );
+
+    xml_node.get("shape",             &shape              );
+    xml_node.get("reset",             &m_crash_reset      );
+    xml_node.get("explode",           &m_knock_kart       );
+    xml_node.get("flatten",           &m_flatten_kart     );
     xml_node.get("on-kart-collision", &m_on_kart_collision);
     xml_node.get("on-item-collision", &m_on_item_collision);
     m_reset_when_too_low =
@@ -97,17 +113,24 @@ void PhysicalObject::Settings::init()
     m_knock_kart         = false;
     m_mass               = 0.0f;
     m_radius             = -1.0f;
+    m_height             = -1.0f;
+    m_friction           = 0.5f;   // default bullet value
+    m_restitution        = 0.0f;
+    m_linear_factor      = Vec3(1.0f, 1.0f, 1.0f);
+    m_angular_factor     = Vec3(1.0f, 1.0f, 1.0f); 
+    m_linear_damping     = 0.0f;
+    // Make sure that the cones stop rolling by defining angular friction != 0.
+    m_angular_damping    = 0.5f;
     m_reset_when_too_low = false;
     m_flatten_kart       = false;
 }   // Settings
 
 // ============================================================================
-PhysicalObject* PhysicalObject::fromXML(bool is_dynamic,
-                                        const XMLNode &xml_node,
-                                        TrackObject* object)
+std::shared_ptr<PhysicalObject> PhysicalObject::fromXML
+    (bool is_dynamic, const XMLNode &xml_node, TrackObject* object)
 {
     PhysicalObject::Settings settings(xml_node);
-    return new PhysicalObject(is_dynamic, settings, object);
+    return std::make_shared<PhysicalObject>(is_dynamic, settings, object);
 }   // fromXML
 
 // ----------------------------------------------------------------------------
@@ -128,11 +151,10 @@ PhysicalObject::PhysicalObject(bool is_dynamic,
     m_flatten_kart       = false;
     m_triangle_mesh      = NULL;
 
-    m_object = object;
-
-    m_init_xyz = object->getAbsoluteCenterPosition();
-    m_init_hpr   = object->getRotation();
-    m_init_scale = object->getScale();
+    m_object             = object;
+    m_init_xyz           = object->getAbsoluteCenterPosition();
+    m_init_hpr           = object->getRotation();
+    m_init_scale         = object->getScale();
 
     m_id                 = settings.m_id;
     m_mass               = settings.m_mass;
@@ -145,6 +167,13 @@ PhysicalObject::PhysicalObject(bool is_dynamic,
     m_reset_height       = settings.m_reset_height;
     m_on_kart_collision  = settings.m_on_kart_collision;
     m_on_item_collision  = settings.m_on_item_collision;
+    m_current_transform.setOrigin(Vec3());
+    m_current_transform.setRotation(
+        btQuaternion(0.0f, 0.0f, 0.0f, 1.0f));
+
+    m_last_transform = m_current_transform;
+    m_no_server_state = false;
+
     m_body_added = false;
 
     m_init_pos.setIdentity();
@@ -158,13 +187,13 @@ PhysicalObject::PhysicalObject(bool is_dynamic,
 
     m_is_dynamic = is_dynamic;
 
-    init();
+    init(settings);
 }   // PhysicalObject
 
 // ----------------------------------------------------------------------------
 PhysicalObject::~PhysicalObject()
 {
-    World::getWorld()->getPhysics()->removeBody(m_body);
+    Physics::getInstance()->removeBody(m_body);
     delete m_body;
     delete m_motion_state;
 
@@ -202,7 +231,7 @@ void PhysicalObject::move(const Vec3& xyz, const core::vector3df& hpr)
 // ----------------------------------------------------------------------------
 /** Additional initialisation after loading of the model is finished.
  */
-void PhysicalObject::init()
+void PhysicalObject::init(const PhysicalObject::Settings& settings)
 {
     // 1. Determine size of the object
     // -------------------------------
@@ -293,6 +322,8 @@ void PhysicalObject::init()
     }
     case MP_CYLINDER_Y:
     {
+        if(settings.m_height > 0)
+            extend.setY(settings.m_height);
         if (m_radius < 0) m_radius = 0.5f*extend.length_2d();
         m_shape = new btCylinderShape(0.5f*extend);
         break;
@@ -326,13 +357,6 @@ void PhysicalObject::init()
     case MP_EXACT:
     {
         extend.setY(0);
-
-        // In case of readonly materials we have to get the material from
-        // the mesh, otherwise from the node. This is esp. important for
-        // water nodes, which only have the material defined in the node,
-        // but not in the mesh at all!
-        bool is_readonly_material = false;
-
         scene::IMesh* mesh = NULL;
         switch (presentation->getNode()->getType())
         {
@@ -343,7 +367,6 @@ void PhysicalObject::init()
                     scene::IMeshSceneNode *node =
                         (scene::IMeshSceneNode*)presentation->getNode();
                     mesh = node->getMesh();
-                    is_readonly_material = node->isReadOnlyMaterials();
                     break;
                 }
             case scene::ESNT_ANIMATED_MESH :
@@ -352,7 +375,6 @@ void PhysicalObject::init()
                     scene::IAnimatedMeshSceneNode *node =
                       (scene::IAnimatedMeshSceneNode*)presentation->getNode();
                     mesh = node->getMesh()->getMesh(0);
-                    is_readonly_material = node->isReadOnlyMaterials();
                     break;
                 }
             default:
@@ -361,69 +383,95 @@ void PhysicalObject::init()
                 return;
         }   // switch node->getType()
 
-        std::unique_ptr<TriangleMesh> triangle_mesh(new TriangleMesh());
+        std::unique_ptr<TriangleMesh> 
+                   triangle_mesh(new TriangleMesh(/*can_be_transformed*/true));
 
         for(unsigned int i=0; i<mesh->getMeshBufferCount(); i++)
         {
             scene::IMeshBuffer *mb = mesh->getMeshBuffer(i);
-            // FIXME: take translation/rotation into account
-            if (mb->getVertexType() != video::EVT_STANDARD &&
-                mb->getVertexType() != video::EVT_2TCOORDS)
-            {
-                Log::warn("PhysicalObject",
-                          "createPhysicsBody: Ignoring type '%d'!",
-                          mb->getVertexType());
-                continue;
-            }
-
-            // Handle readonly materials correctly: mb->getMaterial can return
-            // NULL if the node is not using readonly materials. E.g. in case
-            // of a water scene node, the mesh (which is the animated copy of
-            // the original mesh) does not contain any material information,
-            // the material is only available in the node.
-            const video::SMaterial &irrMaterial =
-                is_readonly_material ? mb->getMaterial()
-                : presentation->getNode()->getMaterial(i);
-            video::ITexture* t=irrMaterial.getTexture(0);
-
-            const Material* material=0;
-            if(t)
-            {
-                std::string image =
-                              std::string(core::stringc(t->getName()).c_str());
-                material = material_manager
-                         ->getMaterial(StringUtils::getBasename(image));
-                if(material->isIgnore())
-                    continue;
-            }
-
             u16 *mbIndices = mb->getIndices();
             Vec3 vertices[3];
             Vec3 normals[3];
-
-            if (mb->getVertexType() == video::EVT_STANDARD)
+#ifndef SERVER_ONLY
+            if (CVS->isGLSL())
             {
-                irr::video::S3DVertex* mbVertices =
-                                          (video::S3DVertex*)mb->getVertices();
-                for(unsigned int j=0; j<mb->getIndexCount(); j+=3)
+                SP::SPMeshBuffer* spmb = static_cast<SP::SPMeshBuffer*>(mb);
+                video::S3DVertexSkinnedMesh* mbVertices = (video::S3DVertexSkinnedMesh*)mb->getVertices();
+                for (unsigned int j = 0; j < mb->getIndexCount(); j += 3)
                 {
-                    for(unsigned int k=0; k<3; k++)
+                    Material* material = spmb->getSTKMaterial(j);
+                    if (material->isIgnore())
                     {
-                        int indx=mbIndices[j+k];
-                        core::vector3df v = mbVertices[indx].Pos;
-                        //mat.transformVect(v);
-                        vertices[k]=v;
-                        normals[k]=mbVertices[indx].Normal;
+                        continue;
+                    }
+                    for (unsigned int k = 0; k < 3; k++)
+                    {
+                        int indx = mbIndices[j + k];
+                        core::vector3df v = mbVertices[indx].m_position;
+                        vertices[k] = v;
+                        normals[k] = MiniGLM::decompressVector3(mbVertices[indx].m_normal);
                     }   // for k
                     triangle_mesh->addTriangle(vertices[0], vertices[1],
-                                               vertices[2], normals[0],
-                                               normals[1],  normals[2],
-                                               material                 );
+                        vertices[2], normals[0], normals[1], normals[2],
+                        material);
                 }   // for j
-            }
+            } // for matrix_index
             else
+#endif
             {
-                if (mb->getVertexType() == video::EVT_2TCOORDS)
+                // FIXME: take translation/rotation into account
+                if (mb->getVertexType() != video::EVT_STANDARD &&
+                    mb->getVertexType() != video::EVT_2TCOORDS &&
+                    mb->getVertexType() != video::EVT_TANGENTS &&
+                    mb->getVertexType() != video::EVT_SKINNED_MESH)
+                {
+                    Log::warn("PhysicalObject",
+                              "createPhysicsBody: Ignoring type '%d'!",
+                              mb->getVertexType());
+                    continue;
+                }
+                const video::SMaterial& irrMaterial = mb->getMaterial();
+                std::string t1_full_path, t2_full_path;
+                video::ITexture* t1 = irrMaterial.getTexture(0);
+                if (t1)
+                {
+                    t1_full_path = t1->getName().getPtr();
+                    t1_full_path = file_manager->getFileSystem()->getAbsolutePath(
+                        t1_full_path.c_str()).c_str();
+                }
+                video::ITexture* t2 = irrMaterial.getTexture(1);
+                if (t2)
+                {
+                    t2_full_path = t2->getName().getPtr();
+                    t2_full_path = file_manager->getFileSystem()->getAbsolutePath(
+                        t2_full_path.c_str()).c_str();
+                }
+                const Material* material = material_manager->getMaterialSPM(
+                    t1_full_path, t2_full_path);
+                if (material->isIgnore())
+                    continue;
+
+                if (mb->getVertexType() == video::EVT_STANDARD)
+                {
+                    irr::video::S3DVertex* mbVertices =
+                                              (video::S3DVertex*)mb->getVertices();
+                    for(unsigned int j=0; j<mb->getIndexCount(); j+=3)
+                    {
+                        for(unsigned int k=0; k<3; k++)
+                        {
+                            int indx=mbIndices[j+k];
+                            core::vector3df v = mbVertices[indx].Pos;
+                            //mat.transformVect(v);
+                            vertices[k]=v;
+                            normals[k]=mbVertices[indx].Normal;
+                        }   // for k
+                        triangle_mesh->addTriangle(vertices[0], vertices[1],
+                                                   vertices[2], normals[0],
+                                                   normals[1],  normals[2],
+                                                   material                 );
+                    }   // for j
+                }
+                else if (mb->getVertexType() == video::EVT_2TCOORDS)
                 {
                     irr::video::S3DVertex2TCoords* mbVertices =
                         (video::S3DVertex2TCoords*)mb->getVertices();
@@ -442,11 +490,29 @@ void PhysicalObject::init()
                                                    normals[1],  normals[2],
                                                    material                 );
                     }   // for j
-
                 }
-            }
-
-        }   // for i<getMeshBufferCount
+                else if (mb->getVertexType() == video::EVT_TANGENTS)
+                {
+                    irr::video::S3DVertexTangents* mbVertices =
+                        (video::S3DVertexTangents*)mb->getVertices();
+                    for(unsigned int j=0; j<mb->getIndexCount(); j+=3)
+                    {
+                        for(unsigned int k=0; k<3; k++)
+                        {
+                            int indx=mbIndices[j+k];
+                            core::vector3df v = mbVertices[indx].Pos;
+                            //mat.transformVect(v);
+                            vertices[k]=v;
+                            normals[k]=mbVertices[indx].Normal;
+                        }   // for k
+                        triangle_mesh->addTriangle(vertices[0], vertices[1],
+                                                   vertices[2], normals[0],
+                                                   normals[1],  normals[2],
+                                                   material                 );
+                    }   // for j
+                }
+            }   // for i<getMeshBufferCount
+        }
         triangle_mesh->createCollisionShape();
         m_shape = &triangle_mesh->getCollisionShape();
         m_triangle_mesh = triangle_mesh.release();
@@ -471,7 +537,7 @@ void PhysicalObject::init()
     if (m_is_dynamic)
     {
         m_init_pos.setOrigin(m_init_pos.getOrigin() +
-            btVector3(0, extend.getY()*0.5f, 0));
+                             btVector3(0, extend.getY()*0.5f, 0));
     }
 
 
@@ -505,11 +571,18 @@ void PhysicalObject::init()
     btRigidBody::btRigidBodyConstructionInfo info(m_mass, m_motion_state,
                                                   m_shape, inertia);
 
-    // Make sure that the cones stop rolling by defining angular friction != 0.
-    info.m_angularDamping = 0.5f;
-    m_body = new btRigidBody(info);
+    if(m_triangle_mesh)
+        m_body = new TriangleMesh::RigidBodyTriangleMesh(m_triangle_mesh, info);
+    else
+        m_body = new btRigidBody(info);
     m_user_pointer.set(this);
     m_body->setUserPointer(&m_user_pointer);
+
+    m_body->setFriction(settings.m_friction);
+    m_body->setRestitution(settings.m_restitution);
+    m_body->setLinearFactor(settings.m_linear_factor);
+    m_body->setAngularFactor(settings.m_angular_factor);
+    m_body->setDamping(settings.m_linear_damping,settings.m_angular_damping);
 
     if (!m_is_dynamic)
     {
@@ -518,38 +591,61 @@ void PhysicalObject::init()
         m_body->setActivationState(DISABLE_DEACTIVATION);
     }
 
-    World::getWorld()->getPhysics()->addBody(m_body);
+    Physics::getInstance()->addBody(m_body);
     m_body_added = true;
     if(m_triangle_mesh)
         m_triangle_mesh->setBody(m_body);
 }   // init
 
 // ----------------------------------------------------------------------------
+/** This updates all only graphical elements. It is only called once per
+ *  rendered frame, not once per time step.
+ *  float dt Time since last rame.
+ */
+
+void PhysicalObject::updateGraphics(float dt)
+{
+    if (!m_is_dynamic)
+        return;
+
+    SmoothNetworkBody::updateSmoothedGraphics(m_body->getWorldTransform(),
+        m_body->getLinearVelocity(), dt);
+    Vec3 xyz = SmoothNetworkBody::getSmoothedTrans().getOrigin();
+
+    // Offset the graphical position correctly:
+    xyz += SmoothNetworkBody::getSmoothedTrans().getBasis()*m_graphical_offset;
+
+    Vec3 hpr;
+    hpr.setHPR(SmoothNetworkBody::getSmoothedTrans().getRotation());
+
+    // This will only update the visual position, so it can be
+    // called in updateGraphics()
+    m_object->move(xyz.toIrrVector(), hpr.toIrrVector()*RAD_TO_DEGREE,
+                   m_init_scale, /*updateRigidBody*/false, 
+                   /* isAbsoluteCoord */true);
+}   // updateGraphics
+
+// ----------------------------------------------------------------------------
+/** Update, called once per physics time step.
+ *  \param dt Timestep.
+ */
 void PhysicalObject::update(float dt)
 {
     if (!m_is_dynamic) return;
 
-    btTransform t;
-    m_motion_state->getWorldTransform(t);
+    // Round values in network for better synchronization
+    if (NetworkConfig::get()->roundValuesNow())
+        CompressNetworkBody::compress(m_body, m_motion_state);
 
-    Vec3 xyz = t.getOrigin();
+    m_current_transform = m_body->getWorldTransform();
+    const Vec3 &xyz = m_current_transform.getOrigin();
     if(m_reset_when_too_low && xyz.getY()<m_reset_height)
     {
         m_body->setCenterOfMassTransform(m_init_pos);
         m_body->setLinearVelocity (btVector3(0,0,0));
         m_body->setAngularVelocity(btVector3(0,0,0));
-        xyz = Vec3(m_init_pos.getOrigin());
     }
-    // Offset the graphical position correctly:
-    xyz += t.getBasis()*m_graphical_offset;
 
-    //m_node->setPosition(xyz.toIrrVector());
-    Vec3 hpr;
-    hpr.setHPR(t.getRotation());
-    //m_node->setRotation(hpr.toIrrHPR());
-
-    m_object->move(xyz.toIrrVector(), hpr.toIrrVector()*RAD_TO_DEGREE,
-                   m_init_scale, false, true /* isAbsoluteCoord */);
 }   // update
 
 // ----------------------------------------------------------------------------
@@ -585,10 +681,14 @@ bool PhysicalObject::castRay(const btVector3 &from, const btVector3 &to,
 // ----------------------------------------------------------------------------
 void PhysicalObject::reset()
 {
+    Rewinder::reset();
     m_body->setCenterOfMassTransform(m_init_pos);
     m_body->setAngularVelocity(btVector3(0,0,0));
     m_body->setLinearVelocity(btVector3(0,0,0));
     m_body->activate();
+
+    m_last_transform = m_init_pos;
+    m_last_lv = m_last_av = Vec3(0.0f);
 }   // reset
 
 // ----------------------------------------------------------------------------
@@ -602,9 +702,8 @@ void PhysicalObject::handleExplosion(const Vec3& pos, bool direct_hit)
     }
     else  // only affected by a distant explosion
     {
-        btTransform t;
-        m_motion_state->getWorldTransform(t);
-        btVector3 diff=t.getOrigin()-pos;
+
+        btVector3 diff=m_current_transform.getOrigin()-pos;
 
         float len2=diff.length2();
 
@@ -650,7 +749,7 @@ void PhysicalObject::removeBody()
 {
     if (m_body_added)
     {
-        World::getWorld()->getPhysics()->removeBody(m_body);
+        Physics::getInstance()->removeBody(m_body);
         m_body_added = false;
     }
 }   // Remove body
@@ -662,7 +761,7 @@ void PhysicalObject::addBody()
     if (!m_body_added)
     {
         m_body_added = true;
-        World::getWorld()->getPhysics()->addBody(m_body);
+        Physics::getInstance()->addBody(m_body);
     }
 }   // Add body
 
@@ -682,5 +781,240 @@ void PhysicalObject::hit(const Material *m, const Vec3 &normal)
 }   // hit
 
 // ----------------------------------------------------------------------------
-/* EOF */
+void PhysicalObject::addForRewind()
+{
+    SmoothNetworkBody::setEnable(true);
+    SmoothNetworkBody::setSmoothRotation(false);
+    SmoothNetworkBody::setAdjustVerticalOffset(false);
+    Rewinder::setUniqueIdentity(
+        {
+            RN_PHYSICAL_OBJ,
+            // We have max moveable physical object defined in stk_config,
+            // which is 15 at the moment
+            static_cast<char>(Track::getCurrentTrack()->getPhysicalObjectUID())
+        });
+    Rewinder::rewinderAdd();
+}   // addForRewind
 
+// ----------------------------------------------------------------------------
+void PhysicalObject::saveTransform()
+{
+    m_no_server_state = true;
+    SmoothNetworkBody::prepareSmoothing(m_body->getWorldTransform(),
+        m_body->getLinearVelocity());
+}   // saveTransform
+
+// ----------------------------------------------------------------------------
+void PhysicalObject::computeError()
+{
+    SmoothNetworkBody::checkSmoothing(m_body->getWorldTransform(),
+        m_body->getLinearVelocity());
+}   // computeError
+
+// ----------------------------------------------------------------------------
+BareNetworkString* PhysicalObject::saveState(std::vector<std::string>* ru)
+{
+    bool has_live_join = false;
+
+    if (auto sl = LobbyProtocol::get<LobbyProtocol>())
+        has_live_join = sl->hasLiveJoiningRecently();
+
+    BareNetworkString* buffer = new BareNetworkString();
+    // This will compress and round down values of body, use the rounded
+    // down value to test if sending state is needed
+    // If any client live-joined always send new state for this object
+    CompressNetworkBody::compress(m_body, m_motion_state, buffer);
+    btTransform cur_transform = m_body->getWorldTransform();
+    Vec3 current_lv = m_body->getLinearVelocity();
+    Vec3 current_av = m_body->getAngularVelocity();
+
+    if ((cur_transform.getOrigin() - m_last_transform.getOrigin())
+        .length() < 0.01f &&
+        (current_lv - m_last_lv).length() < 0.01f &&
+        (current_av - m_last_av).length() < 0.01f && !has_live_join)
+    {
+        delete buffer;
+        return nullptr;
+    }
+
+    ru->push_back(getUniqueIdentity());
+    m_last_transform = cur_transform;
+    m_last_lv = current_lv;
+    m_last_av = current_av;
+    return buffer;
+}   // saveState
+
+// ----------------------------------------------------------------------------
+void PhysicalObject::restoreState(BareNetworkString *buffer, int count)
+{
+    m_no_server_state = false;
+    CompressNetworkBody::decompress(buffer, m_body, m_motion_state);
+    // Save the newly decompressed value for local state restore
+    m_last_transform = m_body->getWorldTransform();
+    m_last_lv = m_body->getLinearVelocity();
+    m_last_av = m_body->getAngularVelocity();
+}   // restoreState
+
+// ----------------------------------------------------------------------------
+std::function<void()> PhysicalObject::getLocalStateRestoreFunction()
+{
+    btTransform t = m_body->getWorldTransform();
+    Vec3 lv = m_body->getLinearVelocity();
+    Vec3 av = m_body->getAngularVelocity();
+    return [t, lv, av, this]()
+    {
+        if (m_no_server_state)
+        {
+            m_body->setWorldTransform(m_last_transform);
+            m_motion_state->setWorldTransform(m_last_transform);
+            m_body->setInterpolationWorldTransform(m_last_transform);
+            m_body->setLinearVelocity(m_last_lv);
+            m_body->setAngularVelocity(m_last_av);
+            m_body->setInterpolationLinearVelocity(m_last_lv);
+            m_body->setInterpolationAngularVelocity(m_last_av);
+        }
+        else
+        {
+            m_body->setWorldTransform(t);
+            m_motion_state->setWorldTransform(t);
+            m_body->setInterpolationWorldTransform(t);
+            m_body->setLinearVelocity(lv);
+            m_body->setAngularVelocity(av);
+            m_body->setInterpolationLinearVelocity(lv);
+            m_body->setInterpolationAngularVelocity(av);
+        }
+    };
+}   // getLocalStateRestoreFunction
+
+// ----------------------------------------------------------------------------
+void PhysicalObject::joinToMainTrack()
+{
+    auto sm = irr_driver->getSceneManager();
+    auto gc = sm->getGeometryCreator();
+    scene::IMeshManipulator* mani =
+        irr_driver->getVideoDriver()->getMeshManipulator();
+
+    if (m_body_type == MP_EXACT)
+    {
+        TrackObjectPresentationSceneNode* presentation =
+            m_object->getPresentation<TrackObjectPresentationSceneNode>();
+        assert(presentation);
+        Track::getCurrentTrack()->convertTrackToBullet(presentation->getNode());
+    }
+    else if (m_body_type == MP_CYLINDER_X || m_body_type == MP_CYLINDER_Y ||
+        m_body_type == MP_CYLINDER_Z)
+    {
+        btCylinderShape* cylinder = dynamic_cast<btCylinderShape*>(m_shape);
+        assert(cylinder);
+        btTransform t;
+        m_motion_state->getWorldTransform(t);
+
+        int up_axis = cylinder->getUpAxis();
+        scene::IMesh* mesh =
+            gc->createCylinderMesh(cylinder->getRadius(),
+            cylinder->getHalfExtentsWithMargin()[up_axis] * 2.0f,
+            std::max((int)(cylinder->getRadius() * M_PI), 4));
+        scene::ISceneNode* node = sm->addMeshSceneNode(mesh);
+        mesh->drop();
+
+        core::matrix4 translate(core::matrix4::EM4CONST_IDENTITY);
+        Vec3 offset;
+        offset.setY(-cylinder->getHalfExtentsWithMargin()[up_axis]);
+        translate.setTranslation(offset.toIrrVector());
+        mani->transform(mesh, translate);
+
+        core::matrix4 adjust_axis(core::matrix4::EM4CONST_IDENTITY);
+        if (m_body_type == MP_CYLINDER_X)
+            adjust_axis.setRotationDegrees(core::vector3df(0, 0, -90));
+        else if (m_body_type == MP_CYLINDER_Z)
+            adjust_axis.setRotationDegrees(core::vector3df(90, 0, 0));
+        mani->transform(mesh, adjust_axis);
+
+        node->setPosition(Vec3(t.getOrigin()).toIrrVector());
+        Vec3 hpr;
+        hpr.setHPR(t.getRotation());
+        node->setRotation(hpr.toIrrHPR());
+
+        Track::getCurrentTrack()->convertTrackToBullet(node);
+        node->remove();
+    }
+    else if (m_body_type == MP_CONE_X || m_body_type == MP_CONE_Y ||
+        m_body_type == MP_CONE_Z)
+    {
+        btConeShape* cone = dynamic_cast<btConeShape*>(m_shape);
+        assert(cone);
+        btTransform t;
+        m_motion_state->getWorldTransform(t);
+
+        scene::IMesh* mesh =
+            gc->createConeMesh(cone->getRadius(),
+            cone->getHeight(),
+            std::max((int)(cone->getRadius() * M_PI), 4));
+        scene::ISceneNode* node = sm->addMeshSceneNode(mesh);
+        mesh->drop();
+
+        core::matrix4 translate(core::matrix4::EM4CONST_IDENTITY);
+        Vec3 offset;
+        offset.setY(cone->getHeight() * -0.5f);
+        translate.setTranslation(offset.toIrrVector());
+        mani->transform(mesh, translate);
+
+        core::matrix4 adjust_axis(core::matrix4::EM4CONST_IDENTITY);
+        if (m_body_type == MP_CONE_X)
+            adjust_axis.setRotationDegrees(core::vector3df(0, 0, -90));
+        else if (m_body_type == MP_CONE_Z)
+            adjust_axis.setRotationDegrees(core::vector3df(90, 0, 0));
+        mani->transform(mesh, adjust_axis);
+
+        node->setPosition(Vec3(t.getOrigin()).toIrrVector());
+        Vec3 hpr;
+        hpr.setHPR(t.getRotation());
+        node->setRotation(hpr.toIrrHPR());
+
+        Track::getCurrentTrack()->convertTrackToBullet(node);
+        node->remove();
+    }
+    else if (m_body_type == MP_SPHERE)
+    {
+        btSphereShape* sphere = dynamic_cast<btSphereShape*>(m_shape);
+        assert(sphere);
+        btTransform t;
+        m_motion_state->getWorldTransform(t);
+
+        scene::IMesh* mesh =
+            gc->createSphereMesh(sphere->getRadius(),
+            std::max((int)(sphere->getRadius() / 2.0f), 4),
+            std::max((int)(sphere->getRadius() / 2.0f), 4));
+        scene::ISceneNode* node = sm->addMeshSceneNode(mesh);
+        mesh->drop();
+
+        node->setPosition(Vec3(t.getOrigin()).toIrrVector());
+        Vec3 hpr;
+        hpr.setHPR(t.getRotation());
+        node->setRotation(hpr.toIrrHPR());
+
+        Track::getCurrentTrack()->convertTrackToBullet(node);
+        node->remove();
+    }
+    else if (m_body_type == MP_BOX)
+    {
+        btBoxShape* box = dynamic_cast<btBoxShape*>(m_shape);
+        assert(box);
+        scene::IMesh* mesh =
+            gc->createCubeMesh(
+            Vec3(box->getHalfExtentsWithMargin() * 2.0f).toIrrVector());
+        scene::ISceneNode* node = sm->addMeshSceneNode(mesh);
+        mesh->drop();
+
+        btTransform t;
+        m_motion_state->getWorldTransform(t);
+        node->setPosition(Vec3(t.getOrigin()).toIrrVector());
+        Vec3 hpr;
+        hpr.setHPR(t.getRotation());
+        node->setRotation(hpr.toIrrHPR());
+
+        Track::getCurrentTrack()->convertTrackToBullet(node);
+        node->remove();
+    }
+
+}   // joinToMainTrack

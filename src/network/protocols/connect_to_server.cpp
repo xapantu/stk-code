@@ -18,54 +18,52 @@
 
 #include "network/protocols/connect_to_server.hpp"
 
-#include "config/player_manager.hpp"
+#include "config/user_config.hpp"
+#include "io/file_manager.hpp"
+#include "io/xml_node.hpp"
+#include "network/crypto.hpp"
 #include "network/event.hpp"
+#include "network/network.hpp"
 #include "network/network_config.hpp"
-#include "network/protocols/get_public_address.hpp"
-#include "network/protocols/get_peer_address.hpp"
-#include "network/protocols/hide_public_address.hpp"
-#include "network/protocols/request_connection.hpp"
-#include "network/protocols/ping_protocol.hpp"
-#include "network/protocols/client_lobby_room_protocol.hpp"
+#include "network/protocols/client_lobby.hpp"
 #include "network/protocol_manager.hpp"
 #include "network/servers_manager.hpp"
+#include "network/server.hpp"
+#include "network/stk_ipv6.hpp"
 #include "network/stk_host.hpp"
 #include "network/stk_peer.hpp"
+#include "online/xml_request.hpp"
+#include "states_screens/online/networking_lobby.hpp"
 #include "utils/time.hpp"
 #include "utils/log.hpp"
+#include "utils/string_utils.hpp"
+#include "utils/translation.hpp"
 
 #ifdef WIN32
-#  include <iphlpapi.h>
+#  include <ws2tcpip.h>
 #else
-#include <ifaddrs.h>
+#  include <netdb.h>
 #endif
 
-// ----------------------------------------------------------------------------
-/** Connects to a server. This is the quick connect constructor, which 
- *  will pick a server randomly.
- */
-ConnectToServer::ConnectToServer() : Protocol(PROTOCOL_CONNECTION)
-{
-    m_server_id  = 0;
-    m_host_id    = 0;
-    m_quick_join = true;
-    m_server_address.clear();
-}   // ConnectToServer()
-
+#include <algorithm>
+// ============================================================================
+std::weak_ptr<Online::Request> ConnectToServer::m_previous_unjoin;
+TransportAddress ConnectToServer::m_server_address;
+int ConnectToServer::m_retry_count = 0;
+bool ConnectToServer::m_done_intecept = false;
 // ----------------------------------------------------------------------------
 /** Specify server to connect to.
- *  \param server_id Id of server to connect to.
- *  \param host_id Id of host.
+ *  \param server Server to connect to (if nullptr than we use quick play).
  */
-ConnectToServer::ConnectToServer(uint32_t server_id, uint32_t host_id)
+ConnectToServer::ConnectToServer(std::shared_ptr<Server> server)
                : Protocol(PROTOCOL_CONNECTION)
 {
-    m_server_id  = server_id;
-    m_host_id    = host_id;
-    m_quick_join = false;
-    const Server *server = ServersManager::get()->getServerByID(server_id);
-    m_server_address.copy(server->getAddress());
-
+    m_quick_play_err_msg = _("No quick play server available.");
+    if (server)
+    {
+        m_server         = server;
+        m_server_address = m_server->getAddress();
+    }
 }   // ConnectToServer(server, host)
 
 // ----------------------------------------------------------------------------
@@ -73,6 +71,15 @@ ConnectToServer::ConnectToServer(uint32_t server_id, uint32_t host_id)
  */
 ConnectToServer::~ConnectToServer()
 {
+    auto cl = LobbyProtocol::get<ClientLobby>();
+    if (!cl && m_server && m_server->supportsEncryption())
+    {
+        auto request = std::make_shared<Online::XMLRequest>();
+        NetworkConfig::get()->setServerDetails(request,
+            "clear-user-joined-server");
+        request->queue();
+        m_previous_unjoin = request;
+    }
 }   // ~ConnectToServer
 
 // ----------------------------------------------------------------------------
@@ -81,204 +88,365 @@ ConnectToServer::~ConnectToServer()
 void ConnectToServer::setup()
 {
     Log::info("ConnectToServer", "SETUP");
-    m_current_protocol = NULL;
-    // In case of LAN we already have the server's and our ip address,
-    // so we can immediately start requesting a connection.
-    m_state = NetworkConfig::get()->isLAN() ? GOT_SERVER_ADDRESS : NONE;
+    // In case of LAN or client-server we already have the server's
+    // and our ip address, so we can immediately start requesting a connection.
+    if (NetworkConfig::get()->isLAN())
+    {
+        m_state = GOT_SERVER_ADDRESS;
+        if (m_server->useIPV6Connection())
+            setIPV6(1);
+    }
+    else
+        m_state = SET_PUBLIC_ADDRESS;
 }   // setup
 
 // ----------------------------------------------------------------------------
-/** Sets the server transport address. This is used in case of LAN networking,
- *  when we do not query the stk server and instead have the address from the
- *  LAN server directly.
- *  \param address Address of server to connect to.
- */
-void ConnectToServer::setServerAddress(const TransportAddress &address)
+void ConnectToServer::getClientServerInfo()
 {
-}   // setServerAddress
+    assert(m_server);
+    // Allow up to 10 seconds for the separate process to fully start-up
+    bool started = false;
+    uint64_t timeout = StkTime::getMonoTimeMs() + 10000;
+    const std::string& sid = NetworkConfig::get()->getServerIdFile();
+    assert(!sid.empty());
+    const std::string dir = StringUtils::getPath(sid);
+    const std::string server_id_file = StringUtils::getBasename(sid);
+    uint16_t port = 0;
+    unsigned server_id = 0;
+    while (!ProtocolManager::lock()->isExiting() &&
+        StkTime::getMonoTimeMs() < timeout)
+    {
+        std::set<std::string> files;
+        file_manager->listFiles(files, dir);
+        for (auto& f : files)
+        {
+            if (f.find(server_id_file) != std::string::npos)
+            {
+                auto split = StringUtils::split(f, '_');
+                if (split.size() != 3)
+                    continue;
+                if (!StringUtils::fromString(split[1], server_id))
+                    continue;
+                if (!StringUtils::fromString(split[2], port))
+                    continue;
+                file_manager->removeFile(dir + "/" + f);
+                started = true;
+                break;
+            }
+        }
+        if (started)
+            break;
+        StkTime::sleep(10);
+    }
+    NetworkConfig::get()->setServerIdFile("");
+    if (!started)
+    {
+        Log::error("ConnectToServer",
+            "Separate server process failed to started");
+        m_state = DONE;
+        return;
+    }
+    else
+    {
+        assert(port != 0);
+        m_server_address.setPort(port);
+        m_server->setPrivatePort(port);
+        if (server_id != 0)
+        {
+            m_server->setSupportsEncryption(true);
+            m_server->setServerId(server_id);
+        }
+    }
+}   // getClientServerInfo
 
 // ----------------------------------------------------------------------------
 void ConnectToServer::asynchronousUpdate()
 {
-    switch(m_state)
+    if (STKHost::get()->isClientServer() &&
+        !NetworkConfig::get()->getServerIdFile().empty())
     {
-        case NONE:
-        {
-            Log::info("ConnectToServer", "Protocol starting");
-            // This protocol will write the public address of this
-            // instance to STKHost.
-            m_current_protocol = new GetPublicAddress(this);
-            m_current_protocol->requestStart();
-            // This protocol will be unpaused in the callback from 
-            // GetPublicAddress
-            requestPause();
-            m_state = GETTING_SELF_ADDRESS;
-            break;
-        }
-        case GETTING_SELF_ADDRESS:
-        {
-            delete m_current_protocol;   // delete GetPublicAddress
-            m_current_protocol = NULL;
+        getClientServerInfo();
+    }
 
-            registerWithSTKServer();  // Register us with STK server
-
-            if (m_quick_join)
-            {
-                handleQuickConnect();
-                // Quick connect will give us the server details,
-                // so we can immediately try to connect to the server
-                m_state = REQUESTING_CONNECTION;
-            }
-            else
-            {
-                // No quick connect, so we have a server to connect to.
-                // Find its address
-                m_current_protocol = new GetPeerAddress(m_host_id, this);
-                m_current_protocol->requestStart();
-                m_state = GOT_SERVER_ADDRESS;
-                // Pause this protocol till GetPeerAddress finishes.
-                // The callback then will unpause this protocol/
-                requestPause();
-            }
-        }
-        break;
-        case GOT_SERVER_ADDRESS:
+    switch(m_state.load())
+    {
+        case SET_PUBLIC_ADDRESS:
         {
-            assert(!m_quick_join);
-            delete m_current_protocol;
-            m_current_protocol = NULL;
-            Log::info("ConnectToServer", "Server's address known");
-
-            // we're in the same lan (same public ip address) !!
-            if (m_server_address.getIP() ==
-                NetworkConfig::get()->getMyAddress().getIP())
+            if (!m_server)
             {
-                Log::info("ConnectToServer",
-                    "Server appears to be in the same LAN.");
-            }
-            m_state = REQUESTING_CONNECTION;
-            m_current_protocol = new RequestConnection(m_server_id);
-            m_current_protocol->requestStart();
-            break;
-        }
-        case REQUESTING_CONNECTION:
-            // In case of a LAN server, m_crrent_protocol is NULL
-            if (!m_current_protocol ||
-                m_current_protocol->getState() == PROTOCOL_STATE_TERMINATED)
-            {
-                delete m_current_protocol;
-                m_current_protocol = NULL;
-                // Server knows we want to connect
-                Log::info("ConnectToServer", "Connection request made");
-                if (m_server_address.getIP() == 0 ||
-                    m_server_address.getPort() == 0  )
-                { 
-                    // server data not correct, hide address and stop
-                    m_state = HIDING_ADDRESS;
-                    Log::error("ConnectToServer", "Server address is %s",
-                               m_server_address.toString().c_str());
-                    m_current_protocol = new HidePublicAddress();
-                    m_current_protocol->requestStart();
-                    return;
-                }
-                if (m_server_address.getIP() 
-                      == NetworkConfig::get()->getMyAddress().getIP())
+                while (!ServersManager::get()->refresh(false))
                 {
-                    // We're in the same lan (same public ip address).
-                    // The state will change to CONNECTING
-                    handleSameLAN();
+                    if (ProtocolManager::lock()->isExiting())
+                        return;
+                    StkTime::sleep(1);
+                }
+                while (!ServersManager::get()->listUpdated())
+                {
+                    if (ProtocolManager::lock()->isExiting())
+                        return;
+                    StkTime::sleep(1);
+                }
+                auto servers = std::move(ServersManager::get()->getServers());
+
+                // Remove password protected servers
+                servers.erase(std::remove_if(servers.begin(), servers.end(), []
+                    (const std::shared_ptr<Server> a)->bool
+                    {
+                        return a->isPasswordProtected();
+                    }), servers.end());
+
+                if (!servers.empty())
+                {
+                    // For quick play we choose the server with the shortest
+                    // distance and not empty and full server
+                    std::sort(servers.begin(), servers.end(), []
+                        (const std::shared_ptr<Server> a,
+                        const std::shared_ptr<Server> b)->bool
+                        {
+                            return a->getDistance() < b->getDistance();
+                        });
+                    std::stable_partition(servers.begin(), servers.end(), []
+                        (const std::shared_ptr<Server> a)->bool
+                        {
+                            return a->getCurrentPlayers() != 0 &&
+                                a->getCurrentPlayers() != a->getMaxPlayers();
+                        });
+                    m_server = servers[0];
+                    m_server_address = m_server->getAddress();
                 }
                 else
                 {
-                    m_state = CONNECTING;
-                    m_current_protocol = new PingProtocol(m_server_address, 2.0);
-                    m_current_protocol->requestStart();
+                    // Shutdown STKHost (go back to online menu too)
+                    STKHost::get()->setErrorMessage(m_quick_play_err_msg);
+                    STKHost::get()->requestShutdown();
+                    m_state = EXITING;
+                    return;
                 }
+                servers.clear();
             }
-            break;
-        case CONNECTING: // waiting the server to answer our connection
+            if (m_server->useIPV6Connection())
             {
-                static double timer = 0;
-                if (StkTime::getRealTime() > timer+5.0) // every 5 seconds
-                {
-                    STKHost::get()->connect(m_server_address);
-                    timer = StkTime::getRealTime();
-                    Log::info("ConnectToServer", "Trying to connect to %s",
-                              m_server_address.toString().c_str());
-                }
-                break;
+                // Disable STUN if using IPv6 (check in setPublicAddress)
+                setIPV6(1);
             }
-        case CONNECTED:
-        {
-            Log::info("ConnectToServer", "Connected");
-            if(m_current_protocol)
+            if (m_server->supportsEncryption())
             {
-                // Kill the ping protocol because we're connected
-                m_current_protocol->requestTerminate();
+                STKHost::get()->setPublicAddress();
+                registerWithSTKServer();
             }
-            delete m_current_protocol;
-            m_current_protocol = NULL;
-            // LAN networking does not use the stk server tables.
-            if(NetworkConfig::get()->isWAN())
-            {
-                m_current_protocol = new HidePublicAddress();
-                m_current_protocol->requestStart();
-            }
-            m_state = HIDING_ADDRESS;
+            // Set to DONE will stop STKHost is not connected
+            m_state = STKHost::get()->getPublicAddress().isUnset() ?
+                DONE : GOT_SERVER_ADDRESS;
             break;
         }
-        case HIDING_ADDRESS:
-            // Wait till we have hidden our address
-            if (!m_current_protocol ||
-                m_current_protocol->getState() == PROTOCOL_STATE_TERMINATED)
+        case GOT_SERVER_ADDRESS:
+        {
+            if (!STKHost::get()->isClientServer() &&
+                m_server_address.getIP() ==
+                STKHost::get()->getPublicAddress().getIP())
             {
-                if(m_current_protocol)
+                Log::info("ConnectToServer", "Server is in the same lan");
+                std::string str_msg("connection-request");
+                BareNetworkString message(str_msg +
+                    StringUtils::toString(m_server->getPrivatePort()));
+                // If use lan connection for wan server, send to all broadcast
+                // addresses
+                for (auto& addr :
+                    ServersManager::get()->getBroadcastAddresses())
                 {
-                    delete m_current_protocol;
-                    m_current_protocol = NULL;
-                    Log::info("ConnectToServer", "Address hidden");
-                }
-                m_state = DONE;
-                // lobby room protocol if we're connected only
-                if(STKHost::get()->getPeers()[0]->isConnected())
-                {
-                    Protocol *p = new ClientLobbyRoomProtocol(m_server_address);
-                    p->requestStart();
+                    for (int i = 0; i < 5; i++)
+                    {
+                        STKHost::get()->sendRawPacket(message, addr);
+                        StkTime::sleep(1);
+                    }
                 }
             }
+            // 30 seconds connecting timeout total, use another port to try
+            // direct connection to server first, if failed than use the one
+            // that has stun mapped, the first 8 seconds allow the server to
+            // start the connect to peer protocol first before the port is
+            // remapped. IPv6 has no stun so try once with any port
+            if (isIPV6())
+            {
+                if (!tryConnect(2000, 15, true/*another_port*/, true/*IPv6*/))
+                    m_state = DONE;
+            }
+            else
+            {
+                if (tryConnect(2000, 4, true/*another_port*/))
+                    break;
+                if (!tryConnect(2000, 11))
+                    m_state = DONE;
+            }
             break;
+        }
         case DONE:
-            requestTerminate();
-            m_state = EXITING;
-            break;
         case EXITING:
             break;
     }
 }   // asynchronousUpdate
 
- // ----------------------------------------------------------------------------
-/** Called when the GetPeerAddress protocol terminates.
- */
-void ConnectToServer::callback(Protocol *protocol)
+// ----------------------------------------------------------------------------
+void ConnectToServer::update(int ticks)
 {
-    switch(m_state)
+    switch(m_state.load())
     {
-        case GETTING_SELF_ADDRESS:
-            // The GetPublicAddress protocol stores our address in
-            // STKHost, so we only need to unpause this protocol
-            requestUnpause();
-            break;
         case GOT_SERVER_ADDRESS:
-            // Get the server address from the protocol.
-            m_server_address.copy(((GetPeerAddress*)protocol)->getAddress());
-            requestUnpause();
+        {
+            // Make sure lobby display the quick play server name
+            assert(m_server);
+            NetworkingLobby::getInstance()->setJoinedServer(m_server);
             break;
+        }
+        case DONE:
+        {
+            // lobby room protocol if we're connected only
+            if (STKHost::get()->getPeerCount() > 0 &&
+                STKHost::get()->getServerPeerForClient()->isConnected() &&
+                !m_server_address.isUnset())
+            {
+                // Let main thread create ClientLobby for better
+                // synchronization with GUI
+                NetworkConfig::get()->clearActivePlayersForClient();
+                auto cl = LobbyProtocol::create<ClientLobby>(m_server_address,
+                    m_server);
+                STKHost::get()->startListening();
+                cl->requestStart();
+            }
+            if (STKHost::get()->getPeerCount() == 0)
+            {
+                // Shutdown STKHost (go back to online menu too)
+                STKHost::get()->setErrorMessage(
+                    _("Cannot connect to server %s.", m_server->getName()));
+                STKHost::get()->requestShutdown();
+            }
+            requestTerminate();
+            m_state = EXITING;
+            break;
+        }
         default:
-            Log::error("ConnectToServer",
-                       "Received unexpected callback while in state %d.",
-                       m_state);
-    }   // case m_state
-}   // callback
+            break;
+    }
+}   // update
+
+// ----------------------------------------------------------------------------
+/** Intercept callback in enet to allow change server address and port if
+ *  needed (Happens when there is firewall in between)
+ */
+int ConnectToServer::interceptCallback(ENetHost* host, ENetEvent* event)
+{
+    if (m_done_intecept)
+        return 0;
+    // The first two bytes of a valid ENet protocol packet will never be 0xFFFF
+    // and then try decode the string "aloha-stk"
+    if (host->receivedDataLength == 12 &&
+        host->receivedData[0] == 0xFF && host->receivedData[1]  == 0xFF &&
+        host->receivedData[2] == 0x09 && host->receivedData[3] == 'a' &&
+        host->receivedData[4]  == 'l' && host->receivedData[5] == 'o' &&
+        host->receivedData[6] == 'h' && host->receivedData[7] == 'a' &&
+        host->receivedData[8] == '-' && host->receivedData[9] == 's' &&
+        host->receivedData[10] == 't' && host->receivedData[11] == 'k')
+    {
+        TransportAddress server_addr = host->receivedAddress;
+        if (server_addr != m_server_address)
+        {
+            Log::info("ConnectToServer", "Using new server address %s",
+                server_addr.toString().c_str());
+            m_retry_count = 15;
+            m_server_address = server_addr;
+            m_done_intecept = true;
+            return 1;
+        }
+    }
+    // 0 means let enet handle this packet
+    return 0;
+}   // interceptCallback
+
+// ----------------------------------------------------------------------------
+bool ConnectToServer::tryConnect(int timeout, int retry, bool another_port,
+                                 bool ipv6)
+{
+    m_retry_count = retry;
+    ENetEvent event;
+    ENetAddress ea;
+    ea.host = STKHost::HOST_ANY;
+    ea.port = STKHost::PORT_ANY;
+    Network* nw = another_port ? new Network(/*peer_count*/1,
+        /*channel_limit*/EVENT_CHANNEL_COUNT,
+        /*max_in_bandwidth*/0, /*max_out_bandwidth*/0, &ea,
+        true/*change_port_if_bound*/) : STKHost::get()->getNetwork();
+    assert(nw);
+
+    m_done_intecept = false;
+    nw->getENetHost()->intercept = ConnectToServer::interceptCallback;
+
+    std::string connecting_address = m_server_address.toString();
+    if (ipv6)
+    {
+        struct addrinfo hints;
+        struct addrinfo* res = NULL;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        std::string addr_string = m_server->getIPV6Address();
+        std::string port =
+            StringUtils::toString(m_server->getAddress().getPort());
+#ifdef IOS_STK
+        // The ability to synthesize IPv6 addresses was added to getaddrinfo
+        // in iOS 9.2
+        if (!m_server->useIPV6Connection())
+        {
+            // From IPv4
+            addr_string = m_server->getAddress().toString(false/*show_port*/);
+        }
+#endif
+        if (getaddrinfo_compat(addr_string.c_str(), port.c_str(),
+            &hints, &res) != 0 || res == NULL)
+            return false;
+        for (const struct addrinfo* addr = res; addr != NULL;
+             addr = addr->ai_next)
+        {
+            if (addr->ai_family == AF_INET6)
+            {
+                struct sockaddr_in6* ipv6_sock =
+                    (struct sockaddr_in6*)addr->ai_addr;
+                ENetAddress addr = m_server_address.toEnetAddress();
+                connecting_address = std::string("[") + addr_string + "]:" +
+                    StringUtils::toString(addr.port);
+                addMappedAddress(&addr, ipv6_sock);
+                break;
+            }
+        }
+        freeaddrinfo(res);
+    }
+
+    while (--m_retry_count >= 0 && !ProtocolManager::lock()->isExiting())
+    {
+        ENetPeer* p = nw->connectTo(m_server_address);
+        if (!p)
+            break;
+        Log::info("ConnectToServer", "Trying connecting to %s from port %d, "
+            "retry remain: %d", connecting_address.c_str(),
+            nw->getENetHost()->address.port, m_retry_count);
+        while (enet_host_service(nw->getENetHost(), &event, timeout) != 0)
+        {
+            if (event.type == ENET_EVENT_TYPE_CONNECT)
+            {
+                Log::info("ConnectToServer", "Connected to %s",
+                    connecting_address.c_str());
+                nw->getENetHost()->intercept = NULL;
+                STKHost::get()->initClientNetwork(event, nw);
+                m_state = DONE;
+                return true;
+            }
+        }
+        // Reset old peer in case server address differs due to intercept
+        enet_peer_reset(p);
+    }
+    if (another_port)
+        delete nw;
+    return false;
+}   // tryConnect
 
 // ----------------------------------------------------------------------------
 /** Register this client with the STK server.
@@ -286,25 +454,34 @@ void ConnectToServer::callback(Protocol *protocol)
 void ConnectToServer::registerWithSTKServer()
 {
     // Our public address is now known, register details with
-    // STK server.
-    const TransportAddress& addr = NetworkConfig::get()->getMyAddress();
-    Online::XMLRequest *request  = new Online::XMLRequest();
-    PlayerManager::setUserDetails(request, "set",
-                                  Online::API::SERVER_PATH);
+    // STK server. If previous unjoin request is not finished, wait
+    if (!m_previous_unjoin.expired())
+    {
+        if (ProtocolManager::lock()->isExiting())
+            return;
+        StkTime::sleep(1);
+    }
+
+    const TransportAddress& addr = STKHost::get()->getPublicAddress();
+    auto request = std::make_shared<Online::XMLRequest>();
+    NetworkConfig::get()->setServerDetails(request, "join-server-key");
+    request->addParameter("server-id", m_server->getServerId());
     request->addParameter("address", addr.getIP());
     request->addParameter("port", addr.getPort());
-    request->addParameter("private_port",
-                          NetworkConfig::get()->getPrivatePort());
+
+    Crypto::initClientAES();
+    request->addParameter("aes-key", Crypto::getClientKey());
+    request->addParameter("aes-iv", Crypto::getClientIV());
 
     Log::info("ConnectToServer", "Registering addr %s",
-              addr.toString().c_str());
+        addr.toString().c_str());
 
     // This can be done blocking: till we are registered with the
     // stk server, there is no need to to react to any other 
     // network requests
     request->executeNow();
 
-    const XMLNode * result = request->getXMLData();
+    const XMLNode* result = request->getXMLData();
 
     std::string success;
     if(result->get("success", &success) && success == "yes")
@@ -313,146 +490,9 @@ void ConnectToServer::registerWithSTKServer()
     }
     else
     {
-        Log::error("ConnectToServer", "Failed to register address.");
+        irr::core::stringc error(request->getInfo().c_str());
+        Log::error("ConnectToServer", "Failed to register client address: %s",
+            error.c_str());
+        m_state = DONE;
     }
-    delete request;
-
 }   // registerWithSTKServer
-
-// ----------------------------------------------------------------------------
-/** Called to request a quick connect from the STK server.
- */
-void ConnectToServer::handleQuickConnect()
-{
-    Online::XMLRequest *request = new Online::XMLRequest();
-    PlayerManager::setUserDetails(request, "quick-join",
-                                  Online::API::SERVER_PATH);
-    request->executeNow();
-
-    const XMLNode * result = request->getXMLData();
-    delete request;
-    std::string success;
-
-    if(result->get("success", &success) && success=="yes")
-    {
-        uint32_t ip;
-        result->get("ip", &ip);
-        m_server_address.setIP(ip);
-
-        uint16_t port;
-        // If we are using a LAN connection, we need the private (local) port
-        if (m_server_address.getIP() == 
-            NetworkConfig::get()->getMyAddress().getIP())
-        {
-            result->get("private_port", &port);
-        }
-        else
-            result->get("port", &port);
-
-        m_server_address.setPort(port);
-
-        Log::debug("GetPeerAddress", "Address gotten successfully.");
-    }
-    else
-    {
-        Log::error("GetPeerAddress", "Failed to get address.");
-    }
-}   // handleQuickConnect
-
-// ----------------------------------------------------------------------------
-/** Called when the server is on the same LAN. It uses broadcast to
- *  find and conntect to the server.
- */
-void ConnectToServer::handleSameLAN()
-{
-    // just send a broadcast packet, the client will know our 
-    // ip address and will connect
-    STKHost* host = STKHost::get();
-    host->stopListening(); // stop the listening
-
-    Log::info("ConnectToServer", "Waiting broadcast message.");
-
-    TransportAddress sender;
-    // get the sender
-    const int LEN=256;
-    char buffer[LEN];
-    int len = host->receiveRawPacket(buffer, LEN, &sender, 2000);
-
-    host->startListening(); // start listening again
-    const char data[] = "aloha_stk\0";
-    if (strcmp(data, buffer) == 0)
-    {
-        Log::info("ConnectToServer", "LAN Server found : %s",
-                   sender.toString().c_str());
-#ifndef WIN32
-        // just check if the ip is ours : if so, 
-        // then just use localhost (127.0.0.1)
-        struct ifaddrs *ifap, *ifa;
-        struct sockaddr_in *sa;
-        getifaddrs(&ifap); // get the info
-        for (ifa = ifap; ifa; ifa = ifa->ifa_next)
-        {
-            if (ifa->ifa_addr->sa_family == AF_INET)
-            {
-                sa = (struct sockaddr_in *) ifa->ifa_addr;
-
-                // This interface is ours
-                if (ntohl(sa->sin_addr.s_addr) == sender.getIP())
-                    sender.setIP(0x7f000001); // 127.0.0.1
-            }
-        }
-        freeifaddrs(ifap);
-#else
-        // Query the list of all IP addresses on the local host
-        // First call to GetIpAddrTable with 0 bytes buffer
-        // will return insufficient buffer error, and size
-        // will contain the number of bytes needed for all
-        // data. Repeat the process of querying the size
-        // using GetIpAddrTable in a while loop since it
-        // can happen that an interface comes online between
-        // the previous call to GetIpAddrTable and the next
-        // call.
-        MIB_IPADDRTABLE *table = NULL;
-        unsigned long size = 0;
-        int error = GetIpAddrTable(table, &size, 0);
-        // Also add a count to limit the while loop - in
-        // case that something strange is going on.
-        int count = 0;
-        while (error == ERROR_INSUFFICIENT_BUFFER && count < 10)
-        {
-            delete[] table;   // deleting NULL is legal
-            table = (MIB_IPADDRTABLE*)new char[size];
-            error = GetIpAddrTable(table, &size, 0);
-            count++;
-        }   // while insufficient buffer
-        for (unsigned int i = 0; i < table->dwNumEntries; i++)
-        {
-            unsigned int ip = ntohl(table->table[i].dwAddr);
-            if (sender.getIP() == ip) // this interface is ours
-            {
-                sender.setIP(0x7f000001); // 127.0.0.1
-                break;
-            }
-        }
-        delete[] table;
-
-#endif
-        m_server_address.copy(sender);
-        m_state = CONNECTING;
-    }
-}  // handleSameLAN
-
-// ----------------------------------------------------------------------------
-
-bool ConnectToServer::notifyEventAsynchronous(Event* event)
-{
-    if (event->getType() == EVENT_TYPE_CONNECTED)
-    {
-        Log::info("ConnectToServer", "The Connect To Server protocol has "
-            "received an event notifying that he's connected to the peer.");
-        m_state = CONNECTED; // we received a message, we are connected
-        Server *server = ServersManager::get()->getJoinedServer();
-    }
-    return true;
-}   // notifyEventAsynchronous
-

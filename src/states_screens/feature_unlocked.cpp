@@ -24,10 +24,17 @@
 #include "challenges/challenge_data.hpp"
 #include "challenges/unlock_manager.hpp"
 #include "config/player_manager.hpp"
-#include "graphics/material_manager.hpp"
+#include "config/user_config.hpp"
+#include "graphics/central_settings.hpp"
+#include "graphics/sp/sp_base.hpp"
+#include "graphics/sp/sp_mesh.hpp"
+#include "graphics/sp/sp_mesh_buffer.hpp"
+#include "graphics/sp/sp_mesh_node.hpp"
+#include "graphics/sp/sp_texture_manager.hpp"
 #include "guiengine/engine.hpp"
 #include "guiengine/scalable_font.hpp"
 #include "io/file_manager.hpp"
+#include "karts/kart_model.hpp"
 #include "karts/kart_properties.hpp"
 #include "karts/kart_properties_manager.hpp"
 #include "modes/cutscene_world.hpp"
@@ -38,6 +45,7 @@
 #include "states_screens/state_manager.hpp"
 #include "tracks/track.hpp"
 #include "tracks/track_manager.hpp"
+#include "utils/string_utils.hpp"
 #include "utils/translation.hpp"
 
 #include <IAnimatedMeshSceneNode.h>
@@ -56,16 +64,14 @@ const float ANIM_TO = 7.0f;
 const int GIFT_EXIT_FROM = (int)ANIM_TO;
 const int GIFT_EXIT_TO = GIFT_EXIT_FROM + 7;
 
-DEFINE_SCREEN_SINGLETON( FeatureUnlockedCutScene );
-
 // ============================================================================
 
 #if 0
 #pragma mark FeatureUnlockedCutScene::UnlockedThing
 #endif
 
-FeatureUnlockedCutScene::UnlockedThing::UnlockedThing(std::string model,
-                                                      irr::core::stringw msg)
+FeatureUnlockedCutScene::UnlockedThing::UnlockedThing(const std::string &model,
+                                                      const irr::core::stringw &msg)
 {
     m_unlocked_kart      = NULL;
     m_unlock_message     = msg;
@@ -74,11 +80,11 @@ FeatureUnlockedCutScene::UnlockedThing::UnlockedThing(std::string model,
     m_scale              = 1.0f;
 }
 
-// -------------------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 
 
-FeatureUnlockedCutScene::UnlockedThing::UnlockedThing(KartProperties* kart,
-                                                      irr::core::stringw msg)
+FeatureUnlockedCutScene::UnlockedThing::UnlockedThing(const KartProperties* kart,
+                                                      const irr::core::stringw &msg)
 {
     m_unlocked_kart      = kart;
     m_unlock_message     = msg;
@@ -86,14 +92,25 @@ FeatureUnlockedCutScene::UnlockedThing::UnlockedThing(KartProperties* kart,
     m_scale              = 1.0f;
 }   // UnlockedThing::UnlockedThing
 
-// -------------------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 
 FeatureUnlockedCutScene::UnlockedThing::UnlockedThing(irr::video::ITexture* pict,
                                                       float w, float h,
-                                                      irr::core::stringw msg)
+                                                      const irr::core::stringw &msg)
 {
     m_unlocked_kart = NULL;
-    m_pictures.push_back(pict);
+#ifndef SERVER_ONLY
+    if (CVS->isGLSL())
+    {
+        m_sp_pictures.push_back(SP::SPTextureManager::get()
+            ->getTexture(pict->getName().getPtr(), NULL, true,
+            ""/*container_id*/));
+    }
+    else
+    {
+        m_pictures.push_back(pict);
+    }
+#endif
     m_w = w;
     m_h = h;
     m_unlock_message = msg;
@@ -103,11 +120,27 @@ FeatureUnlockedCutScene::UnlockedThing::UnlockedThing(irr::video::ITexture* pict
 
 // ----------------------------------------------------------------------------
 
-FeatureUnlockedCutScene::UnlockedThing::UnlockedThing(std::vector<irr::video::ITexture*> picts,
-                                                      float w, float h,
-                                                      irr::core::stringw msg)
+FeatureUnlockedCutScene::UnlockedThing
+                        ::UnlockedThing(std::vector<irr::video::ITexture*> picts,
+                                        float w, float h,
+                                        const irr::core::stringw &msg)
 {
     m_unlocked_kart = NULL;
+#ifndef SERVER_ONLY
+    if (CVS->isGLSL())
+    {
+        for (auto* pict : picts)
+        {
+            m_sp_pictures.push_back(SP::SPTextureManager::get()
+                ->getTexture(pict->getName().getPtr(), NULL, true,
+                ""/*container_id*/));
+        }
+    }
+    else
+#endif
+    {
+        m_pictures = picts;
+    }
     m_pictures = picts;
     m_w = w;
     m_h = h;
@@ -132,13 +165,9 @@ FeatureUnlockedCutScene::UnlockedThing::~UnlockedThing()
 #endif
 
 FeatureUnlockedCutScene::FeatureUnlockedCutScene()
-            : CutsceneScreen("feature_unlocked.stkgui")
+            : CutsceneScreen("cutscene.stkgui")
 {
     m_key_angle = 0;
-
-#ifdef USE_IRRLICHT_BUG_WORKAROUND
-    m_avoid_irrlicht_bug = NULL;
-#endif
 }  // FeatureUnlockedCutScene
 
 // ----------------------------------------------------------------------------
@@ -147,17 +176,17 @@ void FeatureUnlockedCutScene::loadedFromFile()
 {
 }   // loadedFromFile
 
-// -------------------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 
 void FeatureUnlockedCutScene::onCutsceneEnd()
 {
-#ifdef USE_IRRLICHT_BUG_WORKAROUND
-    if (m_avoid_irrlicht_bug)
-        irr_driver->removeNode(m_avoid_irrlicht_bug);
-    m_avoid_irrlicht_bug = NULL;
-#endif
-    
     m_unlocked_stuff.clearAndDeleteAll();
+#ifndef SERVER_ONLY
+    if (CVS->isGLSL())
+    {
+        SP::SPTextureManager::get()->removeUnusedTextures();
+    }
+#endif
     m_all_kart_models.clearAndDeleteAll();
 
     // update point count and the list of locked/unlocked stuff
@@ -166,17 +195,26 @@ void FeatureUnlockedCutScene::onCutsceneEnd()
 
 // ----------------------------------------------------------------------------
 
-void FeatureUnlockedCutScene::findWhatWasUnlocked(RaceManager::Difficulty difficulty)
+void FeatureUnlockedCutScene::
+               findWhatWasUnlocked(RaceManager::Difficulty difficulty,
+                                   std::vector<const ChallengeData*>& unlocked)
 {
+    if (UserConfigParams::m_unlock_everything > 0)
+        return;
+
     PlayerProfile *player = PlayerManager::getCurrentPlayer();
-    int points_before = player->getPoints();
-    int points_now = points_before + CHALLENGE_POINTS[difficulty];
+
+    // The number of points is updated before this function is called
+    int points_before = player->getPointsBefore();
+    int points_now = player->getPoints();
 
     std::vector<std::string> tracks;
     std::vector<std::string> gps;
+    std::vector<std::string> karts;
 
     player->computeActive();
-    unlock_manager->findWhatWasUnlocked(points_before, points_now, tracks, gps);
+    unlock_manager->findWhatWasUnlocked(points_before, points_now, tracks, gps,
+                                        karts, unlocked);
 
     for (unsigned int i = 0; i < tracks.size(); i++)
     {
@@ -186,26 +224,50 @@ void FeatureUnlockedCutScene::findWhatWasUnlocked(RaceManager::Difficulty diffic
     {
         addUnlockedGP(grand_prix_manager->getGrandPrix(gps[i]));
     }
+    for (unsigned int i = 0; i < karts.size(); i++)
+    {
+        addUnlockedKart(kart_properties_manager->getKart(karts[i]));
+    }
 }
 
 // ----------------------------------------------------------------------------
 
-void FeatureUnlockedCutScene::addTrophy(RaceManager::Difficulty difficulty)
+void FeatureUnlockedCutScene::addTrophy(RaceManager::Difficulty difficulty,
+                                        bool is_grandprix)
 {
     core::stringw msg;
+
+    int gp_factor = is_grandprix ? GP_FACTOR : 1;
+    RaceManager::Difficulty max_unlocked_difficulty = RaceManager::DIFFICULTY_BEST;
+
+    if (PlayerManager::getCurrentPlayer()->isLocked("difficulty_best"))
+        max_unlocked_difficulty = RaceManager::DIFFICULTY_HARD;
+
     switch (difficulty)
     {
         case RaceManager::DIFFICULTY_EASY:
-            msg = _("You completed the easy challenge! Points earned on this level: %i/%i",
-                    CHALLENGE_POINTS[RaceManager::DIFFICULTY_EASY], CHALLENGE_POINTS[RaceManager::DIFFICULTY_HARD]);
+            msg = _("You completed the easy challenge! "
+                    "Points earned on this level: %i/%i",
+                    CHALLENGE_POINTS[RaceManager::DIFFICULTY_EASY]*gp_factor, 
+                    CHALLENGE_POINTS[max_unlocked_difficulty]*gp_factor);
             break;
         case RaceManager::DIFFICULTY_MEDIUM:
-            msg = _("You completed the intermediate challenge! Points earned on this level: %i/%i",
-                    CHALLENGE_POINTS[RaceManager::DIFFICULTY_MEDIUM], CHALLENGE_POINTS[RaceManager::DIFFICULTY_HARD]);
+            msg = _("You completed the intermediate challenge! "
+                    "Points earned on this level: %i/%i",
+                    CHALLENGE_POINTS[RaceManager::DIFFICULTY_MEDIUM]*gp_factor,
+                    CHALLENGE_POINTS[max_unlocked_difficulty]*gp_factor);
             break;
         case RaceManager::DIFFICULTY_HARD:
-            msg = _("You completed the difficult challenge! Points earned on this level: %i/%i",
-                    CHALLENGE_POINTS[RaceManager::DIFFICULTY_HARD], CHALLENGE_POINTS[RaceManager::DIFFICULTY_HARD]);
+            msg = _("You completed the difficult challenge! "
+                    "Points earned on this level: %i/%i",
+                    CHALLENGE_POINTS[RaceManager::DIFFICULTY_HARD]*gp_factor,
+                    CHALLENGE_POINTS[max_unlocked_difficulty]*gp_factor);
+            break;
+        case RaceManager::DIFFICULTY_BEST:
+            msg = _("You completed the SuperTux challenge! "
+                    "Points earned on this level: %i/%i",
+                    CHALLENGE_POINTS[RaceManager::DIFFICULTY_BEST]*gp_factor,
+                CHALLENGE_POINTS[max_unlocked_difficulty]*gp_factor);
             break;
         default:
             assert(false);
@@ -215,13 +277,16 @@ void FeatureUnlockedCutScene::addTrophy(RaceManager::Difficulty difficulty)
     switch (difficulty)
     {
         case RaceManager::DIFFICULTY_EASY:
-            model = file_manager->getAsset(FileManager::MODEL,"trophy_bronze.b3d");
+            model = file_manager->getAsset(FileManager::MODEL,"trophy_bronze.spm");
             break;
         case RaceManager::DIFFICULTY_MEDIUM:
-            model = file_manager->getAsset(FileManager::MODEL,"trophy_silver.b3d");
+            model = file_manager->getAsset(FileManager::MODEL,"trophy_silver.spm");
             break;
         case RaceManager::DIFFICULTY_HARD:
-            model = file_manager->getAsset(FileManager::MODEL,"trophy_gold.b3d");
+            model = file_manager->getAsset(FileManager::MODEL,"trophy_gold.spm");
+            break;
+        case RaceManager::DIFFICULTY_BEST:
+            model = file_manager->getAsset(FileManager::MODEL,"trophy_platinum.spm");
             break;
         default:
             assert(false);
@@ -230,15 +295,19 @@ void FeatureUnlockedCutScene::addTrophy(RaceManager::Difficulty difficulty)
 
 
     m_unlocked_stuff.push_back( new UnlockedThing(model, msg) );
-}
+}   // addTrophy
 
 // ----------------------------------------------------------------------------
-// unused for now, maybe will be useful later?
 
-void FeatureUnlockedCutScene::addUnlockedKart(KartProperties* unlocked_kart,
-                                              irr::core::stringw msg)
+void FeatureUnlockedCutScene::addUnlockedKart(const KartProperties* unlocked_kart)
 {
-    assert(unlocked_kart != NULL);
+    if (unlocked_kart == NULL)
+    {
+        Log::error("FeatureUnlockedCutScene::addUnlockedKart",
+                   "Unlocked kart does not exist");
+        return;
+    }
+    irr::core::stringw msg = _("You unlocked %s!", unlocked_kart->getName());
     m_unlocked_stuff.push_back( new UnlockedThing(unlocked_kart, msg) );
 }  // addUnlockedKart
 
@@ -246,13 +315,15 @@ void FeatureUnlockedCutScene::addUnlockedKart(KartProperties* unlocked_kart,
 
 void FeatureUnlockedCutScene::addUnlockedPicture(irr::video::ITexture* picture,
                                                  float w, float h,
-                                                 irr::core::stringw msg)
+                                                 const irr::core::stringw &msg)
 {
     if (picture == NULL)
     {
-        Log::warn("FeatureUnlockedCutScene::addUnlockedPicture", "Unlockable has no picture: %s",
-            core::stringc(msg.c_str()).c_str());
-        picture = irr_driver->getTexture(file_manager->getAsset(FileManager::GUI,"main_help.png"));
+        Log::warn("FeatureUnlockedCutScene::addUnlockedPicture",
+                  "Unlockable has no picture: %s",
+                  core::stringc(msg.c_str()).c_str());
+        picture = irr_driver->getTexture(
+                     file_manager->getAsset(FileManager::GUI_ICON,"main_help.png"));
 
     }
 
@@ -261,9 +332,9 @@ void FeatureUnlockedCutScene::addUnlockedPicture(irr::video::ITexture* picture,
 
 // ----------------------------------------------------------------------------
 
-void FeatureUnlockedCutScene::addUnlockedPictures(std::vector<irr::video::ITexture*> pictures,
-                                                  float w, float h,
-                                                  irr::core::stringw msg)
+void FeatureUnlockedCutScene::addUnlockedPictures
+                              (std::vector<irr::video::ITexture*> pictures,
+                               float w, float h, irr::core::stringw msg)
 {
     assert(!pictures.empty());
 
@@ -280,49 +351,74 @@ void FeatureUnlockedCutScene::init()
     const int unlockedStuffCount = m_unlocked_stuff.size();
 
     if (unlockedStuffCount == 0)
-        Log::error("FeatureUnlockedCutScene::init", "There is nothing in the unlock chest");
+        Log::error("FeatureUnlockedCutScene::init",
+                   "There is nothing in the unlock chest");
 
     m_all_kart_models.clearAndDeleteAll();
     for (int n=0; n<unlockedStuffCount; n++)
     {
         if (m_unlocked_stuff[n].m_unlock_model.size() > 0)
         {
-            m_unlocked_stuff[n].m_root_gift_node = irr_driver->addMesh(
-                irr_driver->getMesh(m_unlocked_stuff[n].m_unlock_model), "unlocked_model");
+            irr::scene::IMesh *mesh = 
+                irr_driver->getMesh(m_unlocked_stuff[n].m_unlock_model);
+            m_unlocked_stuff[n].m_root_gift_node = 
+                irr_driver->addMesh(mesh, "unlocked_model");
             m_unlocked_stuff[n].m_scale = 0.7f;
-            //m_unlocked_stuff[n].m_root_gift_node->setScale(core::vector3df(0.2f, 0.2f, 0.2f));
         }
         else if (m_unlocked_stuff[n].m_unlocked_kart != NULL)
         {
             KartModel *kart_model =
                 m_unlocked_stuff[n].m_unlocked_kart->getKartModelCopy();
             m_all_kart_models.push_back(kart_model);
-            m_unlocked_stuff[n].m_root_gift_node = kart_model->attachModel(true, false);
+            m_unlocked_stuff[n].m_root_gift_node =
+                kart_model->attachModel(true, false);
             m_unlocked_stuff[n].m_scale = 5.0f;
             kart_model->setAnimation(KartModel::AF_DEFAULT);
-            kart_model->update(0.0f, 0.0f, 0.0f, 0.0f); // set model current frame to "center"
+            // Set model current frame to "center"
+            kart_model->update(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
 
 #ifdef DEBUG
             m_unlocked_stuff[n].m_root_gift_node->setName("unlocked kart");
 #endif
-#ifdef USE_IRRLICHT_BUG_WORKAROUND
-            // If a mesh with this material is added, irrlicht will
-            // display the 'continue' text (otherwise the text is
-            // not visible). This is a terrible work around, but allows
-            // stk to be released without waiting for the next
-            // irrlicht version.
-            video::SMaterial m;
-            m.MaterialType    = video::EMT_TRANSPARENT_ALPHA_CHANNEL;
-            scene::IMesh* mesh =
-                irr_driver->createTexturedQuadMesh(&m, 0, 0);
-            m_avoid_irrlicht_bug = irr_driver->addMesh(mesh);
+        }
+#ifndef SERVER_ONLY
+        else if (!m_unlocked_stuff[n].m_sp_pictures.empty())
+        {
+            scene::IMesh* mesh = irr_driver->createTexturedQuadMesh(NULL,
+                m_unlocked_stuff[n].m_w, m_unlocked_stuff[n].m_h);
+            m_unlocked_stuff[n].m_root_gift_node =
+                irr_driver->getSceneManager()->addEmptySceneNode();
+            SP::SPMesh* spm = SP::convertEVTStandard(mesh);
+            m_unlocked_stuff[n].m_side_1 = irr_driver->addMesh(spm,
+                "unlocked_picture", m_unlocked_stuff[n].m_root_gift_node);
+            spm->getSPMeshBuffer(0)->uploadGLMesh();
+            spm->getSPMeshBuffer(0)->getSPTextures()[0] =
+                m_unlocked_stuff[n].m_sp_pictures[0];
+            spm->getSPMeshBuffer(0)->reloadTextureCompare();
+            spm->drop();
+
+            mesh = irr_driver->createTexturedQuadMesh(NULL,
+                m_unlocked_stuff[n].m_w, m_unlocked_stuff[n].m_h);
+            spm = SP::convertEVTStandard(mesh);
+            m_unlocked_stuff[n].m_side_2 = irr_driver->addMesh(spm,
+                "unlocked_picture",  m_unlocked_stuff[n].m_root_gift_node);
+            m_unlocked_stuff[n].m_side_2->setRotation
+                (core::vector3df(0.0f, 180.0f, 0.0f));
+            spm->getSPMeshBuffer(0)->uploadGLMesh();
+            spm->getSPMeshBuffer(0)->getSPTextures()[0] =
+                m_unlocked_stuff[n].m_sp_pictures[0];
+            spm->getSPMeshBuffer(0)->reloadTextureCompare();
+            spm->drop();
+#ifdef DEBUG
+            m_unlocked_stuff[n].m_root_gift_node->setName("unlocked track picture");
 #endif
         }
+#endif
         else if (!m_unlocked_stuff[n].m_pictures.empty())
         {
             video::SMaterial m;
             //m.MaterialType    = video::EMT_TRANSPARENT_ALPHA_CHANNEL;
-            m.BackfaceCulling = false;
+            m.BackfaceCulling = true;
             m.setTexture(0, m_unlocked_stuff[n].m_pictures[0]);
             m.AmbientColor  = video::SColor(255, 255, 255, 255);
             m.DiffuseColor  = video::SColor(255, 255, 255, 255);
@@ -337,18 +433,24 @@ void FeatureUnlockedCutScene::init()
                 irr_driver->createTexturedQuadMesh(&m,
                                                    m_unlocked_stuff[n].m_w,
                                                    m_unlocked_stuff[n].m_h);
-            m_unlocked_stuff[n].m_root_gift_node = irr_driver->getSceneManager()->addEmptySceneNode();
+            m_unlocked_stuff[n].m_root_gift_node =
+                irr_driver->getSceneManager()->addEmptySceneNode();
             irr_driver->setAllMaterialFlags(mesh);
-            m_unlocked_stuff[n].m_side_1 = irr_driver->addMesh(mesh, "unlocked_picture", m_unlocked_stuff[n].m_root_gift_node);
-            //mesh->drop();
+            m_unlocked_stuff[n].m_side_1 =
+                irr_driver->addMesh(mesh, "unlocked_picture",
+                                    m_unlocked_stuff[n].m_root_gift_node);
+            mesh->drop();
 
             mesh = irr_driver->createTexturedQuadMesh(&m,
                 m_unlocked_stuff[n].m_w,
                 m_unlocked_stuff[n].m_h);
             irr_driver->setAllMaterialFlags(mesh);
-            m_unlocked_stuff[n].m_side_2 = irr_driver->addMesh(mesh, "unlocked_picture",  m_unlocked_stuff[n].m_root_gift_node);
-            m_unlocked_stuff[n].m_side_2->setRotation(core::vector3df(0.0f, 180.0f, 0.0f));
-            //mesh->drop();
+            m_unlocked_stuff[n].m_side_2 =
+                irr_driver->addMesh(mesh, "unlocked_picture", 
+                                    m_unlocked_stuff[n].m_root_gift_node);
+            m_unlocked_stuff[n].m_side_2
+                ->setRotation(core::vector3df(0.0f, 180.0f, 0.0f));
+            mesh->drop();
 #ifdef DEBUG
             m_unlocked_stuff[n].m_root_gift_node->setName("unlocked track picture");
 #endif
@@ -358,8 +460,6 @@ void FeatureUnlockedCutScene::init()
             Log::error("FeatureUnlockedCutScene::init", "Malformed unlocked goody");
         }
     }
-
-    PlayerManager::getCurrentPlayer()->clearUnlocked();
 }   // init
 
 // ----------------------------------------------------------------------------
@@ -387,50 +487,49 @@ void FeatureUnlockedCutScene::onUpdate(float dt)
     m_global_time += dt;
     const int unlockedStuffCount = m_unlocked_stuff.size();
 
+    // When the chest has opened but the items are not yet at their final position
     if (m_global_time > GIFT_EXIT_FROM && m_global_time < GIFT_EXIT_TO)
     {
-        float progress_factor = (m_global_time - GIFT_EXIT_FROM) / (GIFT_EXIT_TO - GIFT_EXIT_FROM);
-        float smoothed_progress_factor = sin((progress_factor - 0.5f)*M_PI)/2.0f + 0.5f;
+        float progress_factor = (m_global_time - GIFT_EXIT_FROM) 
+                              / (GIFT_EXIT_TO - GIFT_EXIT_FROM);
+        float smoothed_progress_factor = 
+                                sinf((progress_factor - 0.5f)*M_PI)/2.0f + 0.5f;
 
         for (int n=0; n<unlockedStuffCount; n++)
         {
             if (m_unlocked_stuff[n].m_root_gift_node == NULL) continue;
 
             core::vector3df pos = m_unlocked_stuff[n].m_root_gift_node->getPosition();
-            pos.Y = sin(smoothed_progress_factor*2.5f)*10.0f;
+            pos.Y = sinf(smoothed_progress_factor*2.5f)*10.0f;
 
             // when there are more than 1 unlocked items, make sure they each
             // have their own path when they move
-            if (unlockedStuffCount > 1)
-            {
-                if (n == 1) pos.X -= 1.0f*dt*float( int((n + 1)/2) );
-                else if (n > 1) pos.X += 1.0f*dt*(n - 0.3f);
+            // and that they won't end offscreen in usual situations
 
-                //else            pos.X += 6.2f*dt*float( int((n + 1)/2) );
-                //Log::info("FeatureUnlockedCutScene", "Object %d moving by %f", n,
-                //    (n % 2 == 0 ? -4.0f : 4.0f)*float( n/2 + 1 ));
-            }
-            else
-            {
-                //pos.X -= 2.0f*dt;
-            }
-
-            //if (m_global_time > GIFT_EXIT_FROM + 2.0f) pos.Z -= 2.0f*dt;
+            // Put the trophy (item 0 in the unlocked stuff) in center
+            // For this, we exchange the position of the trophy with
+            // the item in the middle of the unlocked array.
+            int pos_value = (n == 0) ? unlockedStuffCount/2 :
+                            (n == unlockedStuffCount/2) ? 0 : n;
+            float offset = (float) pos_value - unlockedStuffCount/2.0f + 0.5f;
+            offset *= (unlockedStuffCount <= 3) ? 1.4f :
+                      (unlockedStuffCount <= 5) ? 1.2f : 1.0f;
+            pos.X += offset*dt;
 
             pos.Z = smoothed_progress_factor * -4.0f;
 
             m_unlocked_stuff[n].m_root_gift_node->setPosition(pos);
         }
     }
-    else if (m_global_time < GIFT_EXIT_FROM)
-    {
-    }
 
     for (int n=0; n<unlockedStuffCount; n++)
     {
         if (m_unlocked_stuff[n].m_root_gift_node == NULL) continue;
 
-        m_unlocked_stuff[n].m_root_gift_node->setRotation(m_unlocked_stuff[n].m_root_gift_node->getRotation() + core::vector3df(0.0f, dt*25.0f, 0.0f));
+        irr::core::vector3df new_rot = m_unlocked_stuff[n].m_root_gift_node
+                                                          ->getRotation() 
+                                     + core::vector3df(0.0f, dt*25.0f, 0.0f);
+        m_unlocked_stuff[n].m_root_gift_node->setRotation(new_rot);
 
         if (!m_unlocked_stuff[n].m_pictures.empty())
         {
@@ -443,34 +542,67 @@ void FeatureUnlockedCutScene::onUpdate(float dt)
 
                 if (textureID != previousTextureID)
                 {
-                    scene::IMesh* mesh = m_unlocked_stuff[n].m_side_1->getMesh();
+#ifndef SERVER_ONLY
+                    if (CVS->isGLSL())
+                    {
+                        SP::SPMesh* mesh = static_cast<SP::SPMeshNode*>
+                                           (m_unlocked_stuff[n].m_side_1)->getSPM();
 
-                    assert(mesh->getMeshBufferCount() == 1);
+                        assert(mesh->getMeshBufferCount() == 1);
+                        SP::SPMeshBuffer* mb = mesh->getSPMeshBuffer(0);
+                        mb->getSPTextures()[0] =
+                            m_unlocked_stuff[n].m_sp_pictures[textureID];
+                        mb->reloadTextureCompare();
 
-                    scene::IMeshBuffer* mb = mesh->getMeshBuffer(0);
+                        mesh = static_cast<SP::SPMeshNode*>
+                                    (m_unlocked_stuff[n].m_side_2)->getSPM();
+                        assert(mesh->getMeshBufferCount() == 1);
+                        mb = mesh->getSPMeshBuffer(0);
+                        mb->getSPTextures()[0] =
+                            m_unlocked_stuff[n].m_sp_pictures[textureID];
+                        mb->reloadTextureCompare();
 
-                    SMaterial& m = mb->getMaterial();
-                    m.setTexture(0, m_unlocked_stuff[n].m_pictures[textureID]);
+                        m_unlocked_stuff[n].m_curr_image = textureID;
+                    }
+                    else
+                    {
+                        scene::IMesh* mesh = 
+                            static_cast<scene::IMeshSceneNode*>
+                                       (m_unlocked_stuff[n].m_side_1)->getMesh();
 
-                    // FIXME: this mesh is already associated with this node. I'm calling this
-                    // to force irrLicht to refresh the display, now that Material has changed.
-                    m_unlocked_stuff[n].m_side_1->setMesh(mesh);
+                        assert(mesh->getMeshBufferCount() == 1);
 
-                    m_unlocked_stuff[n].m_curr_image = textureID;
+                        scene::IMeshBuffer* mb = mesh->getMeshBuffer(0);
+
+                        SMaterial& m = mb->getMaterial();
+                        m.setTexture(0, m_unlocked_stuff[n].m_pictures[textureID]);
+
+                        // FIXME: this mesh is already associated with this
+                        // node. I'm calling this to force irrLicht to refresh
+                        // the display, now that Material has changed.
+                        static_cast<scene::IMeshSceneNode*>
+                                 (m_unlocked_stuff[n].m_side_1)->setMesh(mesh);
+
+                        m_unlocked_stuff[n].m_curr_image = textureID;
 
 
-                    mesh = m_unlocked_stuff[n].m_side_2->getMesh();
-                    assert(mesh->getMeshBufferCount() == 1);
-                    mb = mesh->getMeshBuffer(0);
+                        mesh = static_cast<scene::IMeshSceneNode*>
+                                    (m_unlocked_stuff[n].m_side_2)->getMesh();
+                        assert(mesh->getMeshBufferCount() == 1);
+                        mb = mesh->getMeshBuffer(0);
 
-                    SMaterial& m2 = mb->getMaterial();
-                    m2.setTexture(0, m_unlocked_stuff[n].m_pictures[textureID]);
+                        SMaterial& m2 = mb->getMaterial();
+                        m2.setTexture(0, m_unlocked_stuff[n].m_pictures[textureID]);
 
-                    // FIXME: this mesh is already associated with this node. I'm calling this
-                    // to force irrLicht to refresh the display, now that Material has changed.
-                    m_unlocked_stuff[n].m_side_2->setMesh(mesh);
+                        // FIXME: this mesh is already associated with this
+                        // node. I'm calling this to force irrLicht to refresh
+                        // the display, now that Material has changed.
+                        static_cast<scene::IMeshSceneNode*>
+                            (m_unlocked_stuff[n].m_side_2)->setMesh(mesh);
 
-                    m_unlocked_stuff[n].m_curr_image = textureID;
+                        m_unlocked_stuff[n].m_curr_image = textureID;
+                    }
+#endif
                 }   // textureID != previousTextureID
             }   // if picture_count>1
         }   // if !m_unlocked_stuff[n].m_pictures.empty()
@@ -478,9 +610,14 @@ void FeatureUnlockedCutScene::onUpdate(float dt)
         float scale = m_unlocked_stuff[n].m_scale;
         if (m_global_time <= GIFT_EXIT_FROM)
             scale *= 0.1f;
-        else if (m_global_time > GIFT_EXIT_FROM && m_global_time < GIFT_EXIT_TO)
-            scale *= ((m_global_time - GIFT_EXIT_FROM) / (GIFT_EXIT_TO - GIFT_EXIT_FROM));
-        m_unlocked_stuff[n].m_root_gift_node->setScale(core::vector3df(scale, scale, scale));
+        else if (m_global_time > GIFT_EXIT_FROM &&
+                 m_global_time < GIFT_EXIT_TO)
+        {
+            scale *= (  (m_global_time - GIFT_EXIT_FROM)
+                       / (GIFT_EXIT_TO - GIFT_EXIT_FROM) );
+        }
+        m_unlocked_stuff[n].m_root_gift_node
+                            ->setScale(core::vector3df(scale, scale, scale));
     }   // for n<unlockedStuffCount
 
     assert(m_unlocked_stuff.size() > 0);
@@ -505,7 +642,8 @@ void FeatureUnlockedCutScene::onUpdate(float dt)
         for (int n=unlockedStuffCount - 1; n>=0; n--)
         {
             GUIEngine::getFont()->draw(m_unlocked_stuff[n].m_unlock_message,
-                                       core::rect< s32 >( 0, message_y, w, message_y + fontH ),
+                                       core::rect< s32 >( 0, message_y, w,
+                                                             message_y + fontH ),
                                        color2,
                                        true /* center h */, true /* center v */ );
             message_y -= (fontH + MARGIN);
@@ -519,7 +657,8 @@ void FeatureUnlockedCutScene::addUnlockedTrack(const Track* track)
 {
     if (track == NULL)
     {
-        Log::error("FeatureUnlockedCutScene::addUnlockedTrack", "Unlocked track does not exist");
+        Log::error("FeatureUnlockedCutScene::addUnlockedTrack",
+                   "Unlocked track does not exist");
         return;
     }
 
@@ -537,8 +676,11 @@ void FeatureUnlockedCutScene::addUnlockedGP(const GrandPrixData* gp)
     core::stringw gpname;
     if (gp == NULL)
     {
-        Log::error("FeatureUnlockedCutScene::addUnlockedGP", "Unlocked GP does not exist");
-        video::ITexture* WTF_image = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI,"main_help.png"));
+        Log::error("FeatureUnlockedCutScene::addUnlockedGP",
+                   "Unlocked GP does not exist");
+        const std::string t_name =
+            file_manager->getAsset(FileManager::GUI_ICON, "main_help.png");
+        video::ITexture* WTF_image = irr_driver->getTexture(t_name);
         images.push_back(WTF_image);
     }
     else
@@ -548,8 +690,11 @@ void FeatureUnlockedCutScene::addUnlockedGP(const GrandPrixData* gp)
 
         if (track_amount == 0)
         {
-            Log::error("FeatureUnlockedCutScene::addUnlockedGP", "Unlocked GP is empty");
-            video::ITexture* WTF_image = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI,"main_help.png"));
+            Log::error("FeatureUnlockedCutScene::addUnlockedGP",
+                       "Unlocked GP is empty");
+            video::ITexture* WTF_image =
+                irr_driver->getTexture( file_manager
+                                        ->getAsset(FileManager::GUI_ICON,"main_help.png"));
             images.push_back(WTF_image);
         }
 
@@ -557,8 +702,10 @@ void FeatureUnlockedCutScene::addUnlockedGP(const GrandPrixData* gp)
         {
             Track* track = track_manager->getTrack(gptracks[t]);
 
-            ITexture* tex = irr_driver->getTexture(track  ?  track->getScreenshotFile().c_str()
-                                                          : file_manager->getAsset(FileManager::GUI,"main_help.png"));
+            const std::string t_name = 
+                track ? track->getScreenshotFile()
+                      : file_manager->getAsset(FileManager::GUI_ICON, "main_help.png");
+            ITexture* tex = irr_driver->getTexture(t_name);
             images.push_back(tex);
         }
         gpname = gp->getName();
@@ -575,28 +722,28 @@ bool FeatureUnlockedCutScene::onEscapePressed()
     return false; // continueButtonPressed already pop'ed the menu
 }   // onEscapePressed
 
-// -------------------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 
 void FeatureUnlockedCutScene::continueButtonPressed()
 {
-    //if (m_global_time < GIFT_EXIT_TO)
-    //{
-    //    // If animation was not over yet, the button is used to skip the animation
-    //    while (m_global_time < GIFT_EXIT_TO)
-    //    {
-    //        // simulate all the steps of the animation until we reach the end
-    //        onUpdate(0.4f);
-    //        World::getWorld()->updateWorld(0.4f);
-    //    }
-    //}
-    //else
-    //{
+    if (m_global_time < GIFT_EXIT_TO)
+    {
+        // If animation was not over yet, the button is used to skip the animation
+        while (m_global_time < GIFT_EXIT_TO)
+        {
+            // simulate all the steps of the animation until we reach the end
+            onUpdate(0.4f);
+            World::getWorld()->updateWorld(stk_config->time2Ticks(0.4f));
+        }
+    }
+    else
+    {
         ((CutsceneWorld*)World::getWorld())->abortCutscene();
-    //}
+    }
 
 }   // continueButtonPressed
 
-// -------------------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 
 void FeatureUnlockedCutScene::eventCallback(GUIEngine::Widget* widget,
                                             const std::string& name,
@@ -608,7 +755,7 @@ void FeatureUnlockedCutScene::eventCallback(GUIEngine::Widget* widget,
     }
 }   // eventCallback
 
-// -------------------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 
 MusicInformation* FeatureUnlockedCutScene::getInGameMenuMusic() const
 {

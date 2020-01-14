@@ -20,7 +20,7 @@
 #include "challenges/unlock_manager.hpp"
 #include "config/player_manager.hpp"
 #include "config/user_config.hpp"
-#include "graphics/irr_driver.hpp"
+#include "graphics/stk_tex_manager.hpp"
 #include "guiengine/widget.hpp"
 #include "guiengine/widgets/dynamic_ribbon_widget.hpp"
 #include "guiengine/widgets/icon_button_widget.hpp"
@@ -29,6 +29,7 @@
 #include "states_screens/track_info_screen.hpp"
 #include "tracks/track.hpp"
 #include "tracks/track_manager.hpp"
+#include "utils/string_utils.hpp"
 #include "utils/translation.hpp"
 
 #include <iostream>
@@ -38,8 +39,6 @@ using namespace irr::core;
 using namespace irr::video;
 
 static const char ALL_TRACK_GROUPS_ID[] = "all";
-
-DEFINE_SCREEN_SINGLETON( EasterEggScreen );
 
 // -----------------------------------------------------------------------------
 
@@ -71,9 +70,10 @@ void EasterEggScreen::eventCallback(Widget* widget, const std::string& name, con
 
             if (selection == "random_track")
             {
+#ifdef DEBUG
                 RibbonWidget* tabs = this->getWidget<RibbonWidget>("trackgroups");
                 assert( tabs != NULL );
-
+#endif
                 if (m_random_track_list.empty()) return;
 
                 std::string track = m_random_track_list.front();
@@ -179,7 +179,7 @@ void EasterEggScreen::init()
     buildTrackList();
 
     // select old track for the game master (if found)
-    irr_driver->setTextureErrorMessage(
+    STKTexManager::getInstance()->setTextureErrorMessage(
               "While loading screenshot in track screen for last track '%s':",
               UserConfigParams::m_last_track);
     if (!tracks_widget->setSelection(UserConfigParams::m_last_track,
@@ -187,7 +187,7 @@ void EasterEggScreen::init()
     {
         tracks_widget->setSelection(0, PLAYER_ID_GAME_MASTER, true);
     }
-    irr_driver->unsetTextureErrorMessage();
+    STKTexManager::getInstance()->unsetTextureErrorMessage();
 }
 
 // -----------------------------------------------------------------------------
@@ -228,7 +228,7 @@ void EasterEggScreen::buildTrackList()
             }
             else
             {
-                tracks_widget->addItem(translations->fribidize(curr->getName()), curr->getIdent(),
+                tracks_widget->addItem(curr->getName(), curr->getIdent(),
                                        curr->getScreenshotFile(), 0,
                                        IconButtonWidget::ICON_PATH_TYPE_ABSOLUTE );
                 m_random_track_list.push_back(curr->getIdent());
@@ -259,7 +259,7 @@ void EasterEggScreen::buildTrackList()
             }
             else
             {
-                tracks_widget->addItem(translations->fribidize(curr->getName()), curr->getIdent(),
+                tracks_widget->addItem(curr->getName(), curr->getIdent(),
                                        curr->getScreenshotFile(), 0 /* no badge */,
                                        IconButtonWidget::ICON_PATH_TYPE_ABSOLUTE );
                 m_random_track_list.push_back(curr->getIdent());
@@ -267,7 +267,7 @@ void EasterEggScreen::buildTrackList()
         }
     }
 
-    tracks_widget->addItem(_("Random Track"), "random_track", "/gui/track_random.png",
+    tracks_widget->addItem(_("Random Track"), "random_track", "/gui/icons/track_random.png",
                            0 /* no badge */, IconButtonWidget::ICON_PATH_TYPE_RELATIVE);
 
     tracks_widget->updateItemDisplay();

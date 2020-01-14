@@ -40,7 +40,6 @@
 #include "IWriteFile.h"
 #include "IXMLWriter.h"
 
-#include "BuiltInFont.h"
 #include "os.h"
 
 namespace irr
@@ -77,8 +76,6 @@ CGUIEnvironment::CGUIEnvironment(io::IFileSystem* fs, video::IVideoDriver* drive
 	IGUIElementFactory* factory = new CDefaultGUIElementFactory(this);
 	registerGUIElementFactory(factory);
 	factory->drop();
-
-	loadBuiltInFont();
 
 	IGUISkin* skin = createSkin( gui::EGST_WINDOWS_METALLIC );
 	setSkin(skin);
@@ -164,29 +161,6 @@ CGUIEnvironment::~CGUIEnvironment()
 		Driver = 0;
 	}
 }
-
-
-void CGUIEnvironment::loadBuiltInFont()
-{
-	io::IReadFile* file = io::createMemoryReadFile(BuiltInFontData, BuiltInFontDataSize, DefaultFontName, false);
-
-	CGUIFont* font = new CGUIFont(this, DefaultFontName );
-	if (!font->load(file))
-	{
-		os::Printer::log("Error: Could not load built-in Font. Did you compile without the BMP loader?", ELL_ERROR);
-		font->drop();
-		file->drop();
-		return;
-	}
-
-	SFont f;
-	f.NamedPath.setPath(DefaultFontName);
-	f.Font = font;
-	Fonts.push_back(f);
-
-	file->drop();
-}
-
 
 //! draws all gui elements
 void CGUIEnvironment::drawAll()
@@ -429,7 +403,7 @@ void CGUIEnvironment::OnPostRender( u32 time )
 
 		pos.constrainTo(getAbsolutePosition());
 
-		ToolTip.Element = addStaticText(HoveredNoSubelement->getToolTipText().c_str(), pos, true, true, this, -1, true);
+		ToolTip.Element = addStaticText(HoveredNoSubelement->getToolTipText(), pos, true, true, this, -1, true);
 		ToolTip.Element->setOverrideColor(getSkin()->getColor(EGDC_TOOLTIP));
 		ToolTip.Element->setBackgroundColor(getSkin()->getColor(EGDC_TOOLTIP_BACKGROUND));
 		ToolTip.Element->setOverrideFont(getSkin()->getFont(EGDF_TOOLTIP));
@@ -587,7 +561,7 @@ bool CGUIEnvironment::postEventFromUser(const SEvent& event)
 			// Send focus changing event
 			if (event.EventType == EET_KEY_INPUT_EVENT &&
 				event.KeyInput.PressedDown &&
-				event.KeyInput.Key == KEY_TAB)
+				event.KeyInput.Key == IRR_KEY_TAB)
 			{
 				IGUIElement *next = getNextElement(event.KeyInput.Shift, event.KeyInput.Control);
 				if (next && next != Focus)
@@ -599,18 +573,6 @@ bool CGUIEnvironment::postEventFromUser(const SEvent& event)
 
 		}
 		break;
-#ifdef _IRR_COMPILE_WITH_WINDOWS_DEVICE_
-	case EET_IMPUT_METHOD_EVENT:
-		{
-			// todo : if CGUIEdit has not focus, close input method. Use WM_NOTIFY message.
-			if (Focus)
-			{
-				_IRR_IMPLEMENT_MANAGED_MARSHALLING_BUGFIX;
-				return Focus->OnEvent(event);
-			}
-		}
-		break;
-#endif
 	default:
 		break;
 	} // end switch
@@ -1258,7 +1220,7 @@ IGUIColorSelectDialog* CGUIEnvironment::addColorSelectDialog(const wchar_t* titl
 
 
 //! adds a static text. The returned pointer must not be dropped.
-IGUIStaticText* CGUIEnvironment::addStaticText(const wchar_t* text,
+IGUIStaticText* CGUIEnvironment::addStaticText(const core::stringw& text,
 				const core::rect<s32>& rectangle,
 				bool border, bool wordWrap,
 				IGUIElement* parent, s32 id, bool background)

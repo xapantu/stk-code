@@ -99,7 +99,8 @@ namespace GUIEngine
 
  \n
  \subsection widget1 WTYPE_RIBBON
- <em> Names in XML files: </em> \c "ribbon", \c "buttonbar", \c "tabs"
+ <em> Names in XML files: </em> \c "ribbon", \c "buttonbar", \c "tabs",
+ \c"vertical-tabs"
 
  Appears as an horizontal bar containing elements laid in a row, each being
  and icon and/or a label
@@ -309,11 +310,12 @@ namespace GUIEngine
  For icon buttons. A different icon to show when the item is focused.
 
  \n
- \subsection prop4 PROP_TEXT_ALIGN
- <em> Name in XML files: </em> \c "text_align"
+ \subsection prop4 PROP_TEXT_ALIGN, PROP_TEXT_VALIGN
+ <em> Name in XML files: </em> \c "text_align", "text_valign"
 
  used exclusively by label components. Value can be "right" or "center" (left
- used if not specified).
+ used if not specified) for "text_align", or "top"/"center"/"bottom" for
+ valign.
 
  \n
  \subsection prop5 PROP_WORD_WRAP
@@ -350,9 +352,9 @@ namespace GUIEngine
  size (parent size means the parent \<div\> or the whole screen if none). A
  negative value can also be passed to start coordinate from right and/or
  bottom, instead of starting from top-left corner as usual.
- Note that in many cases, it is not necessary to manually a position. Div
+ Note that in many cases, it is not necessary to manually set a position. Div
  layouts will often manage that for you (see PROP_LAYOUT). Other widgets will
- also automativally manage the position and size of their children, for
+ also automatically manage the position and size of their children, for
  instance ribbons.
 
  \n
@@ -366,7 +368,7 @@ namespace GUIEngine
  Note that in many cases, it is not necessary to manually a size. Div layouts
  will often manage that for you (see PROP_LAYOUT). In addition, sizes are
  automatically calculated for widgets made of icons and/or text like labels
- and plain icons. Other widgets will also automativally manage the position
+ and plain icons. Other widgets will also automatically manage the position
  and size of their children, for instance ribbons.
 
  Another possible value is "fit", which will make a \<div\> fit to its
@@ -656,15 +658,25 @@ namespace GUIEngine
 
 #include "guiengine/engine.hpp"
 
+#include "challenges/story_mode_timer.hpp"
 #include "config/user_config.hpp"
-#include "graphics/2dutils.hpp"
+#include "font/bold_face.hpp"
+#include "font/digit_face.hpp"
+#include "font/font_manager.hpp"
+#include "font/font_settings.hpp"
+#include "font/regular_face.hpp"
 #include "input/input_manager.hpp"
 #include "io/file_manager.hpp"
+#ifndef SERVER_ONLY
+#include "graphics/2dutils.hpp"
+#endif
+#include "graphics/irr_driver.hpp"
 #include "guiengine/event_handler.hpp"
 #include "guiengine/modaldialog.hpp"
 #include "guiengine/message_queue.hpp"
 #include "guiengine/scalable_font.hpp"
 #include "guiengine/screen.hpp"
+#include "guiengine/screen_keyboard.hpp"
 #include "guiengine/skin.hpp"
 #include "guiengine/widget.hpp"
 #include "guiengine/dialog_queue.hpp"
@@ -672,11 +684,16 @@ namespace GUIEngine
 #include "modes/cutscene_world.hpp"
 #include "modes/world.hpp"
 #include "states_screens/race_gui_base.hpp"
+#include "tips/tips_manager.hpp"
+#include "utils/debug.hpp"
+#include "utils/string_utils.hpp"
+#include "utils/translation.hpp"
 
+#include <algorithm>
 #include <iostream>
 #include <assert.h>
 #include <irrlicht.h>
-#include "graphics/glwrap.hpp"
+#include <mutex>
 
 using namespace irr::gui;
 using namespace irr::video;
@@ -688,8 +705,6 @@ namespace GUIEngine
     {
         IGUIEnvironment* g_env;
         Skin* g_skin = NULL;
-        FTEnvironment* g_ft_env = NULL;
-        GlyphPageCreator* g_gp_creator = NULL;
         ScalableFont *g_font;
         ScalableFont *g_outline_font;
         ScalableFont *g_large_font;
@@ -707,6 +722,10 @@ namespace GUIEngine
         int large_font_height;
         int small_font_height;
         int title_font_height;
+#ifdef ANDROID
+        std::mutex m_gui_functions_mutex;
+        std::vector<std::function<void()> > m_gui_functions;
+#endif
     }
     using namespace Private;
 
@@ -728,7 +747,7 @@ namespace GUIEngine
         irr::core::stringw m_message;
         float m_time;
 
-        MenuMessage(const wchar_t* message, const float time)
+        MenuMessage(const core::stringw& message, const float time)
                    : m_message(message), m_time(time)
         {
         }
@@ -737,7 +756,7 @@ namespace GUIEngine
     std::vector<MenuMessage> gui_messages;
 
     // ------------------------------------------------------------------------
-    void showMessage(const wchar_t* message, const float time)
+    void showMessage(const core::stringw& message, const float time)
     {
         // check for duplicates
         const int count = (int) gui_messages.size();
@@ -817,6 +836,7 @@ namespace GUIEngine
         needsUpdate.clearWithoutDeleting();
 
         gui_messages.clear();
+        MessageQueue::clear();
     }   // clear
 
     // ------------------------------------------------------------------------
@@ -847,7 +867,7 @@ namespace GUIEngine
         {
             frame++;
             if (frame == 2)
-                GUIEngine::EventHandler::get()->startAcceptingEvents();
+                GUIEngine::EventHandler::get()->setAcceptEvents(true);
         }
     }
     // ------------------------------------------------------------------------
@@ -863,6 +883,7 @@ namespace GUIEngine
 
     void clearScreenCache()
     {
+        StateManager::get()->clearMenuStack();
         Screen* screen;
         for_in (screen, g_loaded_screens)
         {
@@ -875,7 +896,7 @@ namespace GUIEngine
 
     // ------------------------------------------------------------------------
 
-    void switchToScreen(const char* screen_name)
+    void switchToScreen(Screen* screen)
     {
         needsUpdate.clearWithoutDeleting();
 
@@ -886,12 +907,12 @@ namespace GUIEngine
         Widget::resetIDCounters();
 
         // check if we already loaded this screen
-        const int screen_amount = g_loaded_screens.size();
-        for(int n=0; n<screen_amount; n++)
+        Screen* loaded_screen;
+        for_in (loaded_screen, g_loaded_screens)
         {
-            if (g_loaded_screens[n].getName() == screen_name)
+            if (loaded_screen == screen)
             {
-                g_current_screen = g_loaded_screens.get(n);
+                g_current_screen = loaded_screen;
                 break;
             }
         }
@@ -903,6 +924,7 @@ namespace GUIEngine
             return;
         }
 
+        Debug::closeDebugMenu();
         g_current_screen->beforeAddingWidget();
 
         // show screen
@@ -918,20 +940,21 @@ namespace GUIEngine
 
     // ------------------------------------------------------------------------
 
-    void removeScreen(const char* name)
+    void removeScreen(Screen* screen)
     {
-        const int screen_amount = g_loaded_screens.size();
-        for(int n=0; n<screen_amount; n++)
+        int n = 0;
+        Screen* loaded_screen;
+        for_in (loaded_screen, g_loaded_screens)
         {
-            if (g_loaded_screens[n].getName() == name)
+            if (loaded_screen == screen)
             {
-                g_current_screen = g_loaded_screens.get(n);
-                g_current_screen->unload();
-                delete g_current_screen;
+                screen->unload();
+                delete screen;
                 g_current_screen = NULL;
                 g_loaded_screens.remove(n);
                 break;
             }
+            n++;
         }
     }
 
@@ -954,11 +977,6 @@ namespace GUIEngine
         //if (g_skin != NULL) delete g_skin;
         g_skin = NULL;
 
-        g_ft_env->~FTEnvironment();
-        g_ft_env = NULL;
-        g_gp_creator->~GlyphPageCreator();
-        g_gp_creator = NULL;
-
         for (unsigned int i=0; i<g_loaded_screens.size(); i++)
         {
             g_loaded_screens[i].unload();
@@ -967,38 +985,46 @@ namespace GUIEngine
         g_current_screen = NULL;
         needsUpdate.clearWithoutDeleting();
 
+        if (ScreenKeyboard::isActive()) ScreenKeyboard::dismiss();
         if (ModalDialog::isADialogActive()) ModalDialog::dismiss();
 
-        //delete g_font;
-        g_font->drop();
-        g_font = NULL;
-        //delete g_title_font;
-        g_title_font->drop();
-        g_title_font = NULL;
-        //delete g_small_font;
-        g_small_font->drop();
-        g_small_font = NULL;
-        g_large_font->drop();
-        g_large_font = NULL;
-        g_digit_font->drop();
-        g_digit_font = NULL;
-        g_outline_font->drop();
-        g_outline_font = NULL;
+        if (g_font)
+        {
+            //delete g_font;
+            g_font->drop();
+            g_font = NULL;
+        }
+        if (g_title_font)
+        {
+            //delete g_title_font;
+            g_title_font->drop();
+            g_title_font = NULL;
+        }
+        if (g_small_font)
+        {
+            //delete g_small_font;
+            g_small_font->drop();
+            g_small_font = NULL;
+        }
+        if (g_large_font)
+        {
+            g_large_font->drop();
+            g_large_font = NULL;
+        }
+        if (g_digit_font)
+        {
+            g_digit_font->drop();
+            g_digit_font = NULL;
+        }
+        if (g_outline_font)
+        {
+            g_outline_font->drop();
+            g_outline_font = NULL;
+        }
 
         // nothing else to delete for now AFAIK, irrlicht will automatically
         // kill everything along the device
     }   // cleanUp
-
-    // -----------------------------------------------------------------------
-     void cleanHollowCopyFont()
-    {
-        g_small_font->drop();
-        g_small_font = NULL;
-        g_large_font->drop();
-        g_large_font = NULL;
-        g_outline_font->drop();
-        g_outline_font = NULL;
-    }   // cleanHollowCopyFont
 
     // -----------------------------------------------------------------------
 
@@ -1014,8 +1040,22 @@ namespace GUIEngine
     }   // deallocate
 
     // -----------------------------------------------------------------------
+    void resetGlobalVariables()
+    {
+        // Try to clear global variable for android to avoid crashes
+        needsUpdate.m_contents_vector.clear();
+        g_loaded_screens.m_contents_vector.clear();
+        g_current_screen = NULL;
+        gui_messages.clear();
+        MessageQueue::resetGlobalVariables();
+#ifdef ANDROID
+        m_gui_functions.clear();
+#endif
+    }   // resetGlobalVariables
+
+    // -----------------------------------------------------------------------
     void init(IrrlichtDevice* device_a, IVideoDriver* driver_a,
-              AbstractStateManager* state_manager )
+              AbstractStateManager* state_manager, bool loading)
     {
         g_env = device_a->getGUIEnvironment();
         g_device = device_a;
@@ -1026,9 +1066,6 @@ namespace GUIEngine
         {
             g_focus_for_player[n] = NULL;
         }
-
-        g_ft_env = new FTEnvironment();
-        g_gp_creator = new GlyphPageCreator();
 
         /*
          To make the g_font a little bit nicer, we load an external g_font
@@ -1063,84 +1100,48 @@ namespace GUIEngine
             }
         }
 
-        ScalableFont* digit_font =new ScalableFont(g_env,T_DIGIT);
-        digit_font->setMonospaceDigits(true);
+        RegularFace* regular = font_manager->getFont<RegularFace>();
+        BoldFace* bold = font_manager->getFont<BoldFace>();
+        DigitFace* digit = font_manager->getFont<DigitFace>();
+
+        ScalableFont* digit_font = new ScalableFont(digit);
         g_digit_font = digit_font;
 
-        ScalableFont* sfont2 =new ScalableFont(g_env,T_BOLD);
-        sfont2->setKerningWidth(0);
-        // Because the fallback font is much smaller than the title font:
-        sfont2->m_fallback_font_scale = 2.0f;
-        sfont2->m_fallback_kerning_width = 0;
-
-        ScalableFont* sfont =new ScalableFont(g_env,T_NORMAL);
-        sfont->setKerningHeight(0);
-        sfont->setScale(1);
+        ScalableFont* sfont = new ScalableFont(regular);
         g_font = sfont;
         Private::font_height = g_font->getDimension( L"X" ).Height;
 
-        ScalableFont* sfont_larger = sfont->getHollowCopy();
+        ScalableFont* sfont_larger = new ScalableFont(regular);
         sfont_larger->setScale(1.4f);
-        sfont_larger->setKerningHeight(0);
         g_large_font = sfont_larger;
-
-        g_outline_font = sfont->getHollowCopy();
-        g_outline_font->m_black_border = true;
-
         Private::large_font_height = g_large_font->getDimension( L"X" ).Height;
 
-        ScalableFont* sfont_smaller = sfont->getHollowCopy();
+        g_outline_font = new ScalableFont(regular);
+        g_outline_font->getFontSettings()->setBlackBorder(true);
+
+        ScalableFont* sfont_smaller = new ScalableFont(regular);
         sfont_smaller->setScale(0.8f);
-        sfont_smaller->setKerningHeight(0);
         g_small_font = sfont_smaller;
+        Private::small_font_height = g_small_font->getDimension( L"X" ).Height;
 
-        Private::small_font_height =
-            g_small_font->getDimension( L"X" ).Height;
-
-        sfont2->m_fallback_font = sfont;
-        sfont2->setScale(1);
-        sfont2->m_black_border = true;
+        ScalableFont* sfont2 = new ScalableFont(bold);
         g_title_font = sfont2;
         Private::title_font_height =
             g_title_font->getDimension( L"X" ).Height;
-
 
         if (g_font != NULL) g_skin->setFont(g_font);
 
         // set event receiver
         g_device->setEventReceiver(EventHandler::get());
 
-        g_device->getVideoDriver()
-                ->beginScene(true, true, video::SColor(255,100,101,140));
-        renderLoading();
-        g_device->getVideoDriver()->endScene();
+        if (loading)
+        {
+            g_device->getVideoDriver()
+                    ->beginScene(true, true, video::SColor(255,100,101,140));
+            renderLoading(true, true);
+            g_device->getVideoDriver()->endScene();
+        }
     }   // init
-
-    // -----------------------------------------------------------------------
-    void reloadHollowCopyFont(irr::gui::ScalableFont* sfont)
-    {
-        //Base on the init function above
-        sfont->setScale(1);
-        sfont->setKerningHeight(0);
-        Private::font_height = sfont->getDimension( L"X" ).Height;
-
-        ScalableFont* sfont_larger = sfont->getHollowCopy();
-        sfont_larger->setScale(1.4f);
-        sfont_larger->setKerningHeight(0);
-        g_large_font = sfont_larger;
-
-        g_outline_font = sfont->getHollowCopy();
-        g_outline_font->m_black_border = true;
-
-        Private::large_font_height = g_large_font->getDimension( L"X" ).Height;
-
-        ScalableFont* sfont_smaller = sfont->getHollowCopy();
-        sfont_smaller->setScale(0.8f);
-        sfont_smaller->setKerningHeight(0);
-        g_small_font = sfont_smaller;
-
-        Private::small_font_height =  g_small_font->getDimension( L"X" ).Height;
-    }   // reloadHollowCopyFont
 
     // -----------------------------------------------------------------------
     void reloadSkin()
@@ -1173,23 +1174,79 @@ namespace GUIEngine
     }   // reloadSkin
 
     // -----------------------------------------------------------------------
-
-    void render(float elapsed_time)
+    void addGUIFunctionBeforeRendering(std::function<void()> func)
     {
+#ifdef ANDROID
+        std::lock_guard<std::mutex> lock(m_gui_functions_mutex);
+        m_gui_functions.push_back(func);
+#endif
+    }   // addGUIFunctionBeforeRendering
+
+    // -----------------------------------------------------------------------
+    /** \brief called on every frame to trigger the rendering of the GUI.
+     *  \param elapsed_time Time since last rendering calls (in seconds).
+     *  \param is_loading True if the rendering is called during loading of world,
+     *         in which case world, physics etc must not be accessed.
+     */
+    void render(float elapsed_time, bool is_loading)
+    {
+#ifndef SERVER_ONLY
         GUIEngine::dt = elapsed_time;
 
         // Not yet initialized, or already cleaned up
         if (g_skin == NULL) return;
 
+#ifdef ANDROID
+        // Run all GUI functions first (if any)
+        std::unique_lock<std::mutex> ul(m_gui_functions_mutex);
+        if (!m_gui_functions.empty())
+        {
+            std::vector<std::function<void()> > functions;
+            std::swap(functions, m_gui_functions);
+            ul.unlock();
+            for (auto& f : functions)
+                f();
+        }
+        else
+            ul.unlock();
+#endif
+
+        GameState gamestate = g_state_manager->getGameState();
+
+        // ---- some menus may need updating
+        bool dialog_opened = false;
+        
+        if (ScreenKeyboard::isActive())
+        {
+            ScreenKeyboard::getCurrent()->onUpdate(dt);
+            dialog_opened = true;
+        }
+        else if (ModalDialog::isADialogActive())
+        {
+            ModalDialog::getCurrent()->onUpdate(dt);
+            dialog_opened = true;
+        }
+            
+        if (gamestate != GAME || is_loading)
+        {
+            Screen* screen = getCurrentScreen();
+
+            if (screen != NULL && 
+                (!dialog_opened || screen->getUpdateInBackground()))
+            {
+                screen->onUpdate(elapsed_time);
+            }
+        }
+        
+        gamestate = g_state_manager->getGameState();
+
         // ---- menu drawing
 
         // draw background image and sections
 
-        const GameState gamestate = g_state_manager->getGameState();
-
-        if (gamestate == MENU &&
-            GUIEngine::getCurrentScreen() != NULL &&
-            !GUIEngine::getCurrentScreen()->needs3D())
+        if ( (gamestate == MENU &&
+              GUIEngine::getCurrentScreen() != NULL &&
+             !GUIEngine::getCurrentScreen()->needs3D()  ) || is_loading)
         {
             g_skin->drawBgImage();
         }
@@ -1209,25 +1266,10 @@ namespace GUIEngine
         // further render)
         g_env->drawAll();
 
-        // ---- some menus may need updating
-        if (gamestate != GAME)
+        if (gamestate == GAME && !is_loading && !dialog_opened)
         {
-            if (ModalDialog::isADialogActive())
-                ModalDialog::getCurrent()->onUpdate(dt);
-            else
-                getCurrentScreen()->onUpdate(elapsed_time);
-        }
-        else
-        {
-            if (ModalDialog::isADialogActive())
-            {
-                ModalDialog::getCurrent()->onUpdate(dt);
-            }
-            else
-            {
-                RaceGUIBase* rg = World::getWorld()->getRaceGUI();
-                if (rg != NULL) rg->renderGlobal(elapsed_time);
-            }
+            RaceGUIBase* rg = World::getWorld()->getRaceGUI();
+            if (rg != NULL) rg->renderGlobal(elapsed_time);
         }
 
         MessageQueue::update(elapsed_time);
@@ -1238,10 +1280,18 @@ namespace GUIEngine
             if (rg != NULL) rg->renderGlobal(elapsed_time);
         }
 
-        if (gamestate == MENU || gamestate == INGAME_MENU)
+        if (gamestate != GAME || is_loading)
         {
-            g_skin->drawTooltips();
+            Screen* screen = getCurrentScreen();
+
+            if (screen != NULL && 
+                (!dialog_opened || screen->getUpdateInBackground()))
+            {
+                screen->onDraw(elapsed_time);
+            }
         }
+
+        g_skin->drawTooltips();
 
         if (gamestate != GAME && !gui_messages.empty())
         {
@@ -1263,7 +1313,6 @@ namespace GUIEngine
                                                   y_from - count*text_height),
                                 core::dimension2d<s32>(screen_size.Width,
                                                        text_height) );
-
                     GL32_draw2DRectangle(SColor(255,252,248,230),
                                                        msgRect);
                     Private::g_font->draw((*it).m_message.c_str(),
@@ -1284,6 +1333,12 @@ namespace GUIEngine
         // draw FPS if enabled
         if ( UserConfigParams::m_display_fps ) irr_driver->displayFPS();
 
+        // draw speedrun timer if enabled
+        if ( UserConfigParams::m_speedrun_mode ) irr_driver->displayStoryModeTimer();
+        // Update the story mode and speedrun timer (even if not enabled)
+        story_mode_timer->unpauseTimer(/* exit loading pause */ true);
+        story_mode_timer->updateTimer();
+
         g_driver->enableMaterial2D(false);
 
 
@@ -1299,19 +1354,34 @@ namespace GUIEngine
             DemoWorld::resetIdleTime();
         }
 
-
+#endif
     }   // render
 
     // -----------------------------------------------------------------------
     std::vector<irr::video::ITexture*> g_loading_icons;
+    core::stringw g_tips_string;
 
-    void renderLoading(bool clearIcons)
+    void clearLoadingTips()
     {
+        g_tips_string = L"";
+    }
+
+    // -----------------------------------------------------------------------
+    void renderLoading(bool clearIcons, bool launching, bool update_tips)
+    {
+#ifndef SERVER_ONLY
+        if (update_tips)
+        {
+            core::stringw tip = TipsManager::get()->getTip("general");
+            //I18N: Tip shown in gui for giving player hints
+            g_tips_string = _("Tip: %s", tip);
+        }
+
         if (clearIcons) g_loading_icons.clear();
 
         g_skin->drawBgImage();
         ITexture* loading =
-            irr_driver->getTexture(file_manager->getAsset(FileManager::GUI,
+            irr_driver->getTexture(file_manager->getAsset(FileManager::GUI_ICON,
                                                           "loading.png"));
 
         if(!loading)
@@ -1321,17 +1391,22 @@ namespace GUIEngine
         }
         const int texture_w = loading->getSize().Width;
         const int texture_h = loading->getSize().Height;
+        const int stretched_size = getTitleFontHeight() * 1.5f;
 
         core::dimension2d<u32> frame_size =
             GUIEngine::getDriver()->getCurrentRenderTargetSize();
         const int screen_w = frame_size.Width;
         const int screen_h = frame_size.Height;
 
+        // used in drawing tips
+        const int text_height = getFontHeight() * 1.2f;
+        const int y_from = screen_h - text_height * 0.3f;
+
         const core::rect< s32 > dest_area =
-            core::rect< s32 >(screen_w/2 - texture_w/2,
-                              screen_h/2 - texture_h/2,
-                              screen_w/2 + texture_w/2,
-                              screen_h/2 + texture_h/2);
+            core::rect< s32 >(screen_w/2 - stretched_size/2,
+                              screen_h/2 - stretched_size/2,
+                              screen_w/2 + stretched_size/2,
+                              screen_h/2 + stretched_size/2);
 
         const core::rect< s32 > source_area =
             core::rect< s32 >(0, 0, texture_w, texture_h);
@@ -1344,16 +1419,27 @@ namespace GUIEngine
         // the Material2D
         irr_driver->getVideoDriver()->enableMaterial2D();
         g_title_font->draw(_("Loading"),
-                           core::rect< s32 >( 0, screen_h/2 + texture_h/2,
+                           core::rect< s32 >( 0, screen_h/2 + stretched_size/2,
                                               screen_w, screen_h ),
                            SColor(255,255,255,255),
                            true/* center h */, false /* center v */ );
 
+        // Draw a tip during loading
+        if (!g_tips_string.empty())
+        {
+            core::rect<s32> tipRect(core::position2d<s32>(0, y_from - text_height),
+                                    core::dimension2d<s32>(screen_w, text_height));
+            GL32_draw2DRectangle(Skin::getColor("tips_background::neutral"), tipRect);
+            Private::g_font->draw(g_tips_string, tipRect,
+                Skin::getColor("brighttext::neutral"),
+                true /* hcenter */, true /* vcenter */);
+        }
+
         const int icon_count = (int)g_loading_icons.size();
-        const int icon_size = (int)(screen_w / 16.0f);
+        const int icon_size = (int)(std::min(screen_w, screen_h) / 12.0f);
         const int ICON_MARGIN = 6;
         int x = ICON_MARGIN;
-        int y = screen_h - icon_size - ICON_MARGIN;
+        int y = y_from - icon_size - ICON_MARGIN - text_height * 1.2f;
         for (int n=0; n<icon_count; n++)
         {
             draw2DImage(g_loading_icons[n],
@@ -1370,7 +1456,27 @@ namespace GUIEngine
                 x = ICON_MARGIN;
             }
         }
+        // This will avoid no response in windows, also allow showing loading
+        // icon in apple device, because apple device only update render
+        // buffer if you poll the mainloop
+        if (!ProfileWorld::isNoGraphics())
+        {
+            g_device->setEventReceiver(NULL);
+            g_device->run();
+            g_device->setEventReceiver(EventHandler::get());
+        }
 
+        // If launch is finished, pause & display the story mode timers
+        if ( !launching)
+        {
+            // For speedruns only, display the timer on loading screens
+            if (UserConfigParams::m_speedrun_mode)
+                irr_driver->displayStoryModeTimer();
+
+            //pause the timer during loading
+            story_mode_timer->pauseTimer(true);
+        }
+#endif
     } // renderLoading
 
     // -----------------------------------------------------------------------
@@ -1383,7 +1489,7 @@ namespace GUIEngine
 
             g_device->getVideoDriver()
                     ->beginScene(true, true, video::SColor(255,100,101,140));
-            renderLoading(false);
+            renderLoading(false, true, false);
             g_device->getVideoDriver()->endScene();
         }
         else
@@ -1397,12 +1503,19 @@ namespace GUIEngine
 
     Widget* getWidget(const char* name)
     {
+        if (ScreenKeyboard::isActive())
+        {
+            Widget* widget = ScreenKeyboard::getCurrent()->getWidget(name);
+            if (widget != NULL) 
+                return widget;
+        }
+        
         // if a modal dialog is shown, search within it too
         if (ModalDialog::isADialogActive())
         {
-            Widget* widgetWithinDialog =
-                ModalDialog::getCurrent()->getWidget(name);
-            if (widgetWithinDialog != NULL) return widgetWithinDialog;
+            Widget* widget = ModalDialog::getCurrent()->getWidget(name);
+            if (widget != NULL) 
+                return widget;
         }
 
         Screen* screen = getCurrentScreen();
@@ -1415,12 +1528,19 @@ namespace GUIEngine
     // -----------------------------------------------------------------------
     Widget* getWidget(const int id)
     {
+        if (ScreenKeyboard::isActive())
+        {
+            Widget* widget = ScreenKeyboard::getCurrent()->getWidget(id);
+            if (widget != NULL) 
+                return widget;
+        }
+        
         // if a modal dialog is shown, search within it too
         if (ModalDialog::isADialogActive())
         {
-            Widget* widgetWithinDialog =
-                ModalDialog::getCurrent()->getWidget(id);
-            if (widgetWithinDialog != NULL) return widgetWithinDialog;
+            Widget* widget = ModalDialog::getCurrent()->getWidget(id);
+            if (widget != NULL) 
+                return widget;
         }
 
         Screen* screen = getCurrentScreen();

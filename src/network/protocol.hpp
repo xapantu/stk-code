@@ -23,12 +23,14 @@
 #ifndef PROTOCOL_HPP
 #define PROTOCOL_HPP
 
-#include "network/network_string.hpp"
-#include "utils/leak_check.hpp"
 #include "utils/no_copy.hpp"
 #include "utils/types.hpp"
 
+#include <memory>
+#include <stddef.h>
+
 class Event;
+class NetworkString;
 class STKPeer;
 
 
@@ -42,13 +44,11 @@ enum ProtocolType
     PROTOCOL_NONE              = 0x00,  //!< No protocol type assigned.
     PROTOCOL_CONNECTION        = 0x01,  //!< Protocol that deals with client-server connection.
     PROTOCOL_LOBBY_ROOM        = 0x02,  //!< Protocol that is used during the lobby room phase.
-    PROTOCOL_START_GAME        = 0x03,  //!< Protocol used when starting the game.
-    PROTOCOL_SYNCHRONIZATION   = 0x04,  //!<Protocol used to synchronize clocks.
-    PROTOCOL_KART_UPDATE       = 0x05,  //!< Protocol to update karts position, rotation etc...
-    PROTOCOL_GAME_EVENTS       = 0x06,  //!< Protocol to communicate the game events.
-    PROTOCOL_CONTROLLER_EVENTS = 0x07,  //!< Protocol to transfer controller modifications
+    PROTOCOL_GAME_EVENTS       = 0x03,  //!< Protocol to communicate the game events.
+    PROTOCOL_CONTROLLER_EVENTS = 0x04,  //!< Protocol to transfer controller modifications
+    PROTOCOL_SILENT            = 0x05,  //!< Used for protocols that do not subscribe to any network event.
+    PROTOCOL_MAX                     ,  //!< Maximum number of different protocol types
     PROTOCOL_SYNCHRONOUS       = 0x80,  //!< Flag, indicates synchronous delivery
-    PROTOCOL_SILENT            = 0xff   //!< Used for protocols that do not subscribe to any network event.
 };   // ProtocolType
 
 // ----------------------------------------------------------------------------
@@ -87,24 +87,20 @@ public:
  *  to make any network job.
  * \ingroup network
  */
-class Protocol : public NoCopy
+class Protocol : public std::enable_shared_from_this<Protocol>,
+                 public NoCopy
 {
-    LEAK_CHECK()
 protected:
     /** The type of the protocol. */
     ProtocolType m_type;
 
-    /** The callback object, if needed. */
-    CallbackObject* m_callback_object;
+    /** True if this protocol should receive connection events. */
+    bool m_handle_connections;
 
-    /** The state this protocol is in (e.g. running, paused, ...). */
-    ProtocolState m_state;
-
-    /** The unique id of the protocol. */
-    uint32_t        m_id;
-
+    /** TRue if this protocol should recceiver disconnection events. */
+    bool m_handle_disconnections;
 public:
-             Protocol(ProtocolType type, CallbackObject* callback_object=NULL);
+             Protocol(ProtocolType type);
     virtual ~Protocol();
 
     /** \brief Called when the protocol is going to start. Must be re-defined
@@ -114,58 +110,21 @@ public:
 
     /** \brief Called by the protocol listener, synchronously with the main
      *  loop. Must be re-defined.*/
-    virtual void update() = 0;
+    virtual void update(int ticks) = 0;
 
     /** \brief Called by the protocol listener as often as possible.
      *  Must be re-defined. */
     virtual void asynchronousUpdate() = 0;
 
     /// functions to check incoming data easily
-    bool checkDataSizeAndToken(Event* event, int minimum_size);
-    bool isByteCorrect(Event* event, int byte_nb, int value);
-    void sendMessageToPeersChangingToken(uint8_t type,
-                                         const NetworkString &message);
-    void sendMessage(const NetworkString& message,
-                     bool reliable = true);
-    void sendMessage(STKPeer* peer, const NetworkString& message,
-                     bool reliable = true);
-    void sendSynchronousMessage(const NetworkString& message, 
-                                bool reliable=true);
-    void sendSynchronousMessage(STKPeer* peer, const NetworkString& message,
-                                bool reliable = true);
-    void requestStart();
-    void requestPause();
-    void requestUnpause();
-    void requestTerminate();
-
-    // ------------------------------------------------------------------------
-    /** \brief Called when the protocol is paused (by an other entity or by
-    *  itself). */
-    virtual void paused() { }
-    // ------------------------------------------------------------------------
-    /** \brief Called when the protocol is used.
-    */
-    virtual void unpaused() { }
-    // ------------------------------------------------------------------------
-    /** \brief Called when the protocol was just killed. It triggers the 
-     *  callback if defined. */
-    virtual void terminated()
-    {
-        if (m_callback_object)
-            m_callback_object->callback(this);
-    }   // terminated
-    // ------------------------------------------------------------------------
-    /** Returns the current protocol state. */
-    ProtocolState getState() const { return m_state;  }
-    // ------------------------------------------------------------------------
-    /** Sets the current protocol state. */
-    void setState(ProtocolState s) { m_state = s; }
-    // ------------------------------------------------------------------------
-    /** Returns the unique protocol ID. */
-    uint32_t getId() const { return m_id;  }
-    // ------------------------------------------------------------------------
-    /** Sets the unique protocol id. */
-    void setId(uint32_t id) { m_id = id;  }
+    NetworkString* getNetworkString(size_t capacity = 16) const;
+    bool checkDataSize(Event* event, unsigned int minimum_size);
+    void sendMessageToPeers(NetworkString *message, bool reliable = true);
+    void sendMessageToPeersInServer(NetworkString *message,
+                                    bool reliable = true);
+    void sendToServer(NetworkString *message, bool reliable = true);
+    virtual void requestStart();
+    virtual void requestTerminate();
     // ------------------------------------------------------------------------
     /** \brief Notify a protocol matching the Event type of that event.
      *  \param event : Pointer to the event.
@@ -181,7 +140,18 @@ public:
     /** \brief Method to get a protocol's type.
      *  \return The protocol type. */
     ProtocolType getProtocolType() const { return m_type; }
-
+    // ------------------------------------------------------------------------
+    /** Sets if this protocol should receive connection events. */
+    void setHandleConnections(bool b) { m_handle_connections = b; }
+    // ------------------------------------------------------------------------
+    /** Sets if this protocol should receive disconnection events. */
+    void setHandleDisconnections(bool b) { m_handle_disconnections = b; }
+    // ------------------------------------------------------------------------
+    /** Return true if this protocol should be informed about connects. */
+    virtual bool handleConnects() const { return m_handle_connections; }
+    // ------------------------------------------------------------------------
+    /** Return true if this protocol should be informed about disconnects. */
+    virtual bool handleDisconnects() const { return m_handle_disconnections; }
 
 };   // class Protocol
 

@@ -19,11 +19,14 @@
 #ifndef HEADER_SFX_BUFFER_HPP
 #define HEADER_SFX_BUFFER_HPP
 
-#if HAVE_OGGVORBIS
+#ifdef ENABLE_SOUND
 #  ifdef __APPLE__
+#    define OPENAL_DEPRECATED
 #    include <OpenAL/al.h>
+#    include <OpenAL/alc.h>
 #  else
 #    include <AL/al.h>
+#    include <AL/alc.h>
 #  endif
 #else
 typedef unsigned int ALuint;

@@ -4,11 +4,9 @@
 #include "karts/controller/controller.hpp"
 #include "modes/world.hpp"
 #include "network/network_config.hpp"
-#include "network/protocol_manager.hpp"
-#include "network/protocols/synchronization_protocol.hpp"
-#include "network/protocols/controller_events_protocol.hpp"
 #include "network/protocols/game_events_protocol.hpp"
-
+#include "network/rewind_manager.hpp"
+#include "utils/profiler.hpp"
 
 RaceEventManager::RaceEventManager()
 {
@@ -22,91 +20,36 @@ RaceEventManager::~RaceEventManager()
 
 // ----------------------------------------------------------------------------
 /** In network games this update function is called instead of
- *  World::updateWorld(). This allow this function to postpone calling
- *  the worl update while the countdown from the SynchronisationProtocol is
- *  running.
+ *  World::updateWorld(). 
+ *  \param ticks Number of physics time steps - should be 1.
+ *  \param fast_forward If true, then only rewinders in network will be
+ *  updated, but not the physics.
  */
-void RaceEventManager::update(float dt)
+void RaceEventManager::update(int ticks, bool fast_forward)
 {
-    // This can happen in case of disconnects - protocol manager is
-    // shut down, but still events to process.
-    if(!ProtocolManager::getInstance())
-        return;
-
-    SynchronizationProtocol* protocol = static_cast<SynchronizationProtocol*>(
-            ProtocolManager::getInstance()->getProtocol(PROTOCOL_SYNCHRONIZATION));
-    if (protocol) // The existance of this protocol indicates that we play online
-    {
-        Log::debug("RaceEventManager", "Coutdown value is %f",
-                   protocol->getCountdown());
-        if (protocol->getCountdown() > 0.0)
-        {
-            return;
-        }
-        World::getWorld()->setNetworkWorld(true);
-    }
-    World::getWorld()->updateWorld(dt);
-
-    // if the race is over
-    if (World::getWorld()->getPhase() >= WorldStatus::RESULT_DISPLAY_PHASE)
-    {
-        // consider the world finished.
-        stop();
-        Log::info("RaceEventManager", "The game is considered finish.");
-    }
+    // Replay all recorded events up to the current time
+    // This might adjust dt - if a new state is being played, the dt is
+    // determined from the last state till 'now'
+    PROFILER_PUSH_CPU_MARKER("RaceEvent:play event", 100, 100, 100);
+    RewindManager::get()->playEventsTill(World::getWorld()->getTicksSinceStart(),
+                                         fast_forward);
+    PROFILER_POP_CPU_MARKER();
+    if (!fast_forward)
+        World::getWorld()->updateWorld(ticks);
 }   // update
-
-// ----------------------------------------------------------------------------
-void RaceEventManager::start()
-{
-    m_running = true;
-}   // start
-
-// ----------------------------------------------------------------------------
-void RaceEventManager::stop()
-{
-    m_running = false;
-}   // stop
 
 // ----------------------------------------------------------------------------
 bool RaceEventManager::isRaceOver()
 {
     if(!World::getWorld())
         return false;
-    return (World::getWorld()->getPhase() >  WorldStatus::RACE_PHASE);
+    return (World::getWorld()->getPhase() > WorldStatus::RACE_PHASE &&
+        World::getWorld()->getPhase() != WorldStatus::IN_GAME_MENU_PHASE);
 }   // isRaceOver
 
 // ----------------------------------------------------------------------------
 void RaceEventManager::kartFinishedRace(AbstractKart *kart, float time)
 {
-    GameEventsProtocol* protocol = static_cast<GameEventsProtocol*>(
-        ProtocolManager::getInstance()->getProtocol(PROTOCOL_GAME_EVENTS));
-    protocol->kartFinishedRace(kart, time);
+    if (auto game_events_protocol = m_game_events_protocol.lock())
+        game_events_protocol->kartFinishedRace(kart, time);
 }   // kartFinishedRace
-
-// ----------------------------------------------------------------------------
-/** Called from the item manager on a server. It triggers a notification to
- *  all clients in the GameEventsProtocol.
- *  \param item The item that was collected.
- *  \param kart The kart that collected the item.
- */
-void RaceEventManager::collectedItem(Item *item, AbstractKart *kart)
-{
-    // this is only called in the server
-    assert(NetworkConfig::get()->isServer());
-
-    GameEventsProtocol* protocol = static_cast<GameEventsProtocol*>(
-        ProtocolManager::getInstance()->getProtocol(PROTOCOL_GAME_EVENTS));
-    protocol->collectedItem(item,kart);
-}   // collectedItem
-
-// ----------------------------------------------------------------------------
-void RaceEventManager::controllerAction(Controller* controller,
-                                        PlayerAction action, int value)
-{
-    ControllerEventsProtocol* protocol = static_cast<ControllerEventsProtocol*>(
-        ProtocolManager::getInstance()->getProtocol(PROTOCOL_CONTROLLER_EVENTS));
-    if (protocol)
-        protocol->controllerAction(controller, action, value);
-}   // controllerAction
-

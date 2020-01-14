@@ -18,66 +18,20 @@
 
 #include "network/protocols/connect_to_peer.hpp"
 
-#include "network/event.hpp"
-#include "network/network_config.hpp"
-#include "network/protocols/get_public_address.hpp"
-#include "network/protocols/get_peer_address.hpp"
-#include "network/protocols/hide_public_address.hpp"
-#include "network/protocols/request_connection.hpp"
-#include "network/protocols/ping_protocol.hpp"
-#include "network/protocol_manager.hpp"
 #include "network/stk_host.hpp"
 #include "utils/time.hpp"
 #include "utils/log.hpp"
 
 // ----------------------------------------------------------------------------
-/** Constructor for a WAN request. In this case we need to get the peer's
- *  ip address first. 
- *  \param peer_id ID of the peer in the stk client table.
+/** Constructor for peer address.
+ *  \param address The address to connect to.
  */
-ConnectToPeer::ConnectToPeer(uint32_t peer_id)  : Protocol(PROTOCOL_CONNECTION)
-{
-    m_peer_address.clear();
-    m_peer_id          = peer_id;
-    m_state            = NONE;
-    m_current_protocol = NULL;
-    m_is_lan           = false;
-}   // ConnectToPeer(peer_id)
-
-// ----------------------------------------------------------------------------
 ConnectToPeer::ConnectToPeer(const TransportAddress &address)
              : Protocol(PROTOCOL_CONNECTION)
 {
-    m_peer_address.copy(address);
-    // We don't need to find the peer address, so we can start
-    // with the state when we found the peer address.
-    m_state            = RECEIVED_PEER_ADDRESS;
-    m_current_protocol = NULL;
-    m_is_lan           = true;
-}   // ConnectToPeers(TransportAddress)
-
-// ----------------------------------------------------------------------------
-
-ConnectToPeer::~ConnectToPeer()
-{
-}   // ~ConnectToPeer
-
-// ----------------------------------------------------------------------------
-
-void ConnectToPeer::setup()
-{
-}   // setup
-    // ----------------------------------------------------------------------------
-
-bool ConnectToPeer::notifyEventAsynchronous(Event* event)
-{
-    if (event->getType() == EVENT_TYPE_CONNECTED)
-    {
-        Log::debug("ConnectToPeer", "Received event notifying peer connection.");
-        m_state = CONNECTED; // we received a message, we are connected
-    }
-    return true;
-}   // notifyEventAsynchronous
+    m_peer_address = address;
+    m_state = WAIT_FOR_CONNECTION;
+}   // ConnectToPeer
 
 // ----------------------------------------------------------------------------
 /** Simple finite state machine: Start a GetPeerAddress protocol. Once the
@@ -90,82 +44,43 @@ void ConnectToPeer::asynchronousUpdate()
 {
     switch(m_state)
     {
-        case NONE:
+        case WAIT_FOR_CONNECTION:
         {
-            m_current_protocol = new GetPeerAddress(m_peer_id, this); 
-            m_current_protocol->requestStart();
-
-            // Pause this protocol till we receive an answer
-            // The GetPeerAddress protocol will change the state and
-            // unpause this protocol
-            requestPause();
-            m_state = RECEIVED_PEER_ADDRESS;
-            break;
-        }
-        case RECEIVED_PEER_ADDRESS:
-        {
-            if (m_peer_address.getIP() == 0 || m_peer_address.getPort() == 0)
+            if (STKHost::get()->peerExists(m_peer_address))
             {
-                Log::error("ConnectToPeer",
-                    "The peer you want to connect to has hidden his address.");
+                Log::info("ConnectToPeer",
+                    "Peer %s has established a connection.",
+                    m_peer_address.toString().c_str());
                 m_state = DONE;
                 break;
             }
-            delete m_current_protocol;
-            m_current_protocol = 0;
-
-            // Now we know the peer address. If it's a non-local host, start
-            // the Ping protocol to keep the port available. We can't rely on
-            // STKHost::isLAN(), since we might get a LAN connection even if
-            // the server itself accepts connections from anywhere.
-            if (!m_is_lan &&
-                m_peer_address.getIP() != NetworkConfig::get()
-                                          ->getMyAddress().getIP())
+            // Each 2 second for a ping or broadcast
+            if (StkTime::getMonoTimeMs() > m_timer + 2000)
             {
-                m_current_protocol = new PingProtocol(m_peer_address,
-                                                      /*time-between-ping*/2.0);
-                ProtocolManager::getInstance()->requestStart(m_current_protocol);
-                m_state = CONNECTING;
-                break;
-            }
+                m_timer = StkTime::getMonoTimeMs();
+                // Send a broadcast packet with the string aloha_stk inside,
+                // the client will use enet intercept to discover if server
+                // address or port is different from stk addons database.
+                // (Happens if there is firewall in between)
+                TransportAddress broadcast_address;
+                broadcast_address = m_peer_address;
 
-            // Otherwise we are in the same LAN  (same public ip address).
-            // Just send a broadcast packet with the string aloha_stk inside,
-            // the client will know our ip address and will connect
-            TransportAddress broadcast_address;
-            if(NetworkConfig::get()->isWAN())
-            {
-                broadcast_address.setIP(-1); // 255.255.255.255
-                broadcast_address.setPort(m_peer_address.getPort());
+                // Enet packet will not have 0xFFFF for first 2 bytes
+                BareNetworkString aloha("aloha-stk");
+                aloha.getBuffer().insert(aloha.getBuffer().begin(), 2, 0xFF);
+                STKHost::get()->sendRawPacket(aloha, broadcast_address);
+                Log::debug("ConnectToPeer", "Broadcast aloha sent.");
+                // 20 seconds timeout
+                if (m_tried_connection++ > 10)
+                {
+                    // Not much we can do about if we don't receive the client
+                    // connection - it could have stopped, lost network, ...
+                    // Terminate this protocol.
+                    Log::warn("ConnectToPeer", "Time out trying to connect to %s",
+                            m_peer_address.toString().c_str());
+                    m_state = DONE;
+                }
             }
-            else
-                broadcast_address.copy(m_peer_address);
-
-            char data[] = "aloha_stk\0";
-            STKHost::get()->sendRawPacket((uint8_t*)(data), 10, broadcast_address);
-            Log::info("ConnectToPeer", "Broadcast aloha sent.");
-            StkTime::sleep(1);
-
-            broadcast_address.setIP(0x7f000001); // 127.0.0.1 (localhost)
-            broadcast_address.setPort(m_peer_address.getPort());
-            STKHost::get()->sendRawPacket((uint8_t*)(data), 10, broadcast_address);
-            Log::info("ConnectToPeer", "Broadcast aloha to self.");
-            m_state = CONNECTING;
-            break;
-        }
-        case CONNECTING: // waiting for the peer to connect
-            break;
-        case CONNECTED:
-        {
-            // If the ping protocol is there for NAT traversal terminate it.
-            // Ping is not running when connecting to a LAN peer.
-            if (m_current_protocol)
-            {
-                // Kill the ping protocol because we're connected
-                m_current_protocol->requestTerminate();
-                m_current_protocol = NULL;
-            }
-            m_state = DONE;
             break;
         }
         case DONE:
@@ -176,16 +91,3 @@ void ConnectToPeer::asynchronousUpdate()
             break;
     }
 }   // asynchronousUpdate
-
-// ----------------------------------------------------------------------------
-/** Callback from the GetPeerAddress protocol. It copies the received peer
- *  address so that it can be used in the next states of the connection
- *  protocol.
- */
-void ConnectToPeer::callback(Protocol *protocol)
-{
-    assert(m_state==RECEIVED_PEER_ADDRESS);
-    m_peer_address.copy( ((GetPeerAddress*)protocol)->getAddress() );
-    // Reactivate this protocol
-    requestUnpause();
-}   // callback

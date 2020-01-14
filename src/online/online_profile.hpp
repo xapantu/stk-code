@@ -19,13 +19,16 @@
 #ifndef HEADER_ONLINE_PROFILE_HPP
 #define HEADER_ONLINE_PROFILE_HPP
 
-#include "online/request_manager.hpp"
-#include "online/xml_request.hpp"
 #include "utils/types.hpp"
 #include "utils/ptr_vector.hpp"
 
-#include <irrString.h>
+#include "irrString.h"
+
+#include <atomic>
+#include <map>
 #include <string>
+
+class XMLNode;
 
 namespace Online
 {
@@ -91,7 +94,7 @@ private:
     /** Whether or not the user of this profile, is a friend of the current user */
     bool                            m_is_friend;
 
-    bool                            m_has_fetched_friends;
+    std::atomic_bool                m_has_fetched_friends;
 
     /** List of user id's that are friends with the user of this profile.
      * In case this profile is of the current user, this list also contains
@@ -100,7 +103,7 @@ private:
 
     bool                            m_has_fetched_achievements;
     std::vector<uint32_t>           m_achievements;
-
+    std::map<uint32_t, irr::core::stringw> m_friend_server_map;
     bool                            m_cache_bit;
 
     void storeFriends(const XMLNode * input);
@@ -120,18 +123,20 @@ public:
     void deleteRelationalInfo();
     const IDList&   getAchievements();
     void merge(OnlineProfile * profile);
-
+    // ------------------------------------------------------------------------
+    std::map<uint32_t, irr::core::stringw>& getFriendServerMap()
+                                                { return m_friend_server_map; }
     // ------------------------------------------------------------------------
     /** Returns true if the achievements for this profile have been fetched. */
-    bool hasFetchedAchievements() const { return m_has_fetched_achievements; }
+    bool hasFetchedAchievements() const  { return m_has_fetched_achievements; }
 
     // ------------------------------------------------------------------------
     /** Unsets the flag that all friends of this profile are in cache. Used
      *  when a profile is pushed out of cache. */
-    void unsetHasFetchedFriends() { m_has_fetched_friends = false;  }
+    void unsetHasFetchedFriends() { m_has_fetched_friends.store(false);  }
     // ------------------------------------------------------------------------
     /** Returns true if the friend list for this profile has been fetched. */
-    bool hasFetchedFriends() const { return m_has_fetched_friends; }
+    bool hasFetchedFriends() const { return m_has_fetched_friends.load(); }
 
     // ------------------------------------------------------------------------
     /** True if the profile has fetched friends. */

@@ -41,7 +41,9 @@ private:
     GUIEngine::IconButtonWidget  *m_icon;
     
     /** The addon to load. */
+#ifndef SERVER_ONLY
     Addon                         m_addon;
+#endif
     void startDownload();
     void stopDownload();
     void doInstall();
@@ -52,7 +54,7 @@ private:
 
     /** A pointer to the download request, which gives access
      *  to the progress of a download. */
-    Online::HTTPRequest *m_download_request;
+    std::shared_ptr<Online::HTTPRequest> m_download_request;
 
 public:
     AddonsLoading(const std::string &addon_name);
@@ -69,6 +71,7 @@ public:
      * */
     void onUpdate(float delta) OVERRIDE;
     void voteClicked();
+    void tryInstall();
     virtual bool onEscapePressed() OVERRIDE;
     
 };   // AddonsLoading

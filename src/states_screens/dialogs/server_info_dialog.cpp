@@ -17,15 +17,18 @@
 
 #include "states_screens/dialogs/server_info_dialog.hpp"
 
-#include "audio/sfx_manager.hpp"
 #include "guiengine/engine.hpp"
-#include "network/protocol_manager.hpp"
-#include "network/protocols/request_connection.hpp"
-#include "network/servers_manager.hpp"
+#include "guiengine/widgets/icon_button_widget.hpp"
+#include "guiengine/widgets/label_widget.hpp"
+#include "guiengine/widgets/list_widget.hpp"
+#include "guiengine/widgets/ribbon_widget.hpp"
+#include "guiengine/widgets/text_box_widget.hpp"
+#include "network/server.hpp"
+#include "network/server_config.hpp"
 #include "network/stk_host.hpp"
-#include "states_screens/dialogs/registration_dialog.hpp"
-#include "states_screens/networking_lobby.hpp"
+#include "states_screens/online/networking_lobby.hpp"
 #include "states_screens/state_manager.hpp"
+#include "tracks/track.hpp"
 #include "utils/string_utils.hpp"
 #include "utils/translation.hpp"
 
@@ -43,27 +46,17 @@ using namespace Online;
  *  \param from_server_creation: true if the dialog shows the data of this
  *         server (i.e. while it is being created).
  */
-ServerInfoDialog::ServerInfoDialog(uint32_t server_id, uint32_t host_id,
-                                   bool from_server_creation)
-                : ModalDialog(0.8f,0.8f), m_server_id(server_id)
-                , m_host_id(host_id)
+ServerInfoDialog::ServerInfoDialog(std::shared_ptr<Server> server)
+                : ModalDialog(0.85f,0.85f), m_server(server), m_password(NULL)
 {
-    Log::info("ServerInfoDialog", "Server id is %d, Host id is %d",
-               server_id, host_id);
+    Log::info("ServerInfoDialog", "Server id is %d, owner is %d",
+       server->getServerId(), server->getServerOwner());
     m_self_destroy = false;
-    m_enter_lobby = false;
-    m_from_server_creation = from_server_creation;
+    m_join_server = false;
 
     loadFromFile("online/server_info_dialog.stkgui");
+    getWidget<LabelWidget>("title")->setText(server->getName(), true);
 
-    GUIEngine::LabelWidget *name = getWidget<LabelWidget>("name");
-    assert(name);
-    const Server * server = ServersManager::get()->getServerByID(m_server_id);
-    name->setText(server->getName(),false);
-    m_info_widget = getWidget<LabelWidget>("info");
-    assert(m_info_widget != NULL);
-    if (m_from_server_creation)
-        m_info_widget->setText(_("Server successfully created. You can now join it."), true);
     m_options_widget = getWidget<RibbonWidget>("options");
     assert(m_options_widget != NULL);
     m_join_widget = getWidget<IconButtonWidget>("join");
@@ -72,10 +65,88 @@ ServerInfoDialog::ServerInfoDialog(uint32_t server_id, uint32_t host_id,
     assert(m_cancel_widget != NULL);
     m_options_widget->setFocusForPlayer(PLAYER_ID_GAME_MASTER);
 
+    if (m_server->isPasswordProtected())
+    {
+        m_password = getWidget<TextBoxWidget>("password");
+        m_password->setPasswordBox(true, L'*');
+        assert(m_password != NULL);
+    }
+    else
+    {
+        Widget* password_box = getWidget("password-box");
+        password_box->setCollapsed(true); // FIXME Doesn't reuse free space for other widgets
+    }
+
+    core::stringw difficulty = race_manager->getDifficultyName(
+        server->getDifficulty());
+    //I18N: In server info dialog
+    getWidget<LabelWidget>("server-info-1")->setText(_("Difficulty: %s", difficulty), false);
+
+    core::stringw mode = ServerConfig::getModeName(server->getServerMode());
+    //I18N: In server info dialog
+    getWidget<LabelWidget>("server-info-2")->setText(_("Game mode: %s", mode), false);
+
+#ifndef SERVER_ONLY
+    if (!server->getCountryCode().empty())
+    {
+        core::stringw country_name =
+            translations->getLocalizedCountryName(server->getCountryCode());
+        //I18N: In the server info dialog, show the server location with
+        //country name (based on IP geolocation)
+        getWidget<LabelWidget>("server-info-3")->setText(_("Server location: %s", country_name), false);
+    }
+#endif
+
+    Track* t = server->getCurrentTrack();
+    if (t)
+    {
+        core::stringw track_name = t->getName();
+        //I18N: In server info dialog, showing the current track playing in server
+        getWidget<LabelWidget>("server-info-4")->setText(_("Current track: %s", track_name), false);
+    }
+
+    auto& players = m_server->getPlayers();
+    if (!players.empty())
+    {
+        // I18N: Show above the player list in server info dialog to
+        // indicate the row meanings
+        ListWidget* player_list = getWidget<ListWidget>("player-list");
+        std::vector<ListWidget::ListCell> row;
+        row.push_back(ListWidget::ListCell(_("Rank"), -1, 1, true));
+        // I18N: Show above the player list in server info dialog, tell
+        // the user name on server
+        row.push_back(ListWidget::ListCell(_("Player"), -1, 2, true));
+        // I18N: Show above the player list in server info dialog, tell
+        // the scores of user calculated by player rankings
+        row.push_back(ListWidget::ListCell(_("Scores"), -1, 1, true));
+        // I18N: Show above the player list in server info dialog, tell
+        // the user time played on server
+        row.push_back(ListWidget::ListCell(_("Time played"),
+            -1, 1, true));
+        player_list->addItem("player", row);
+        for (auto& r : players)
+        {
+            row.clear();
+            row.push_back(ListWidget::ListCell(
+                std::get<0>(r) == -1 ? L"-" :
+                StringUtils::toWString(std::get<0>(r)), -1, 1, true));
+            row.push_back(ListWidget::ListCell(std::get<1>(r), -1,
+                2, true));
+            row.push_back(ListWidget::ListCell(
+                std::get<0>(r) == -1 ? L"-" :
+                StringUtils::toWString(std::get<2>(r)), -1, 1, true));
+            row.push_back(ListWidget::ListCell(
+                StringUtils::toWString(std::get<3>(r)), -1, 1, true));
+            player_list->addItem("player", row);
+        }
+    }
+    else
+    {
+        getWidget("player-list")->setVisible(false);
+    }
 }   // ServerInfoDialog
 
 // -----------------------------------------------------------------------------
-
 ServerInfoDialog::~ServerInfoDialog()
 {
 }   // ~ServerInfoDialog
@@ -83,9 +154,20 @@ ServerInfoDialog::~ServerInfoDialog()
 // -----------------------------------------------------------------------------
 void ServerInfoDialog::requestJoin()
 {
-    ServersManager::get()->setJoinedServer(m_server_id);
-
+    if (m_server->isPasswordProtected())
+    {
+        assert(m_password != NULL);
+        if (m_password->getText().empty())
+            return;
+        ServerConfig::m_private_server_password =
+            StringUtils::wideToUtf8(m_password->getText());
+    }
+    else
+    {
+        ServerConfig::m_private_server_password = "";
+    }
     STKHost::create();
+    NetworkingLobby::getInstance()->setJoinedServer(m_server);
     ModalDialog::dismiss();
     NetworkingLobby::getInstance()->push();
 }   // requestJoin
@@ -105,7 +187,7 @@ GUIEngine::EventPropagation
         }
         else if(selection == m_join_widget->m_properties[PROP_ID])
         {
-            requestJoin();
+            m_join_server = true;
             return GUIEngine::EVENT_BLOCK;
         }
     }
@@ -122,7 +204,7 @@ void ServerInfoDialog::onEnterPressedInternal()
     const int playerID = PLAYER_ID_GAME_MASTER;
     if (GUIEngine::isFocusedForPlayer(m_options_widget, playerID))
         return;
-    requestJoin();
+    m_join_server = true;
 }   // onEnterPressedInternal
 
 // -----------------------------------------------------------------------------
@@ -137,17 +219,17 @@ bool ServerInfoDialog::onEscapePressed()
 // -----------------------------------------------------------------------------
 void ServerInfoDialog::onUpdate(float dt)
 {
-    //If we want to open the registration dialog, we need to close this one first
-    if (m_enter_lobby) m_self_destroy = true;
+    if (m_password && m_password->getText().empty())
+        m_join_widget->setActive(false);
+    else if (!m_join_widget->isActivated())
+        m_join_widget->setActive(true);
 
     // It's unsafe to delete from inside the event handler so we do it here
     if (m_self_destroy)
     {
         ModalDialog::dismiss();
-        if (m_from_server_creation)
-            StateManager::get()->popMenu();
-        else if (m_enter_lobby)
-            NetworkingLobby::getInstance()->push();
         return;
     }
+    if (m_join_server)
+        requestJoin();
 }   // onUpdate

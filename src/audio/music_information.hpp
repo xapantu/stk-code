@@ -19,6 +19,7 @@
 #ifndef HEADER_MUSIC_INFORMATION_HPP
 #define HEADER_MUSIC_INFORMATION_HPP
 
+#include <mutex>
 #include <string>
 #include <stdexcept>
 #include <vector>
@@ -58,11 +59,15 @@ private:
 
     float                    m_gain;
 
+    float                    m_normal_loop_start;
+    float                    m_fast_loop_start;
+
     /** Either time for fading faster music in, or time to change pitch. */
     float                    m_faster_time;
     /** Maximum pitch for faster music. */
     float                    m_max_pitch;
     static const int         LOOP_FOREVER=-1;
+    mutable std::mutex       m_music_mutex;
     Music                   *m_normal_music,
                             *m_fast_music;
     enum {SOUND_NORMAL,     //!< normal music is played

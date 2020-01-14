@@ -21,10 +21,12 @@
 #include "guiengine/dialog_queue.hpp"
 #include "guiengine/engine.hpp"
 #include "online/online_profile.hpp"
-#include "states_screens/online_profile_achievements.hpp"
-#include "states_screens/online_profile_friends.hpp"
+#include "online/xml_request.hpp"
+#include "states_screens/online/online_profile_achievements.hpp"
+#include "states_screens/online/online_profile_friends.hpp"
 #include "states_screens/state_manager.hpp"
 #include "utils/translation.hpp"
+#include "utils/string_utils.hpp"
 
 #include <IGUIEnvironment.h>
 
@@ -50,7 +52,9 @@ void UserInfoDialog::load()
     loadFromFile("online/user_info_dialog.stkgui");
     if(m_error)
         m_info_widget->setErrorColor();
-    m_name_widget->setText(m_online_profile->getUserName(),false);
+    //I18N: In the user info dialog
+    m_desc_widget->setText(_("Username: %s", m_online_profile->getUserName()),
+        false);
     m_info_widget->setText(m_info, false);
     if(m_remove_widget->isVisible() && !m_online_profile->isFriend())
         m_remove_widget->setLabel(_("Cancel Request"));
@@ -68,8 +72,8 @@ void UserInfoDialog::beforeAddingWidgets()
     m_self_destroy = false;
     m_enter_profile = false;
     m_processing = false;
-    m_name_widget = getWidget<LabelWidget>("name");
-    assert(m_name_widget != NULL);
+    m_desc_widget = getWidget<LabelWidget>("desc");
+    assert(m_desc_widget != NULL);
     m_info_widget = getWidget<LabelWidget>("info");
     assert(m_info_widget != NULL);
 
@@ -124,9 +128,11 @@ void UserInfoDialog::beforeAddingWidgets()
 }   // beforeAddingWidgets
 
 // -----------------------------------------------------------------------------
-UserInfoDialog::~UserInfoDialog()
+void UserInfoDialog::init()
 {
-}   // ~UserInfoDialog
+    m_options_widget->setFocusForPlayer(PLAYER_ID_GAME_MASTER);
+    m_options_widget->select("cancel", PLAYER_ID_GAME_MASTER);
+}   // init
 
 // -----------------------------------------------------------------------------
 /** Sends a friend request to the server. When the request is finished, it
@@ -168,12 +174,12 @@ void UserInfoDialog::sendFriendRequest()
 
         }   // callback
     public:
-        FriendRequest() : XMLRequest(true) {}
+        FriendRequest() : XMLRequest() {}
     };   // FriendRequest
 
     // ------------------------------------------------------------------------
 
-    FriendRequest *request = new FriendRequest();
+    auto request = std::make_shared<FriendRequest>();
     PlayerManager::setUserDetails(request, "friend-request");
     request->addParameter("friendid", m_online_profile->getID());
     request->queue();
@@ -224,11 +230,11 @@ void UserInfoDialog::acceptFriendRequest()
 
         }   // callback
     public:
-        AcceptFriendRequest() : XMLRequest(true) {}
+        AcceptFriendRequest() : XMLRequest() {}
     };   // AcceptFriendRequest
     // ------------------------------------------------------------------------
 
-    AcceptFriendRequest *request = new AcceptFriendRequest();
+    auto request = std::make_shared<AcceptFriendRequest>();
     PlayerManager::setUserDetails(request, "accept-friend-request");
     request->addParameter("friendid", m_online_profile->getID());
     request->queue();
@@ -276,10 +282,10 @@ void UserInfoDialog::declineFriendRequest()
                                                    true), true);
         }   // callback
     public:
-        DeclineFriendRequest() : XMLRequest(true) {}
+        DeclineFriendRequest() : XMLRequest() {}
     };   // DeclineFriendRequest
     // ----------------------------------------------------------------
-    DeclineFriendRequest *request = new DeclineFriendRequest();
+    auto request = std::make_shared<DeclineFriendRequest>();
     PlayerManager::setUserDetails(request, "decline-friend-request");
     request->addParameter("friendid", m_online_profile->getID());
     request->queue();
@@ -325,12 +331,12 @@ void UserInfoDialog::removeExistingFriend()
         // --------------------------------------------------------------------
     public:
         RemoveFriendRequest(unsigned int id)
-                         : XMLRequest(true), m_id(id) {}
+                         : XMLRequest(), m_id(id) {}
     };   // RemoveFriendRequest
     // ------------------------------------------------------------------------
 
     int friend_id = m_online_profile->getID();
-    RemoveFriendRequest * request = new RemoveFriendRequest(friend_id);
+    auto request = std::make_shared<RemoveFriendRequest>(friend_id);
     PlayerManager::setUserDetails(request, "remove-friend");
     request->addParameter("friendid", friend_id);
     request->queue();
@@ -372,11 +378,11 @@ void UserInfoDialog::removePendingFriend()
             GUIEngine::DialogQueue::get()->pushDialog(dia, true);
         }   // callback
     public:
-        CancelFriendRequest() : XMLRequest(true) {}
+        CancelFriendRequest() : XMLRequest() {}
     };   // CancelFriendRequest
     // ------------------------------------------------------------------------
 
-    CancelFriendRequest * request = new CancelFriendRequest();
+    auto request = std::make_shared<CancelFriendRequest>();
     PlayerManager::setUserDetails(request, "cancel-friend-request");
     request->addParameter("friendid", m_online_profile->getID());
     request->queue();

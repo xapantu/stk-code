@@ -17,6 +17,7 @@
 
 #include "modes/cutscene_world.hpp"
 
+#include "main_loop.hpp"
 #include "animations/animation_base.hpp"
 #include "animations/three_d_animation.hpp"
 #include "audio/sfx_manager.hpp"
@@ -31,6 +32,7 @@
 #include "modes/overworld.hpp"
 #include "physics/physics.hpp"
 #include "states_screens/credits.hpp"
+#include "states_screens/cutscene_general.hpp"
 #include "states_screens/cutscene_gui.hpp"
 #include "states_screens/feature_unlocked.hpp"
 #include "states_screens/offline_kart_selection.hpp"
@@ -40,6 +42,7 @@
 #include "tracks/track_object_manager.hpp"
 #include "utils/constants.hpp"
 #include "utils/ptr_vector.hpp"
+#include "utils/string_utils.hpp"
 
 #include <IMeshSceneNode.h>
 #include <ISceneManager.h>
@@ -56,10 +59,13 @@ CutsceneWorld::CutsceneWorld() : World()
 {
     m_time_at_second_reset = 0.0f;
     m_aborted = false;
-    WorldStatus::setClockMode(CLOCK_NONE);
+    WorldStatus::setClockMode(CLOCK_CHRONO);
+    m_phase = RACE_PHASE;
     m_use_highscores = false;
-    m_play_racestart_sounds = false;
+    m_play_track_intro_sound = false;
+    m_play_ready_set_go_sounds = false;
     m_fade_duration = 1.0f;
+    m_camera = NULL;
 }   // CutsceneWorld
 
 //-----------------------------------------------------------------------------
@@ -68,22 +74,26 @@ CutsceneWorld::CutsceneWorld() : World()
  */
 void CutsceneWorld::init()
 {
+    // Use real dt even if fps is low. It allows to keep everything synchronized
+    main_loop->setAllowLargeDt(true);
+    
     m_second_reset = false;
     World::init();
 
     dynamic_cast<CutsceneGUI*>(m_race_gui)->setFadeLevel(1.0f);
 
-    getTrack()->startMusic();
+    Track::getCurrentTrack()->startMusic();
 
     m_duration = -1.0f;
 
-    Camera* stk_cam = Camera::createCamera(NULL);
+    Camera* stk_cam = Camera::createCamera(NULL, 0);
     m_camera = stk_cam->getCameraSceneNode();
-    m_camera->setFOV(0.61f);
+    m_camera->setFOV(stk_config->m_cutscene_fov);
     m_camera->bindTargetAndRotation(true); // no "look-at"
 
     // --- Build list of sounds to play at certain frames
-    PtrVector<TrackObject>& objects = m_track->getTrackObjectManager()->getObjects();
+    PtrVector<TrackObject>& objects = Track::getCurrentTrack()
+                                    ->getTrackObjectManager()->getObjects();
     for (TrackObject* curr : objects)
     {
         if (curr->getType() == "particle-emitter" &&
@@ -166,8 +176,14 @@ void CutsceneWorld::init()
  */
 CutsceneWorld::~CutsceneWorld()
 {
+    main_loop->setAllowLargeDt(false);
 }   // ~CutsceneWorld
-
+//-----------------------------------------------------------------------------
+void CutsceneWorld::reset(bool restart)
+{
+    World::reset(restart);
+    m_phase = RACE_PHASE;
+}
 //-----------------------------------------------------------------------------
 /** Returns the internal identifier for this race.
  */
@@ -178,9 +194,9 @@ const std::string& CutsceneWorld::getIdent() const
 
 //-----------------------------------------------------------------------------
 /** Update the world and the track.
- *  \param dt Time step size.
+ *  \param ticks Number of physics time steps - should be 1.
  */
-void CutsceneWorld::update(float dt)
+void CutsceneWorld::update(int ticks)
 {
     /*
     {
@@ -197,7 +213,10 @@ void CutsceneWorld::update(float dt)
     {
         //printf("INITIAL TIME for CutsceneWorld\n");
 
-        PtrVector<TrackObject>& objects = m_track->getTrackObjectManager()->getObjects();
+        music_manager->startMusic();
+
+        PtrVector<TrackObject>& objects = Track::getCurrentTrack()
+                                        ->getTrackObjectManager()->getObjects();
         TrackObject* curr;
         for_in(curr, objects)
         {
@@ -211,7 +230,8 @@ void CutsceneWorld::update(float dt)
     {
         m_second_reset = false;
 
-        PtrVector<TrackObject>& objects = m_track->getTrackObjectManager()->getObjects();
+        PtrVector<TrackObject>& objects = Track::getCurrentTrack()
+                                        ->getTrackObjectManager()->getObjects();
         TrackObject* curr;
         for_in(curr, objects)
         {
@@ -224,14 +244,12 @@ void CutsceneWorld::update(float dt)
     }
     else
     {
-        // this way of calculating time and  dt is more in line with what
-        // irrlicht does andprovides better synchronisation
-        double prev_time = m_time;
+        // this way of calculating time and dt is more in line with what
+        // irrlicht does and provides better synchronisation
         double now = StkTime::getRealTime();
         m_time = now - m_time_at_second_reset;
-        dt = (float)(m_time - prev_time);
     }
-
+    
     float fade = 0.0f;
     float fadeIn = -1.0f;
     float fadeOut = -1.0f;
@@ -263,7 +281,8 @@ void CutsceneWorld::update(float dt)
 
     //printf("Estimated current frame : %f\n", curr_frame);
 
-    const std::vector<Subtitle>& subtitles = m_track->getSubtitles();
+    const std::vector<Subtitle>& subtitles = Track::getCurrentTrack()
+                                           ->getSubtitles();
     bool foundSubtitle = false;
     for (unsigned int n = 0; n < subtitles.size(); n++)
     {
@@ -282,32 +301,42 @@ void CutsceneWorld::update(float dt)
     }
 
 
-    World::update((float)dt);
-    World::updateTrack((float)dt);
+    World::update(ticks);
+    World::updateTrack(ticks);
 
-    PtrVector<TrackObject>& objects = m_track->getTrackObjectManager()->getObjects();
+    PtrVector<TrackObject>& objects = Track::getCurrentTrack()
+                                    ->getTrackObjectManager()->getObjects();
     TrackObject* curr;
     for_in(curr, objects)
     {
         if (curr->getType() == "cutscene_camera")
         {
-            scene::ISceneNode* anchorNode = curr->getPresentation<TrackObjectPresentationEmpty>()->getNode();
-            m_camera->setPosition(anchorNode->getPosition());
-            m_camera->updateAbsolutePosition();
+            Camera *camera = Camera::getActiveCamera();
+            if (camera && camera->getType() == Camera::CM_TYPE_NORMAL)
+            {
+                scene::ISceneNode* anchorNode = curr->getPresentation<TrackObjectPresentationEmpty>()->getNode();
+                m_camera->setPosition(anchorNode->getPosition());
+                m_camera->updateAbsolutePosition();
 
-            core::vector3df rot = anchorNode->getRotation();
-            Vec3 rot2(rot);
-            rot2.setPitch(rot2.getPitch() + 90.0f);
-            m_camera->setRotation(rot2.toIrrVector());
+                core::vector3df rot = anchorNode->getRotation();
+                Vec3 rot2(rot);
+                rot2.setPitch(rot2.getPitch() + 90.0f);
+                m_camera->setRotation(rot2.toIrrVector());
 
-            SFXManager::get()->positionListener(m_camera->getAbsolutePosition(),
-                                          m_camera->getTarget() -
-                                            m_camera->getAbsolutePosition(),
-                                            Vec3(0,1,0));
+                irr::core::vector3df up(0.0f, 0.0f, 1.0f);
+                irr::core::matrix4 matrix = anchorNode->getAbsoluteTransformation();
+                matrix.rotateVect(up);
+                m_camera->setUpVector(up);
 
+                SFXManager::get()->positionListener(m_camera->getAbsolutePosition(),
+                                              m_camera->getTarget() -
+                                                m_camera->getAbsolutePosition(),
+                                                Vec3(0,1,0));
+            }
             break;
         }
     }
+
     std::map<float, std::vector<TrackObject*> >::iterator it;
     for (it = m_sounds_to_trigger.begin(); it != m_sounds_to_trigger.end(); )
     {
@@ -411,11 +440,14 @@ void CutsceneWorld::enterRaceOverState()
             // un-set the GP mode so that after unlocking, it doesn't try to continue the GP
             race_manager->setMajorMode(RaceManager::MAJOR_MODE_SINGLE);
 
+            //TODO : this code largely duplicate a similar code present in raceResultGUI.
+            //       Try to reduce duplication
             std::vector<const ChallengeData*> unlocked =
                 PlayerManager::getCurrentPlayer()->getRecentlyCompletedChallenges();
+
             if (unlocked.size() > 0)
             {
-                //PlayerManager::getCurrentPlayer()->clearUnlocked();
+                PlayerManager::getCurrentPlayer()->clearUnlocked();
 
                 StateManager::get()->enterGameState();
                 race_manager->setMinorMode(RaceManager::MINOR_MODE_CUTSCENE);
@@ -430,8 +462,8 @@ void CutsceneWorld::enterRaceOverState()
                 ((CutsceneWorld*)World::getWorld())->setParts(parts);
 
                 assert(unlocked.size() > 0);
-                scene->addTrophy(race_manager->getDifficulty());
-                scene->findWhatWasUnlocked(race_manager->getDifficulty());
+                scene->addTrophy(race_manager->getDifficulty(),true);
+                scene->findWhatWasUnlocked(race_manager->getDifficulty(),unlocked);
 
                 StateManager::get()->replaceTopMostScreen(scene, GUIEngine::INGAME_MENU);
             }
@@ -465,9 +497,10 @@ void CutsceneWorld::enterRaceOverState()
 
             std::vector<const ChallengeData*> unlocked =
                 PlayerManager::getCurrentPlayer()->getRecentlyCompletedChallenges();
+
             if (unlocked.size() > 0)
             {
-                //PlayerManager::getCurrentPlayer()->clearUnlocked();
+                PlayerManager::getCurrentPlayer()->clearUnlocked();
 
                 StateManager::get()->enterGameState();
                 race_manager->setMinorMode(RaceManager::MINOR_MODE_CUTSCENE);
@@ -481,8 +514,8 @@ void CutsceneWorld::enterRaceOverState()
                 parts.push_back("featunlocked");
                 ((CutsceneWorld*)World::getWorld())->setParts(parts);
 
-                scene->addTrophy(race_manager->getDifficulty());
-                scene->findWhatWasUnlocked(race_manager->getDifficulty());
+                scene->addTrophy(race_manager->getDifficulty(),true);
+                scene->findWhatWasUnlocked(race_manager->getDifficulty(),unlocked);
 
                 StateManager::get()->replaceTopMostScreen(scene, GUIEngine::INGAME_MENU);
             }
@@ -559,6 +592,14 @@ void CutsceneWorld::enterRaceOverState()
 
         race_manager->exitRace();
         race_manager->startSingleRace(next_part, 999, race_manager->raceWasStartedFromOverworld());
+        
+        // Keep showing cutscene gui if previous scene was using it
+        CutSceneGeneral* csg = dynamic_cast<CutSceneGeneral*>(cs);
+        if (csg != NULL)
+        {
+            CutSceneGeneral* scene = CutSceneGeneral::getInstance();
+            scene->push();
+        }
     }
 
 }
@@ -582,5 +623,4 @@ void CutsceneWorld::createRaceGUI()
 {
     m_race_gui = new CutsceneGUI();
 }   // createRaceGUI
-
 

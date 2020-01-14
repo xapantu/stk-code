@@ -49,6 +49,9 @@ private:
     /** List of all kart groups. */
     std::vector<std::string>                 m_all_groups;
 
+    /** List of all kart types. */
+    std::vector<std::string>                 m_kart_types;
+
     /** Mapping of group names to list of kart indices in each group. */
     std::map<std::string, std::vector<int> > m_groups_2_indices;
 
@@ -75,6 +78,7 @@ protected:
 public:
                              KartPropertiesManager();
                             ~KartPropertiesManager();
+    static void              removeKartSearchDirs();
     static void              addKartSearchDir       (const std::string &s);
     const KartProperties*    getKartById            (int i) const;
     const KartProperties*    getKart(const std::string &ident) const;
@@ -94,7 +98,7 @@ public:
     void                     selectKartName(const std::string &kart_name);
     bool                     testAndSetKart(int kartid);
     void                     getRandomKartList(int count,
-                                           RemoteKartInfoList& existing_karts,
+                                           RemoteKartInfoList* existing_karts,
                                            std::vector<std::string> *ai_list);
     void                     setHatMeshName(const std::string &hat_name);
     // ------------------------------------------------------------------------
@@ -105,7 +109,7 @@ public:
     const AbstractCharacteristic* getDifficultyCharacteristic(const std::string &type) const;
     // ------------------------------------------------------------------------
     /** Get a characteristic that holds the values for a kart type. */
-    const AbstractCharacteristic* getKartTypeCharacteristic(const std::string &type) const;
+    const AbstractCharacteristic* getKartTypeCharacteristic(const std::string &type, const std::string &name) const;
     // ------------------------------------------------------------------------
     /** Get a characteristic that holds the values for a player difficulty. */
     const AbstractCharacteristic* getPlayerCharacteristic(const std::string &type) const;

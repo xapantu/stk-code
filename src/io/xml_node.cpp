@@ -18,8 +18,9 @@
 
 #include "io/file_manager.hpp"
 #include "io/xml_node.hpp"
-#include "utils/string_utils.hpp"
 #include "utils/interpolation_array.hpp"
+#include "utils/log.hpp"
+#include "utils/string_utils.hpp"
 #include "utils/vec3.hpp"
 
 #include <stdexcept>
@@ -383,6 +384,23 @@ int XMLNode::get(const std::string &attribute, float *value) const
     {
         Log::warn("[XMLNode]", "WARNING: Expected float but found '%s' for attribute '%s' of node '%s' in file %s",
                     s.c_str(), attribute.c_str(), m_name.c_str(), m_file_name.c_str());
+        return 0;
+    }
+
+    return 1;
+}   // get(int)
+
+// ----------------------------------------------------------------------------
+int XMLNode::get(const std::string &attribute, double *value) const
+{
+    std::string s;
+    if (!get(attribute, &s)) return 0;
+
+    if (!StringUtils::parseString<double>(s, value))
+    {
+        Log::warn("[XMLNode]", "WARNING: Expected double but found '%s' for"
+            " attribute '%s' of node '%s' in file %s", s.c_str(),
+            attribute.c_str(), m_name.c_str(), m_file_name.c_str());
         return 0;
     }
 

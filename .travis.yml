@@ -1,10 +1,12 @@
-# Travis-CI configuration file for SuperTuxKart
+# Travis-CI configuration file for SuperTuxKart 
 #
 # Configuration manual:
 # http://docs.travis-ci.com/user/build-configuration/
 #
 sudo: false
 language: cpp
+os:
+  - linux
 compiler:
   - gcc
   - clang
@@ -14,45 +16,41 @@ matrix:
 
 env:
   matrix:
-    - BUILD_TYPE="Debug"
-    - BUILD_TYPE="Release"
+    - BUILD_TYPE="Debug" SERVER_ONLY="OFF"
+    - BUILD_TYPE="Debug" SERVER_ONLY="ON"
+    - BUILD_TYPE="Release" SERVER_ONLY="OFF"
+    - BUILD_TYPE="Release" SERVER_ONLY="ON"
 
 addons:
   apt:
     packages:
     - build-essential
-    - libogg-dev
-    - libvorbis-dev
-    - libopenal-dev
-    - libxxf86vm-dev
-    - libcurl4-openssl-dev
-    - libfribidi-dev
-    - libbluetooth-dev
-    - libgl1-mesa-dev
-    - libglu1-mesa-dev
-    - libglew-dev
     - cmake
+    - libbluetooth-dev
+    - libcurl4-gnutls-dev
+    - libfreetype6-dev
+    - libharfbuzz-dev
+    - libfribidi-dev
+    - libgl1-mesa-dev
+    - libjpeg-dev
+    - libogg-dev
+    - libopenal-dev
+    - libpng-dev
+    - libvorbis-dev
+    - libxrandr-dev
+    - mesa-common-dev
+    - pkg-config
+    - zlib1g-dev
 
 before_script:
-  - export THREADS=$((`nproc` + 1))
-  - echo "THREADS = $THREADS"
-  - free -mt
+  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then brew update && brew bundle; fi
+  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then sudo mkdir -p /usr/local/include/; fi
+  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then sudo ln -s /System/Library/Frameworks/OpenGL.framework/Versions/A/Headers/ /usr/local/include/GL; fi
+  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then export CMAKE_PREFIX_PATH=/usr/local/opt/freetype/:/usr/local/opt/curl/:/usr/local/opt/libogg/:/usr/local/opt/libogg/:/usr/local/opt/libvorbis/:/usr/local/opt/openssl\@1.1/:/usr/local/opt/glew/:/usr/local/opt/fribidi/:/usr/local/opt/harfbuzz/; fi
 
 script:
   - mkdir "build"
   - cd "build"
-  - cmake .. -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCHECK_ASSETS=off
-  - make VERBOSE=1 -j $THREADS
-
-notifications:
-  irc:
-    channels:
-      - "irc.freenode.org#stk"
-    skip_join: false
-    use_notice: true
-    template:
-      #- "[%{commit}: %{author}] %{message}"
-      #- "%{build_url}"
-      - "[%{repository}#%{branch} @%{commit}] %{author}): %{message}"
-      - "Diff: %{compare_url}"
-      - "Build: %{build_url}"
+  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then /usr/local/opt/cmake/bin/cmake .. -DFREETYPE_INCLUDE_DIRS=/usr/local/opt/freetype/include/freetype2/ -DUSE_SYSTEM_GLEW=1 -DOPENAL_INCLUDE_DIR=/usr/local/opt/openal-soft/include/ -DOPENAL_LIBRARY=/usr/local/opt/openal-soft/lib/libopenal.dylib -DFREETYPE_LIBRARY=/usr/local/opt/freetype/lib/libfreetype.dylib -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DSERVER_ONLY=$SERVER_ONLY -DCHECK_ASSETS=off -DBUILD_RECORDER=off; fi
+  - if [[ "$TRAVIS_OS_NAME" != "osx" ]]; then cmake .. -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DSERVER_ONLY=$SERVER_ONLY -DCHECK_ASSETS=off -DBUILD_RECORDER=off; fi
+  - make VERBOSE=1 -j3

@@ -43,9 +43,9 @@ AIProperties::AIProperties(RaceManager::Difficulty difficulty)
     m_make_use_of_slipstream     = false;
     m_collect_avoid_items        = false;
     m_handle_bomb                = false;
-    m_item_usage_non_random      = false;
+    m_item_usage_skill           = 0;
     m_disable_slipstream_usage   = false;
-    m_nitro_usage                = NITRO_NONE;
+    m_nitro_usage                = 0;
 
 }   // AIProperties
 
@@ -64,8 +64,9 @@ void AIProperties::load(const XMLNode *ai_node)
     ai_node->get("collect-item-probability",  &m_collect_item_probability  );
     ai_node->get("straight-length-for-zipper",&m_straight_length_for_zipper);
     ai_node->get("rb-skid-probability",       &m_skid_probability          );
-    ai_node->get("speed-cap",                 &m_speed_cap                 );
-    ai_node->get("non-random-item-usage",     &m_item_usage_non_random     );
+    ai_node->get("first-speed-cap",           &m_first_speed_cap           );
+    ai_node->get("last-speed-cap",            &m_last_speed_cap            );
+    ai_node->get("item-skill",                &m_item_usage_skill          );
     ai_node->get("collect-avoid-items",       &m_collect_avoid_items       );
     ai_node->get("handle-bomb",               &m_handle_bomb               );
     ai_node->get("skidding-threshold",        &m_skidding_threshold        );
@@ -73,21 +74,8 @@ void AIProperties::load(const XMLNode *ai_node)
     ai_node->get("false-start-probability",   &m_false_start_probability   );
     ai_node->get("min-start-delay",           &m_min_start_delay           );
     ai_node->get("max-start-delay",           &m_max_start_delay           );
+    ai_node->get("nitro-usage",               &m_nitro_usage               );
 
-    std::string s;
-    ai_node->get("nitro-usage",               &s);
-    if(s=="none")
-        m_nitro_usage = NITRO_NONE;
-    else if(s=="some")
-        m_nitro_usage = NITRO_SOME;
-    else if(s=="all")
-        m_nitro_usage = NITRO_ALL;
-    else
-    {
-        Log::fatal("AIProperties",
-                "Incorrect nitro-usage '%s' in AI '%s'.",s.c_str(),
-                m_ident.c_str());
-    }
     // We actually need the square of the distance later
     m_bad_item_closeness_2 *= m_bad_item_closeness_2;
 
@@ -121,7 +109,7 @@ void AIProperties::checkAllSet(const std::string &filename) const
         Log::fatal("AIProperties", "No skid probability defined.");
     }
 
-    if(m_speed_cap.size()==0)
+    if(m_first_speed_cap.size()==0 || m_last_speed_cap.size()==0)
     {
         Log::fatal("AIProperties", "No speed cap defined.");
     }
@@ -132,5 +120,19 @@ void AIProperties::checkAllSet(const std::string &filename) const
     }
 
 }   // checkAllSet
+
+
+// ------------------------------------------------------------------------
+/** Returns the fraction of maximum speed the AI should drive at, depending
+ *  on the distance from the player. */
+float AIProperties::getSpeedCap(float distance, int ai_position, int num_ai) const
+{
+    float wfirst = 1.0f;
+    if (num_ai >= 2)
+        wfirst = 1.0f - ( (float) (ai_position-1) / (float) (num_ai-1) );
+
+    return wfirst      * m_first_speed_cap.get(distance)
+           +(1-wfirst) * m_last_speed_cap.get(distance);
+}   // getSpeedCap
 
 /* EOF */

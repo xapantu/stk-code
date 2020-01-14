@@ -21,6 +21,7 @@
 #include "io/utf_writer.hpp"
 #include "io/xml_node.hpp"
 #include "race/race_manager.hpp"
+#include "utils/log.hpp"
 
 #include <stdexcept>
 #include <fstream>
@@ -81,9 +82,15 @@ void Highscores::readEntry(const XMLNode &node)
 
     for(unsigned int i=0; i<node.getNumNodes(); i++)
     {
+        if (i >= HIGHSCORE_LEN)
+        {
+            Log::warn("Highscores", "Hiscore has too many entries.");
+            break;
+        }
+        
         const XMLNode *entry = node.getNode(i);
         entry->get("time",     &m_time[i]            );
-        entry->get("name",     &m_name[i]            );
+        entry->getAndDecode("name",     &m_name[i]            );
         entry->get("kartname", &m_kart_name[i]       );
 
         // a non-empty entry needs a non-empty kart name.
@@ -113,25 +120,25 @@ void Highscores::writeEntry(UTFWriter &writer)
         one_is_set |= m_time[i]>=0;
     if(!one_is_set) return;
 
-    writer << L"  <highscore track-name    =\"" << m_track.c_str()           << "\"\n";
-    writer << L"             number-karts  =\"" << m_number_of_karts         << "\"\n";
-    writer << L"             difficulty    =\"" << m_difficulty              << "\"\n";
-    writer << L"             hscore-type   =\"" << m_highscore_type.c_str()  << "\"\n";
-    writer << L"             number-of-laps=\"" << m_number_of_laps          << "\"\n";
-    writer << L"             reverse       =\"" << m_reverse                 << "\">\n";
+    writer << "  <highscore track-name    =\"" << m_track.c_str()           << "\"\n";
+    writer << "             number-karts  =\"" << m_number_of_karts         << "\"\n";
+    writer << "             difficulty    =\"" << m_difficulty              << "\"\n";
+    writer << "             hscore-type   =\"" << m_highscore_type.c_str()  << "\"\n";
+    writer << "             number-of-laps=\"" << m_number_of_laps          << "\"\n";
+    writer << "             reverse       =\"" << m_reverse                 << "\">\n";
 
     for(int i=0; i<HIGHSCORE_LEN; i++)
     {
         if (m_time[i] > 0.0f)
         {
             assert(m_kart_name[i].size() > 0);
-            writer << L"             <entry time    =\"" << m_time[i] << L"\"\n";
-            writer << L"                    name    =\"" << m_name[i] << L"\"\n";
-            writer << L"                    kartname=\"" << m_kart_name[i].c_str()
-                   << L"\"/>\n";
+            writer << "             <entry time    =\"" << m_time[i] << L"\"\n";
+            writer << "                    name    =\"" << StringUtils::xmlEncode(m_name[i]) << L"\"\n";
+            writer << "                    kartname=\"" << m_kart_name[i]
+                   << "\"/>\n";
         }
     }   // for i
-    writer << L"  </highscore>\n";
+    writer << "  </highscore>\n";
 }   // writeEntry
 
 // -----------------------------------------------------------------------------
@@ -184,7 +191,7 @@ int Highscores::addData(const std::string& kart_name,
     if(position>=0)
     {
         m_track               = race_manager->getTrackName();
-        m_number_of_karts     = race_manager->getNumberOfKarts();
+        m_number_of_karts     = race_manager->getNumNonGhostKarts();
         m_difficulty          = race_manager->getDifficulty();
         m_number_of_laps      = race_manager->getNumLaps();
         m_reverse             = race_manager->getReverseTrack();

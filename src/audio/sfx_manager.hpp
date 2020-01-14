@@ -29,11 +29,14 @@
 #include <string>
 #include <vector>
 
-#if HAVE_OGGVORBIS
+#ifdef ENABLE_SOUND
 #  ifdef __APPLE__
+#    define OPENAL_DEPRECATED
 #    include <OpenAL/al.h>
+#    include <OpenAL/alc.h>
 #  else
 #    include <AL/al.h>
+#    include <AL/alc.h>
 #  endif
 #else
   typedef unsigned int ALuint;
@@ -121,6 +124,9 @@ private:
     public:
         /** The sound effect for which the command should be executed. */
         SFXBase *m_sfx;
+
+        /** The sound buffer to play (null = no change) */
+        SFXBuffer *m_buffer = NULL;
 
         /** Stores music information for music commands. */
         MusicInformation *m_music_information;
@@ -215,7 +221,7 @@ private:
     /** Thread id of the thread running in this object. */
     Synchronised<pthread_t *> m_thread_id;
 
-    double                    m_last_update_time;
+    uint64_t                  m_last_update_time;
 
     /** A conditional variable to wake up the main loop. */
     pthread_cond_t            m_cond_request;
@@ -232,17 +238,18 @@ private:
 public:
     static void create();
     static void destroy();
-    void queue(SFXCommands command,  SFXBase *sfx=NULL);
-    void queue(SFXCommands command,  SFXBase *sfx, float f);
-    void queue(SFXCommands command,  SFXBase *sfx, const Vec3 &p);
-    void queue(SFXCommands command,  SFXBase *sfx, float f, const Vec3 &p);
-    void queue(SFXCommands command,  MusicInformation *mi);
-    void queue(SFXCommands command,  MusicInformation *mi, float f);
+    void queue(SFXCommands command, SFXBase *sfx=NULL);
+    void queue(SFXCommands command, SFXBase *sfx, float f);
+    void queue(SFXCommands command, SFXBase *sfx, const Vec3 &p);
+    void queue(SFXCommands command, SFXBase *sfx, float f, const Vec3 &p);
+    void queue(SFXCommands command, MusicInformation *mi);
+    void queue(SFXCommands command, MusicInformation *mi, float f);
+    void queue(SFXCommands command, SFXBase *sfx, const Vec3 &p, SFXBuffer* buffer);
+
     // ------------------------------------------------------------------------
     /** Static function to get the singleton sfx manager. */
     static SFXManager *get()
     {
-        assert(m_sfx_manager);
         return m_sfx_manager;
     }   // get
 
@@ -256,7 +263,7 @@ public:
                                           const std::string &filename,
                                           bool               positional,
                                           float              rolloff,
-                                          float              max_width,
+                                          float              max_dist,
                                           float              gain,
                                           const bool         load = true);
 
@@ -296,6 +303,9 @@ public:
     /** Returns the current position of the listener. */
     Vec3 getListenerPos() const { return m_listener_position.getData(); }
 
+    // ------------------------------------------------------------------------
+
+    SFXBuffer* getBuffer(const std::string &name);
 };
 
 #endif // HEADER_SFX_MANAGER_HPP

@@ -15,13 +15,16 @@
 //  along with this program; if not, write to the Free Software
 //  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
+#include "guiengine/widgets/icon_button_widget.hpp"
+#include "graphics/central_settings.hpp"
 #include "graphics/irr_driver.hpp"
+#include "graphics/stk_tex_manager.hpp"
+#include "graphics/stk_texture.hpp"
 #include "guiengine/engine.hpp"
 #include "guiengine/scalable_font.hpp"
-#include "guiengine/widgets/icon_button_widget.hpp"
 #include "io/file_manager.hpp"
 #include "utils/log.hpp"
-#include "utils/translation.hpp"
+#include "utils/string_utils.hpp"
 
 #include <iostream>
 #include <IGUIElement.h>
@@ -62,17 +65,18 @@ void IconButtonWidget::add()
     // ---- Icon
     if (m_texture == NULL)
     {
-        if (m_icon_path_type == ICON_PATH_TYPE_ABSOLUTE)
+        // Avoid warning about missing texture in case of e.g.
+        // screenshot widget
+        if (m_properties[PROP_ICON] != "")
         {
-            setTexture(irr_driver->getTexture(m_properties[PROP_ICON]));
-        }
-        else if (m_icon_path_type == ICON_PATH_TYPE_RELATIVE)
-        {
-            // Avoid warning about missing texture in case of e.g.
-            // screenshot widget
-            if(m_properties[PROP_ICON] != "")
+            if (m_icon_path_type == ICON_PATH_TYPE_ABSOLUTE)
             {
-                std::string file = file_manager->getAsset(m_properties[PROP_ICON]);
+                setTexture(irr_driver->getTexture(m_properties[PROP_ICON]));
+            }
+            else if (m_icon_path_type == ICON_PATH_TYPE_RELATIVE)
+            {
+                std::string file =
+                    GUIEngine::getSkin()->getThemedIcon(m_properties[PROP_ICON]);
                 setTexture(irr_driver->getTexture(file));
             }
         }
@@ -86,11 +90,11 @@ void IconButtonWidget::add()
                 "add() : error, cannot find texture '%s' in iconbutton '%s'.",
                 m_properties[PROP_ICON].c_str(), m_properties[PROP_ID].c_str());
         }
-        std::string file = file_manager->getAsset(FileManager::GUI,"main_help.png");
+        std::string file = file_manager->getAsset(FileManager::GUI_ICON,"main_help.png");
         setTexture(irr_driver->getTexture(file));
         if(!m_texture)
             Log::fatal("IconButtonWidget",
-                  "Can't find fallback texture 'gui/main_help.png, aborting.");
+                  "Can't find fallback texture 'gui/icons/main_help.png, aborting.");
     }
 
     if (m_properties[PROP_FOCUS_ICON].size() > 0)
@@ -103,8 +107,8 @@ void IconButtonWidget::add()
         else if (m_icon_path_type == ICON_PATH_TYPE_RELATIVE)
         {
             m_highlight_texture =
-                irr_driver->getTexture(file_manager->getAsset(
-                                       m_properties[PROP_FOCUS_ICON]));
+                irr_driver->getTexture(
+                    GUIEngine::getSkin()->getThemedIcon(m_properties[PROP_FOCUS_ICON]));
         }
 
     }
@@ -120,9 +124,12 @@ void IconButtonWidget::add()
         m_scale_mode = SCALE_MODE_KEEP_CUSTOM_ASPECT_RATIO;
     }
 
-    if (m_scale_mode == SCALE_MODE_KEEP_TEXTURE_ASPECT_RATIO)
+    if (m_scale_mode == SCALE_MODE_KEEP_TEXTURE_ASPECT_RATIO ||
+        m_scale_mode == SCALE_MODE_LIST_WIDGET)
     {
-        useAspectRatio = (float)m_texture_w / (float)m_texture_h;
+        assert(m_texture->getOriginalSize().Height > 0);
+        useAspectRatio = (float)m_texture->getOriginalSize().Width / 
+                         (float)m_texture->getOriginalSize().Height;
     }
     else if (m_scale_mode == SCALE_MODE_KEEP_CUSTOM_ASPECT_RATIO)
     {
@@ -138,13 +145,35 @@ void IconButtonWidget::add()
         suggested_w = (int)(suggested_w*needed_scale_factor);
         suggested_h = (int)(suggested_h*needed_scale_factor);
     }
-    const int x_from = m_x + (m_w - suggested_w)/2; // center horizontally
+    
+    bool left_horizontal = m_properties[PROP_ICON_ALIGN] == "left";
+    bool right_horizontal = m_properties[PROP_ICON_ALIGN] == "right";
+    
+    // Assume left align if align property is not specified, but x property is specified
+    if (m_properties[PROP_X].size() > 0 && m_properties[PROP_ICON_ALIGN].empty())
+    {
+        left_horizontal = true;
+    }
+    
+    const int x_from = right_horizontal ? m_x + (m_w - suggested_w) :
+                       left_horizontal  ? m_x :
+                                          m_x + (m_w - suggested_w)/2;
     const int y_from = m_y + (m_h - suggested_h)/2; // center vertically
 
     rect<s32> widget_size = rect<s32>(x_from,
                                       y_from,
                                       x_from + suggested_w,
                                       y_from + suggested_h);
+
+    if (m_scale_mode == SCALE_MODE_LIST_WIDGET)
+    {
+        m_list_header_icon_rect = widget_size;
+        m_list_header_icon_rect.UpperLeftCorner.X = m_list_header_icon_rect.UpperLeftCorner.X + 4;
+        m_list_header_icon_rect.UpperLeftCorner.Y = m_list_header_icon_rect.UpperLeftCorner.Y + 4;
+        m_list_header_icon_rect.LowerRightCorner.X = m_list_header_icon_rect.LowerRightCorner.X - 4;
+        m_list_header_icon_rect.LowerRightCorner.Y = m_list_header_icon_rect.LowerRightCorner.Y - 4;
+        widget_size = rect<s32>(m_x, m_y, m_x + m_w, m_y + m_h);
+    }
 
     IGUIButton* btn = GUIEngine::getGUIEnv()->addButton(widget_size,
                                                         m_parent,
@@ -154,6 +183,9 @@ void IconButtonWidget::add()
     btn->setTabStop(m_tab_stop);
     m_element = btn;
     m_id = m_element->getID();
+
+    if (!m_is_visible)
+        m_element->setVisible(false);
 
     // ---- label if any
     const stringw& message = getText();
@@ -217,9 +249,13 @@ void IconButtonWidget::add()
             m_label->setVisible(false);
         }
 
+        if (!m_is_visible)
+        {
+            m_label->setVisible(false);
+        }
+
         setLabelFont();
 
-        m_label->setRightToLeft(translations->isRTLText(message));
         m_label->setTextRestrainedInside(false);
     }
 
@@ -249,7 +285,7 @@ void IconButtonWidget::setImage(const char* path_to_texture, IconPathType pathTy
     }
     else if (m_icon_path_type == ICON_PATH_TYPE_RELATIVE)
     {
-        std::string file = file_manager->getAsset(m_properties[PROP_ICON]);
+        std::string file = GUIEngine::getSkin()->getThemedIcon(m_properties[PROP_ICON]);
         setTexture(irr_driver->getTexture(file));
     }
 
@@ -257,7 +293,7 @@ void IconButtonWidget::setImage(const char* path_to_texture, IconPathType pathTy
     {
         Log::error("icon_button", "Texture '%s' not found!\n",
                    m_properties[PROP_ICON].c_str());
-        std::string file = file_manager->getAsset(FileManager::GUI,"main_help.png");
+        std::string file = file_manager->getAsset(FileManager::GUI_ICON,"main_help.png");
         setTexture(irr_driver->getTexture(file));
     }
 }
@@ -274,7 +310,7 @@ void IconButtonWidget::setImage(ITexture* texture)
     {
         Log::error("icon_button",
                    "setImage invoked with NULL image pointer\n");
-        std::string file = file_manager->getAsset(FileManager::GUI,"main_help.png");
+        std::string file = file_manager->getAsset(FileManager::GUI_ICON,"main_help.png");
         setTexture(irr_driver->getTexture(file));
     }
 }
@@ -329,21 +365,26 @@ const video::ITexture* IconButtonWidget::getTexture()
 // -----------------------------------------------------------------------------
 video::ITexture* IconButtonWidget::getDeactivatedTexture(video::ITexture* texture)
 {
-#ifdef DO_NOT_USE_IT_CAUSES_BUG_1780_FONT_CORRUPTION
-    video::ITexture* t;
+#if !defined(SERVER_ONLY) && !defined(USE_GLES2)
+    STKTexture* stk_tex = static_cast<STKTexture*>(texture);
+    // Compressed texture can't be turned into greyscale
+    if (stk_tex->isMeshTexture() && CVS->isTextureCompressionEnabled())
+        return stk_tex;
 
-    std::string name = texture->getName().getPath().c_str();
+    std::string name = stk_tex->getName().getPtr();
     name += "_disabled";
-    t = irr_driver->getTexture(name, /*premul*/false, /*prediv*/false,
-                                     /*compain_if_not_found*/false);
-    if (t == NULL)
+    STKTexManager* stkm = STKTexManager::getInstance();
+    STKTexture* disabled_stk_tex = static_cast<STKTexture*>(stkm->getTexture
+        (name, NULL/*tc*/, false /*no_upload*/, false/*create_if_unfound*/));
+    if (disabled_stk_tex == NULL)
     {
         SColor c;
         u32 g;
 
         video::IVideoDriver* driver = irr_driver->getVideoDriver();
-        std::unique_ptr<video::IImage> image (driver->createImageFromData (texture->getColorFormat(),
-            texture->getSize(), texture->lock(), false));
+        video::IImage* image = driver->createImageFromData
+            (video::ECF_A8R8G8B8, stk_tex->getSize(), stk_tex->lock(),
+            stk_tex->getTextureImage() == NULL/*ownForeignMemory*/);
         texture->unlock();
 
         //Turn the image into grayscale
@@ -357,13 +398,12 @@ video::ITexture* IconButtonWidget::getDeactivatedTexture(video::ITexture* textur
                 image->setPixel(x, y, c);
             }
         }
-
-        t = driver->addTexture(name.c_str(), image.get ());
+        return stkm->addTexture(new STKTexture(image, name));
     }
-
-    return t;
-#endif
+    return disabled_stk_tex;
+#else
     return texture;
+#endif   // !SERVER_ONLY
 }
 
 // -----------------------------------------------------------------------------
@@ -407,3 +447,13 @@ void IconButtonWidget::setLabelFont()
         }
     }
 }
+
+// -----------------------------------------------------------------------------
+void IconButtonWidget::setVisible(bool visible)
+{
+    Widget::setVisible(visible);
+
+    if (m_label != NULL)
+        m_label->setVisible(visible);
+}
+

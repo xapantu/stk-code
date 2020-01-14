@@ -15,6 +15,8 @@
 //  along with this program; if not, write to the Free Software
 //  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
+#ifndef SERVER_ONLY
+
 #include "dictionary_manager.hpp"
 
 #include "utils/log.hpp"
@@ -177,7 +179,7 @@ DictionaryManager::get_dictionary(const Language& language)
 
     if (language.get_country().size() > 0)
     {
-        printf("Adding language fallback %s\n", language.get_language().c_str());
+        Log::info("tinygettext", "Adding language fallback %s\n", language.get_language().c_str());
         dict->addFallback( &get_dictionary(Language::from_spec(language.get_language())) );
     }
     return *dict;
@@ -297,3 +299,4 @@ std::string DictionaryManager::convertFilename2Language(const std::string &s_in)
 
 
 /* EOF */
+#endif

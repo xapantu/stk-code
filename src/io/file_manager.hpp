@@ -25,6 +25,7 @@
  * Contains generic utility classes for file I/O (especially XML handling).
  */
 
+#include <mutex>
 #include <string>
 #include <vector>
 #include <set>
@@ -37,6 +38,17 @@ using namespace irr;
 #include "io/xml_node.hpp"
 #include "utils/no_copy.hpp"
 
+struct TextureSearchPath
+{
+    std::string m_texture_search_path;
+    std::string m_container_id;
+
+    TextureSearchPath(std::string path, std::string container_id) :
+        m_texture_search_path(path), m_container_id(container_id)
+    {
+    }
+};
+
 /**
   * \brief class handling files and paths
   * \ingroup io
@@ -48,11 +60,13 @@ public:
      *  The last entry ASSET_COUNT specifies the number of entries. */
     enum AssetType {ASSET_MIN,
                     CHALLENGE=ASSET_MIN,
-                    GFX, GRANDPRIX, GUI, LIBRARY, MODEL, MUSIC,
-                    SCRIPT, SFX, SHADER, SKIN, TEXTURE, TTF,
-                    TRANSLATION, ASSET_MAX = TRANSLATION,
+                    GFX, GRANDPRIX, GUI_ICON, GUI_SCREEN, GUI_DIALOG,
+                    REPLAY, SHADER, SKIN,  TTF, TRANSLATION, BUILTIN_ASSETS=TRANSLATION,
+                    LIBRARY, MODEL, MUSIC, SFX, TEXTURE, SCRIPT, ASSET_MAX = SCRIPT,
                     ASSET_COUNT};
+
 private:
+    mutable std::mutex m_file_system_lock;
 
     /** The names of the various subdirectories of the asset types. */
     std::vector< std::string > m_subdir_name;
@@ -72,8 +86,14 @@ private:
     /** Name of stdout file. */
     static std::string m_stdout_filename;
 
+    /** Directory of stdout file. */
+    static std::string m_stdout_dir;
+
     /** Directory to store screenshots in. */
     std::string       m_screenshot_dir;
+
+    /** Directory to store replays in. */
+    std::string       m_replay_dir;
 
     /** Directory where resized textures are cached. */
     std::string       m_cached_textures_dir;
@@ -81,26 +101,38 @@ private:
     /** Directory where user-defined grand prix are stored. */
     std::string       m_gp_dir;
 
+    /** Location of the certificate bundle. */
+    std::string       m_cert_bundle_location;
+
+    /** Mobile stk specific to download stk-assets in the first. */
+    std::string       m_stk_assets_download_dir;
+
+    std::vector<TextureSearchPath> m_texture_search_path;
+
     std::vector<std::string>
-                      m_texture_search_path,
                       m_model_search_path,
                       m_music_search_path;
     bool              findFile(std::string& full_path,
                                const std::string& fname,
                                const std::vector<std::string>& search_path)
                                const;
+    bool              findFile(std::string& full_path,
+                               const std::string& fname,
+                               const std::vector<TextureSearchPath>& search_path)
+                               const;
     void              makePath(std::string& path, const std::string& dir,
                                const std::string& fname) const;
-    bool              checkAndCreateDirectory(const std::string &path);
     io::path          createAbsoluteFilename(const std::string &f);
     void              checkAndCreateConfigDir();
-    bool              isDirectory(const std::string &path) const;
     void              checkAndCreateAddonsDir();
     void              checkAndCreateScreenshotDir();
+    void              checkAndCreateReplayDir();
     void              checkAndCreateCachedTexturesDir();
     void              checkAndCreateGPDir();
     void              discoverPaths();
-#if !defined(WIN32) && !defined(__CYGWIN__) && !defined(__APPLE__)
+    void              addAssetsSearchPath();
+    void              resetSubdir();
+#if !defined(WIN32) && !defined(__APPLE__)
     std::string       checkAndCreateLinuxDir(const char *env_name,
                                              const char *dir_name,
                                              const char *fallback1,
@@ -111,47 +143,68 @@ public:
                       FileManager();
                      ~FileManager();
     void              init();
+    void              reinitAfterDownloadAssets();
     static void       addRootDirs(const std::string &roots);
     static void       setStdoutName(const std::string &name);
+    static void       setStdoutDir(const std::string &dir);
     io::IXMLReader   *createXMLReader(const std::string &filename);
     XMLNode          *createXMLTree(const std::string &filename);
     XMLNode          *createXMLTreeFromString(const std::string & content);
 
     std::string       getScreenshotDir() const;
+    std::string       getReplayDir() const;
     std::string       getCachedTexturesDir() const;
     std::string       getGPDir() const;
-    std::string       getTextureCacheLocation(const std::string& filename);
+    bool              checkAndCreateDirectory(const std::string &path);
     bool              checkAndCreateDirectoryP(const std::string &path);
     const std::string &getAddonsDir() const;
     std::string        getAddonsFile(const std::string &name);
     void checkAndCreateDirForAddons(const std::string &dir);
+    bool isDirectory(const std::string &path) const;
     bool removeFile(const std::string &name) const;
     bool removeDirectory(const std::string &name) const;
+    // ------------------------------------------------------------------------
+    bool moveDirectoryInto(std::string source, std::string target);
+    // ------------------------------------------------------------------------
     bool copyFile(const std::string &source, const std::string &dest);
     std::vector<std::string>getMusicDirs() const;
     std::string getAssetChecked(AssetType type, const std::string& name,
                                 bool abort_on_error=false) const;
     std::string getAsset(AssetType type, const std::string &name) const;
     std::string getAsset(const std::string &name) const;
-
+    // ------------------------------------------------------------------------
+    /** Returns the directory of an asset. */
+    std::string getAssetDirectory(AssetType type) const
+    {
+        return m_subdir_name[type];
+    }
+    // ------------------------------------------------------------------------
     std::string searchMusic(const std::string& file_name) const;
+    // ------------------------------------------------------------------------
+    std::string searchModel(const std::string& file_name) const;
     std::string searchTexture(const std::string& fname) const;
     std::string getUserConfigFile(const std::string& fname) const;
     bool        fileExists(const std::string& path) const;
     // ------------------------------------------------------------------------
-    /** Convenience function to save some typing in the 
+    /** Convenience function to save some typing in the
      *  file manager constructor. */
     bool        fileExists(const char *prefix, const std::string& path) const
     {
         return fileExists(std::string(prefix) + path);
     }
     // ------------------------------------------------------------------------
+    bool searchTextureContainerId(std::string& container_id,
+        const std::string& file_name) const;
+    // ------------------------------------------------------------------------
+    /** Returns the name of the stdout file for log messages. */
+    static const std::string& getStdoutName() { return m_stdout_filename; }
+    // ------------------------------------------------------------------------
     void        listFiles        (std::set<std::string>& result,
                                   const std::string& dir,
                                   bool make_full_path=false) const;
 
 
-    void       pushTextureSearchPath(const std::string& path);
+    void       pushTextureSearchPath(const std::string& path, const std::string& container_id);
     void       pushModelSearchPath(const std::string& path);
     void       popTextureSearchPath();
     void       popModelSearchPath();
@@ -159,7 +212,8 @@ public:
     void       redirectOutput();
 
     bool       fileIsNewer(const std::string& f1, const std::string& f2) const;
-
+    // ------------------------------------------------------------------------
+    const std::string& getUserConfigDir() const   { return m_user_config_dir; }
     // ------------------------------------------------------------------------
     /** Returns the irrlicht file system. */
     irr::io::IFileSystem* getFileSystem() { return m_file_system; }
@@ -171,7 +225,7 @@ public:
         m_music_search_path.push_back(path);
     }   // pushMusicSearchPath
     // ------------------------------------------------------------------------
-    /** Returns the full path to a shader (this function could be modified 
+    /** Returns the full path to a shader (this function could be modified
      *  later to allow track-specific shaders).
      *  \param name Name of the shader.
      */
@@ -180,6 +234,18 @@ public:
         return getAsset(SHADER, name);
 
     }   // getShader
+
+    std::string getShadersDir() const
+    {
+        return m_subdir_name[SHADER];
+    }
+    // ------------------------------------------------------------------------
+    const std::string& getSTKAssetsDownloadDir() const
+                                          { return m_stk_assets_download_dir; }
+    // ------------------------------------------------------------------------
+    const std::string& getCertBundleLocation() const
+                                             { return m_cert_bundle_location; }
+
 };   // FileManager
 
 extern FileManager* file_manager;

@@ -24,7 +24,7 @@
 #include "utils/vs.hpp"
 
 #include <algorithm>
-#include <math.h>
+#include <cmath>
 
 
 AnimationBase::AnimationBase(const XMLNode &node)
@@ -41,11 +41,13 @@ AnimationBase::AnimationBase(const XMLNode &node)
     m_playing   = true;
     m_anim_type = ATT_CYCLIC;
 
-    if (m_all_ipos.size() == 0) // this will happen for some separate but non-animated objects
+    if (m_all_ipos.size() == 0)
     {
-        m_playing = false;
+        // Throw to avoid construction completely
+        throw std::runtime_error("Empty IPO, discard.");
     }
     reset();
+    calculateAnimationDuration();
 }   // AnimationBase
 // ----------------------------------------------------------------------------
 /** Special constructor which takes one IPO (or curve). This is used by the
@@ -56,7 +58,19 @@ AnimationBase::AnimationBase(Ipo *ipo)
     m_playing      = true;
     m_all_ipos.push_back(ipo);
     reset();
+    calculateAnimationDuration();
 }   // AnimationBase(Ipo)
+
+// ----------------------------------------------------------------------------
+void AnimationBase::calculateAnimationDuration()
+{
+    m_animation_duration = -1.0f;
+    for (const Ipo* currIpo : m_all_ipos)
+    {
+        m_animation_duration = std::max(m_animation_duration,
+            currIpo->getEndTime());
+    }
+}   // calculateAnimationDuration
 
 // ----------------------------------------------------------------------------
 /** Stores the initial transform (in the IPOs actually). This is necessary
@@ -93,13 +107,13 @@ void AnimationBase::reset()
  */
 void AnimationBase::update(float dt, Vec3 *xyz, Vec3 *hpr, Vec3 *scale)
 {
-    assert(!isnan(m_current_time));
+    assert(!std::isnan(m_current_time));
 
     // Don't do anything if the animation is disabled
     if(!m_playing) return;
     m_current_time += dt;
 
-    assert(!isnan(m_current_time));
+    assert(!std::isnan(m_current_time));
 
     for_var_in (Ipo*, curr, m_all_ipos)
     {
@@ -107,3 +121,36 @@ void AnimationBase::update(float dt, Vec3 *xyz, Vec3 *hpr, Vec3 *scale)
     }
 }   // update
 
+// ----------------------------------------------------------------------------
+/** Return the time, position and rotation at the specified time. It does not
+ *  update the internal timer as update() does.
+ *  \param dt Time since last call.
+ *  \param xyz Position to be updated.
+ *  \param hpr Rotation to be updated.
+ */
+void AnimationBase::getAt(float time, Vec3 *xyz, Vec3 *hpr, Vec3 *scale)
+{
+    assert(!std::isnan(time));
+
+    // Don't do anything if the animation is disabled
+    if (!m_playing) return;
+
+    for_var_in(Ipo*, curr, m_all_ipos)
+    {
+        curr->update(time, xyz, hpr, scale);
+    }
+}   // getAt
+
+// ----------------------------------------------------------------------------
+/** Returns the derivative at the specified point.
+ *  \param time The time for which to determine the derivative.
+ *  \param xyz Float pointer to store the result.
+ */
+void AnimationBase::getDerivativeAt(float time, Vec3 *xyz)
+{
+    for_var_in(Ipo*, curr, m_all_ipos)
+    {
+        curr->getDerivative(time, xyz);
+    }
+    xyz->normalize();
+}

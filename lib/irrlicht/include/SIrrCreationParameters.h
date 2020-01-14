@@ -9,6 +9,7 @@
 #include "EDeviceTypes.h"
 #include "dimension2d.h"
 #include "ILogger.h"
+#include "irrString.h"
 
 namespace irr
 {
@@ -28,7 +29,7 @@ namespace irr
 			ZBufferBits(16),
 			Fullscreen(false),
 			Stencilbuffer(false),
-			Vsync(false),
+			SwapInterval(0),
 			AntiAlias(0),
 			HandleSRGB(false),
 			WithAlphaChannel(false),
@@ -48,6 +49,7 @@ namespace irr
 			DriverMultithreaded(false),
 			UsePerformanceTimer(true),
             ForceLegacyDevice(false),
+            ShadersPath(""),
 			SDK_version_do_not_use(IRRLICHT_SDK_VERSION)
 		{
 		}
@@ -65,7 +67,7 @@ namespace irr
 			ZBufferBits = other.ZBufferBits;
 			Fullscreen = other.Fullscreen;
 			Stencilbuffer = other.Stencilbuffer;
-			Vsync = other.Vsync;
+			SwapInterval = other.SwapInterval;
 			AntiAlias = other.AntiAlias;
 			HandleSRGB = other.HandleSRGB;
 			WithAlphaChannel = other.WithAlphaChannel;
@@ -81,6 +83,7 @@ namespace irr
 			DisplayAdapter = other.DisplayAdapter;
 			UsePerformanceTimer = other.UsePerformanceTimer;
             ForceLegacyDevice = other.ForceLegacyDevice;
+            ShadersPath = other.ShadersPath;
 			PrivateData = other.PrivateData;
 			return *this;
 		}
@@ -127,10 +130,9 @@ namespace irr
 		bool Stencilbuffer;
 
 		//! Specifies vertical syncronisation.
-		/** If set to true, the driver will wait for the vertical
-		retrace period, otherwise not. May be silently ignored.
-		Default: false */
-		bool Vsync;
+		/** 0 = disabled, 1 = full, 2 = half
+		Default: 0 */
+		int SwapInterval;
 
 		//! Specifies if the device should use fullscreen anti aliasing
 		/** Makes sharp/pixelated edges softer, but requires more
@@ -275,7 +277,7 @@ namespace irr
 		*/
 		ELOG_LEVEL LoggingLevel;
 
-		//! Allows to select which graphic card is used for rendering when more than one card is in the system.
+		//! Allows one to select which graphic card is used for rendering when more than one card is in the system.
 		/** So far only supported on D3D */
 		u32 DisplayAdapter;
 
@@ -296,6 +298,11 @@ namespace irr
         /** opengl 3 context is available.
         */
         bool ForceLegacyDevice;
+        
+        //! Specifies custom path for shaders directory.
+        /** Allows one to overwrite IRR_OGLES2_SHADER_PATH constant
+        */
+        core::stringc ShadersPath;
 
 		//! Don't use or change this parameter.
 		/** Always set it to IRRLICHT_SDK_VERSION, which is done by default.

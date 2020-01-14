@@ -10,11 +10,10 @@
 #include "IrrCompileConfig.h"
 
 #ifdef _IRR_COMPILE_WITH_OGLES2_
-#if defined(_IRR_COMPILE_WITH_IPHONE_DEVICE_)
+#if defined(_IRR_COMPILE_WITH_IOS_DEVICE_)
 #include <OpenGLES/ES2/gl.h>
 #include <OpenGLES/ES2/glext.h>
 #else
-#include <EGL/egl.h>
 #include <GLES2/gl2.h>
 // seems to be missing...
 typedef char GLchar;
@@ -232,13 +231,9 @@ namespace video
 		void dump() const;
 
         void initExtensions(COGLES2Driver* driver,
-#ifdef EGL_VERSION_1_0
-                EGLDisplay display,
-#endif
                 bool withStencil);
 
 	protected:
-		u16 EGLVersion;
 		u16 Version;
 		u8 MaxTextureUnits;
 		u8 MaxSupportedTextures;

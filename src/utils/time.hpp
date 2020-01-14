@@ -21,18 +21,21 @@
 
 #include "ITimer.h"
 
+#include <chrono>
 #include <stdexcept>
+
+#include "utils/types.hpp"
 
 #ifdef WIN32
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
-#  include <time.h>
 #else
 #  include <stdint.h>
 #  include <sys/time.h>
 #  include <unistd.h>
 #endif
 
+#include <time.h>
 #include <string>
 #include <stdio.h>
 
@@ -44,6 +47,8 @@ private:
     *  (and the sfx threads needs real time at that time). */
     static irr::ITimer *m_timer;
 
+    /** Initalized when STK starts. */
+    static std::chrono::steady_clock::time_point m_mono_start;
 public:
     typedef time_t TimeType;
 
@@ -90,7 +95,17 @@ public:
      *  The value is a double precision floating point value in seconds.
      */
     static double getRealTime(long startAt=0);
-
+    // ------------------------------------------------------------------------
+    /** Returns a time based since the starting of stk (monotonic clock).
+     *  The value is a 64bit unsigned integer in milliseconds.
+     */
+    static uint64_t getMonoTimeMs()
+    {
+        auto duration = std::chrono::steady_clock::now() - m_mono_start;
+        auto value =
+            std::chrono::duration_cast<std::chrono::milliseconds>(duration);
+        return value.count();
+    }
     // ------------------------------------------------------------------------
     /**
      * \brief Compare two different times.
@@ -135,19 +150,11 @@ public:
     // ------------------------------------------------------------------------
     class ScopeProfiler
     {
-        float m_time;
+        uint64_t m_time;
+        std::string m_name;
     public:
-        ScopeProfiler(const char* name)
-        {
-            printf("%s {\n", name);
-            m_time = (float)getRealTime();
-        }
-
-        ~ScopeProfiler()
-        {
-            float f2 = (float)getRealTime();
-            printf("} // took %f s\n", (f2 - m_time));
-        }
+        ScopeProfiler(const char* name);
+        ~ScopeProfiler();
     };   // class ScopeProfiler
 
 };   // namespace time

@@ -78,8 +78,29 @@ private:
     /** Maximum string length for the timer */
     int              m_timer_width;
 
+    /** Maximum string length for a small precise timer
+     *  (like the live difference timer under a minute) */
+    int              m_small_precise_timer_width;
+
+    /** Maximum string length for a big precise timer
+     *  (like the live difference timer over a minute) */
+    int              m_big_precise_timer_width;
+
+    int              m_negative_timer_additional_width;
+
     /** Height of the digit font. */
     int              m_font_height;
+
+    /** Icon textures (stored as variables to not look up
+        their location on every frame) */
+    irr::video::ITexture *m_red_team;
+    irr::video::ITexture *m_blue_team;
+    irr::video::ITexture *m_red_flag;
+    irr::video::ITexture *m_blue_flag;
+    irr::video::ITexture *m_soccer_ball;
+    irr::video::ITexture *m_heart_icon;
+    /** Texture for the hit limit icon*/
+    irr::video::ITexture* m_champion;
 
     /** Animation state: none, getting smaller (old value),
      *  getting bigger (new number). */
@@ -109,16 +130,24 @@ private:
                                 float min_ratio, int meter_width,
                                 int meter_height, float dt);
 
+    /* Helper functions for drawing meters */
+
+    void drawMeterTexture(video::ITexture *meter_texture, video::S3DVertex vertices[], unsigned int count);
+
+    unsigned int computeVerticesForMeter(core::vector2df position[], float threshold[], video::S3DVertex vertices[],
+                                         unsigned int vertices_count, float measure, int gauge_width,
+                                         int gauge_height, core::vector2df offset);
+
     /** Display items that are shown once only (for all karts). */
     void drawGlobalMiniMap     ();
     void drawGlobalTimer       ();
-    void drawScores();
-
+    void drawLiveDifference    ();
 
 public:
 
          RaceGUI();
         ~RaceGUI();
+    virtual void init();
     virtual void reset();
     virtual void renderGlobal(float dt);
     virtual void renderPlayerView(const Camera *camera, float dt);
@@ -126,7 +155,7 @@ public:
     /** Returns the size of the texture on which to render the minimap to. */
     virtual const core::dimension2du getMiniMapSize() const
                   { return core::dimension2du(m_map_width, m_map_height); }
-
+    virtual void calculateMinimapSize();
 };   // RaceGUI
 
 #endif

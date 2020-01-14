@@ -23,6 +23,7 @@
 #include "audio/sfx_manager.hpp"
 #include "challenges/challenge_data.hpp"
 #include "challenges/challenge_status.hpp"
+#include "challenges/story_mode_status.hpp"
 #include "config/player_manager.hpp"
 #include "config/player_profile.hpp"
 #include "config/user_config.hpp"
@@ -30,6 +31,7 @@
 #include "karts/kart_properties_manager.hpp"
 #include "race/race_manager.hpp"
 #include "tracks/track_manager.hpp"
+#include "utils/file_utils.hpp"
 #include "utils/log.hpp"
 #include "utils/string_utils.hpp"
 
@@ -108,7 +110,7 @@ void UnlockManager::readAllChallengesInDirs(const std::vector<std::string>* all_
 
             std::string filename = *dir + "/" + *file;
 
-            FILE* f = fopen(filename.c_str(), "r");
+            FILE* f = FileUtils::fopenU8Path(filename, "r");
             if (f)
             {
                 fclose(f);
@@ -142,19 +144,30 @@ void UnlockManager::addOrFreeChallenge(ChallengeData *c)
 {
     if(isSupportedVersion(*c))
     {
-        m_all_challenges[c->getId()]=c;
+        m_all_challenges[c->getChallengeId()]=c;
+        if (c->isUnlockList())
+            addListChallenge(c);
     }
     else
     {
         Log::warn("Challenge", "Challenge '%s' is not supported - ignored.",
-                 c->getId().c_str());
+                 c->getChallengeId().c_str());
         delete c;
     }
 }   // addOrFreeChallenge
 
 //-----------------------------------------------------------------------------
+/** Add a challenge to the unlock challenges list
+ *  \param c The challenge that is either stored or freed.
+ */
+void UnlockManager::addListChallenge(ChallengeData *c)
+{
+    m_list_challenges[c->getChallengeId()]=c;
+}   // addListChallenge
+
+//-----------------------------------------------------------------------------
 /** Reads a challenge from the given filename. The challenge will then either
- *  be stored, or (if the challenge version is not supported anymore
+ *  be stored, or (if the challenge version is not supported anymore, freed)
  *  \param filename Name of the challenge file to read.
  */
 void UnlockManager::addChallenge(const std::string& filename)
@@ -210,7 +223,7 @@ StoryModeStatus* UnlockManager::createStoryModeStatus(const XMLNode *node)
         status->addStatus(challenge_status);
     }
 
-    status->computeActive();
+    status->computeActive(/* first call*/ true);
     return status;
 }   // createStoryModeStatus
 
@@ -228,20 +241,28 @@ bool UnlockManager::isSupportedVersion(const ChallengeData &challenge)
 {
     // Test if challenge version number is in between minimum
     // and maximum supported version.
-    return (challenge.getVersion()>=2 && challenge.getVersion()<=2);
+    return (challenge.getVersion()>=3 && challenge.getVersion()<=3);
 }   // isSupportedVersion
 
 
 //-----------------------------------------------------------------------------
-
+/** This functions finds what new tracks, GP and karts have been unlocked
+ */
 void UnlockManager::findWhatWasUnlocked(int points_before, int points_now,
                                         std::vector<std::string>& tracks,
-                                        std::vector<std::string>& gps)
+                                        std::vector<std::string>& gps,
+                                        std::vector<std::string>& karts,
+                                        std::vector<const ChallengeData*>& unlocked)
 {
+    if (UserConfigParams::m_unlock_everything > 0)
+        return;
+
+    ChallengeData* c = NULL;
+
     for (AllChallengesType::iterator it = m_all_challenges.begin();
          it != m_all_challenges.end(); it++)
     {
-        ChallengeData* c = it->second;
+        c = it->second;
         if (c->getNumTrophies() > points_before &&
             c->getNumTrophies() <= points_now      )
         {
@@ -257,4 +278,63 @@ void UnlockManager::findWhatWasUnlocked(int points_before, int points_now,
             }
         }
     }
-}
+
+
+
+    for (unsigned int n = 0; n < unlocked.size(); n++)
+    {
+        //FIXME : this is a quick hack to avoid an unlocked kart being shown
+        //        several times when completing different difficulties of
+        //        a single-race challenge unlocking a kart.
+        if ((points_now - points_before) <= 5)
+            break;
+
+        std::vector<ChallengeData::UnlockableFeature> features = unlocked[n]->getFeatures();
+
+        for (unsigned int i = 0; i < features.size(); i++)
+        {
+            if( features[i].m_type == ChallengeData::UNLOCK_KART )
+                karts.push_back(features[i].m_name);
+        }
+    }
+
+    //std::vector<const ChallengeData*>
+    //    getRecentlyCompletedChallenges()
+} // findWhatWasUnlocked
+
+//-----------------------------------------------------------------------------
+/** This functions sets as completed the "challenges" requiring a certain number
+ *  of points, to unlock features.
+ *  Returns true if the challenge has been completed
+ */
+bool UnlockManager::unlockByPoints(int points, ChallengeStatus* unlock_list)
+{
+    if( unlock_list!=NULL && unlock_list->getData()->getNumTrophies() <= points)
+    {
+        unlock_list->setSolved(RaceManager::DIFFICULTY_BEST);
+        return true;
+    }
+    return false;
+} // unlockByPoints
+
+//-----------------------------------------------------------------------------
+/** This functions sets as completed the "challenges" requiring some special conditions
+ *  Returns true if the challenge has been completed
+ */
+bool UnlockManager::unlockSpecial(ChallengeStatus* unlock_list, int max_req_in_lower_diff)
+{
+    if ( unlock_list!=NULL && unlock_list->getData()->getSpecialType() != ChallengeData::SPECIAL_NONE)
+    {
+        if (unlock_list->getData()->getSpecialType() == ChallengeData::SPECIAL_MAX_REQ_IN_LOWER_DIFF)
+        {
+            if (max_req_in_lower_diff >= unlock_list->getData()->getSpecialValue())
+            {
+                unlock_list->setSolved(RaceManager::DIFFICULTY_BEST);
+                return true;
+            }
+        }
+    }
+    return false;
+} // unlockSpecial
+
+/* EOF */

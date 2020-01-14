@@ -16,29 +16,26 @@
 //  along with this program; if not, write to the Free Software
 //  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
-#if HAVE_OGGVORBIS
+#ifdef ENABLE_SOUND
 
 #include "audio/music_ogg.hpp"
 
 #include <stdexcept>
-#ifdef __APPLE__
-#  include <OpenAL/al.h>
-#else
-#  include <AL/al.h>
-#endif
 
 #include "audio/music_manager.hpp"
 #include "audio/sfx_manager.hpp"
 #include "utils/constants.hpp"
+#include "utils/file_utils.hpp"
 #include "utils/log.hpp"
 
-MusicOggStream::MusicOggStream()
+MusicOggStream::MusicOggStream(float loop_start)
 {
     //m_oggStream= NULL;
     m_soundBuffers[0] = m_soundBuffers[1]= 0;
     m_soundSource     = -1;
     m_pausedMusic     = true;
-    m_playing         = false;
+    m_playing.store(false);
+    m_loop_start      = loop_start;
 }   // MusicOggStream
 
 //-----------------------------------------------------------------------------
@@ -57,7 +54,7 @@ bool MusicOggStream::load(const std::string& filename)
     m_fileName = filename;
     if(m_fileName=="") return false;
 
-    m_oggFile = fopen(m_fileName.c_str(), "rb");
+    m_oggFile = FileUtils::fopenU8Path(m_fileName, "rb");
 
     if(!m_oggFile)
     {
@@ -167,7 +164,7 @@ bool MusicOggStream::release()
     if(!m_error) ov_clear(&m_oggStream);
 
     m_soundSource = -1;
-    m_playing = false;
+    m_playing.store(false);
 
     return true;
 }   // release
@@ -188,7 +185,7 @@ bool MusicOggStream::playMusic()
 
     alSourcePlay(m_soundSource);
     m_pausedMusic = false;
-    m_playing = true;
+    m_playing.store(true);
     check("playMusic");
     return true;
 }   // playMusic
@@ -196,7 +193,7 @@ bool MusicOggStream::playMusic()
 //-----------------------------------------------------------------------------
 bool MusicOggStream::isPlaying()
 {
-    return m_playing;
+    return m_playing.load();
 
     /*
     if (m_soundSource == -1) return false;
@@ -211,14 +208,14 @@ bool MusicOggStream::isPlaying()
 //-----------------------------------------------------------------------------
 bool MusicOggStream::stopMusic()
 {
-    m_playing = false;
+    m_playing.store(false);
     return (release());
 }   // stopMusic
 
 //-----------------------------------------------------------------------------
 bool MusicOggStream::pauseMusic()
 {
-    m_playing = false;
+    m_playing.store(false);
     if (m_fileName == "")
     {
         // nothing is loaded
@@ -233,13 +230,13 @@ bool MusicOggStream::pauseMusic()
 //-----------------------------------------------------------------------------
 bool MusicOggStream::resumeMusic()
 {
-    m_playing = true;
-
     if (m_fileName == "")
     {
         // nothing is loaded
         return true;
     }
+
+    m_playing.store(true);
 
     alSourcePlay(m_soundSource);
     m_pausedMusic= false;
@@ -289,8 +286,8 @@ void MusicOggStream::update()
         active = streamIntoBuffer(buffer);
         if(!active)
         {
-            // no more data. Seek to beginning (causes the sound to loop)
-            ov_time_seek(&m_oggStream, 0);
+            // no more data. Seek to loop start (causes the sound to loop)
+            ov_time_seek(&m_oggStream, m_loop_start);
             active = streamIntoBuffer(buffer);//now there really should be data
         }
 
@@ -332,11 +329,10 @@ bool MusicOggStream::streamIntoBuffer(ALuint buffer)
 
     int  size = 0;
     int  portion;
-    int  result;
 
     while(size < m_buffer_size)
     {
-        result = ov_read(&m_oggStream, pcm + size, m_buffer_size - size,
+        int result = ov_read(&m_oggStream, pcm + size, m_buffer_size - size,
                          isBigEndian, 2, 1, &portion);
 
         if(result > 0)
@@ -391,4 +387,4 @@ std::string MusicOggStream::errorString(int code)
     }
 }   // errorString
 
-#endif // HAVE_OGGVORBIS
+#endif // ENABLE_SOUND

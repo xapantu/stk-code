@@ -54,21 +54,15 @@ private:
 
     bool             m_close_to_a_challenge;
 
-    /** Translated string 'lap' displayed every frame. */
-    core::stringw    m_string_lap;
-
-    /** Translated string 'rank' displayed every frame. */
-    core::stringw    m_string_rank;
-
     // Minimap related variables
     // -------------------------
-    video::ITexture *m_trophy1;
-    video::ITexture *m_trophy2;
-    video::ITexture *m_trophy3;
+    video::ITexture* m_trophy[4];
     video::ITexture *m_lock;
     video::ITexture *m_open_challenge;
+    video::ITexture *m_locked_bonus;
 
-    video::ITexture* m_icons[5];
+
+    video::ITexture* m_icons[7];
 
     /** The size of a single marker on the screen for AI karts,
      *  need not be a power of 2. */
@@ -93,21 +87,21 @@ private:
     /** Distance of map from left side of screen. */
     int              m_map_left;
 
-    /** True if this is the first time the renderer is called. */
-    bool             m_is_first_render_call;
+    /** True if the minimap is initialized */
+    bool             m_is_minimap_initialized;
 
     /** Distance of map from bottom of screen. */
     int              m_map_bottom;
 
     int              m_trophy_points_width;
 
+    /** The latest challenge approached by the kart */
+    const ChallengeData* m_active_challenge;
+
+    core::stringw    m_challenge_description;
+
     /** The current challenge over which the mouse is hovering. */
     const OverworldChallenge *m_current_challenge;
-
-    /* Display informat for one player on the screen. */
-    void drawEnergyMeter       (int x, int y, const AbstractKart *kart,
-                                const core::recti &viewport,
-                                const core::vector2df &scaling);
 
     /** Display items that are shown once only (for all karts). */
     void drawGlobalMiniMap     ();
@@ -131,7 +125,8 @@ public:
     // ------------------------------------------------------------------------
     /** Returns the size of the texture on which to render the minimap to. */
     virtual const core::dimension2du getMiniMapSize() const
-    { return core::dimension2du(m_map_width, m_map_height); }
+                       { return core::dimension2du(m_map_width, m_map_height); }
+    virtual void calculateMinimapSize();
 
 };   // RaceGUI
 

@@ -22,8 +22,8 @@
 #include "MacOSX/CIrrDeviceMacOSX.h"
 #endif
 
-#ifdef _IRR_COMPILE_WITH_WINDOWS_CE_DEVICE_
-#include "CIrrDeviceWinCE.h"
+#ifdef _IRR_COMPILE_WITH_WAYLAND_DEVICE_
+#include "CIrrDeviceWayland.h"
 #endif
 
 #ifdef _IRR_COMPILE_WITH_X11_DEVICE_
@@ -34,12 +34,8 @@
 #include "CIrrDeviceSDL.h"
 #endif
 
-#ifdef _IRR_COMPILE_WITH_FB_DEVICE_
-#include "CIrrDeviceFB.h"
-#endif
-
-#ifdef _IRR_COMPILE_WITH_CONSOLE_DEVICE_
-#include "CIrrDeviceConsole.h"
+#ifdef _IRR_COMPILE_WITH_IOS_DEVICE_
+#include "CIrrDeviceiOS.h"
 #endif
 
 #ifdef _IRR_COMPILE_WITH_ANDROID_DEVICE_
@@ -47,13 +43,15 @@
 #include <android/log.h>
 #endif
 
+#include <stdio.h>
+
 namespace irr
 {
 	//! stub for calling createDeviceEx
 	IRRLICHT_API IrrlichtDevice* IRRCALLCONV createDevice(video::E_DRIVER_TYPE driverType,
 			const core::dimension2d<u32>& windowSize,
 			u32 bits, bool fullscreen,
-			bool stencilbuffer, bool vsync, IEventReceiver* res,
+			bool stencilbuffer, int swapInterval, IEventReceiver* res,
             io::IFileSystem *file_system)
 	{
 		SIrrlichtCreationParameters p;
@@ -62,62 +60,113 @@ namespace irr
 		p.Bits = (u8)bits;
 		p.Fullscreen = fullscreen;
 		p.Stencilbuffer = stencilbuffer;
-		p.Vsync = vsync;
+		p.SwapInterval = swapInterval;
 		p.EventReceiver = res;
-        p.FileSystem = file_system;
+		p.FileSystem = file_system;
 
 		return createDeviceEx(p);
+	}
+	
+	static void overrideDeviceType(E_DEVICE_TYPE& device_type)
+	{
+		const char* irr_device_type = getenv("IRR_DEVICE_TYPE");
+		
+		if (irr_device_type == NULL)
+			return;
+
+#ifdef _IRR_COMPILE_WITH_WINDOWS_DEVICE_
+		if (strcmp(irr_device_type, "win32") == 0)
+		{
+			device_type = EIDT_WIN32;
+		}
+#endif
+#ifdef _IRR_COMPILE_WITH_OSX_DEVICE_
+		if (strcmp(irr_device_type, "osx") == 0)
+		{
+			device_type = EIDT_OSX;
+		}
+#endif
+#ifdef _IRR_COMPILE_WITH_WAYLAND_DEVICE_
+		if (strcmp(irr_device_type, "wayland") == 0)
+		{
+			device_type = EIDT_WAYLAND;
+		}
+#endif
+#ifdef _IRR_COMPILE_WITH_X11_DEVICE_
+		if (strcmp(irr_device_type, "x11") == 0)
+		{
+			device_type = EIDT_X11;
+		}
+#endif
+#ifdef _IRR_COMPILE_WITH_SDL_DEVICE_
+		if (strcmp(irr_device_type, "sdl") == 0)
+		{
+			device_type = EIDT_SDL;
+		}
+#endif
+#ifdef _IRR_COMPILE_WITH_ANDROID_DEVICE_
+		if (strcmp(irr_device_type, "android") == 0)
+		{
+			device_type = EIDT_ANDROID;
+		}
+#endif
 	}
 
 	extern "C" IRRLICHT_API IrrlichtDevice* IRRCALLCONV createDeviceEx(const SIrrlichtCreationParameters& params)
 	{
 
 		IrrlichtDevice* dev = 0;
+		
+		SIrrlichtCreationParameters creation_params = params;
+		overrideDeviceType(creation_params.DeviceType);
+
+#ifdef _IRR_COMPILE_WITH_IOS_DEVICE_
+        if (creation_params.DeviceType == EIDT_IOS || (!dev && creation_params.DeviceType == EIDT_BEST))
+            dev = new CIrrDeviceiOS(creation_params);
+#endif
 
 #ifdef _IRR_COMPILE_WITH_WINDOWS_DEVICE_
-		if (params.DeviceType == EIDT_WIN32 || (!dev && params.DeviceType == EIDT_BEST))
-			dev = new CIrrDeviceWin32(params);
+		if (creation_params.DeviceType == EIDT_WIN32 || (!dev && creation_params.DeviceType == EIDT_BEST))
+			dev = new CIrrDeviceWin32(creation_params);
 #endif
 
 #ifdef _IRR_COMPILE_WITH_OSX_DEVICE_
-		if (params.DeviceType == EIDT_OSX || (!dev && params.DeviceType == EIDT_BEST))
-			dev = new CIrrDeviceMacOSX(params);
+		if (creation_params.DeviceType == EIDT_OSX || (!dev && creation_params.DeviceType == EIDT_BEST))
+			dev = new CIrrDeviceMacOSX(creation_params);
 #endif
 
-#ifdef _IRR_COMPILE_WITH_WINDOWS_CE_DEVICE_
-		if (params.DeviceType == EIDT_WINCE || (!dev && params.DeviceType == EIDT_BEST))
-			dev = new CIrrDeviceWinCE(params);
+#ifdef _IRR_COMPILE_WITH_WAYLAND_DEVICE_
+		if (creation_params.DeviceType == EIDT_WAYLAND || (!dev && creation_params.DeviceType == EIDT_BEST))
+		{
+			if (CIrrDeviceWayland::isWaylandDeviceWorking())
+			{
+				dev = new CIrrDeviceWayland(creation_params);
+				
+				if (!dev->getVideoDriver())
+				{
+					delete dev;
+					dev = NULL;
+				}
+			}
+		}
 #endif
 
 #ifdef _IRR_COMPILE_WITH_X11_DEVICE_
-		if (params.DeviceType == EIDT_X11 || (!dev && params.DeviceType == EIDT_BEST))
-			dev = new CIrrDeviceLinux(params);
+		if (creation_params.DeviceType == EIDT_X11 || (!dev && creation_params.DeviceType == EIDT_BEST))
+			dev = new CIrrDeviceLinux(creation_params);
 #endif
 
 #ifdef _IRR_COMPILE_WITH_SDL_DEVICE_
-		if (params.DeviceType == EIDT_SDL || (!dev && params.DeviceType == EIDT_BEST))
-			dev = new CIrrDeviceSDL(params);
-#endif
-
-#ifdef _IRR_COMPILE_WITH_FB_DEVICE_
-		if (params.DeviceType == EIDT_FRAMEBUFFER || (!dev && params.DeviceType == EIDT_BEST))
-			dev = new CIrrDeviceFB(params);
+		if (creation_params.DeviceType == EIDT_SDL || (!dev && creation_params.DeviceType == EIDT_BEST))
+			dev = new CIrrDeviceSDL(creation_params);
 #endif
 
 #ifdef _IRR_COMPILE_WITH_ANDROID_DEVICE_
-__android_log_print(ANDROID_LOG_VERBOSE, "native-activity", "%s %d", __FILE__, __LINE__);
-	   if (params.DeviceType == EIDT_ANDROID || (!dev && params.DeviceType == EIDT_BEST)) {
-__android_log_print(ANDROID_LOG_VERBOSE, "native-activity", "%s %d", __FILE__, __LINE__);
-		   dev = new CIrrDeviceAndroid(params);
-	   }
+		if (creation_params.DeviceType == EIDT_ANDROID || (!dev && creation_params.DeviceType == EIDT_BEST))
+			dev = new CIrrDeviceAndroid(creation_params);
 #endif
 
-#ifdef _IRR_COMPILE_WITH_CONSOLE_DEVICE_
-		if (params.DeviceType == EIDT_CONSOLE || (!dev && params.DeviceType == EIDT_BEST))
-			dev = new CIrrDeviceConsole(params);
-#endif
-
-		if (dev && !dev->getVideoDriver() && params.DriverType != video::EDT_NULL)
+		if (dev && !dev->getVideoDriver() && creation_params.DriverType != video::EDT_NULL)
 		{
 			dev->closeDevice(); // destroy window
 			dev->run(); // consume quit message

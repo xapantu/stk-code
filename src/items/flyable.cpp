@@ -26,21 +26,31 @@
 #include <IMeshManipulator.h>
 #include <IMeshSceneNode.h>
 
+#include "achievements/achievements_status.hpp"
+#include "config/player_manager.hpp"
 #include "graphics/explosion.hpp"
 #include "graphics/irr_driver.hpp"
+#include "graphics/material.hpp"
 #include "graphics/mesh_tools.hpp"
 #include "graphics/stars.hpp"
 #include "io/xml_node.hpp"
 #include "items/projectile_manager.hpp"
 #include "karts/abstract_kart.hpp"
+#include "karts/cannon_animation.hpp"
+#include "karts/controller/controller.hpp"
 #include "karts/explosion_animation.hpp"
-#include "modes/world.hpp"
-#include "modes/soccer_world.hpp"
+#include "modes/linear_world.hpp"
+#include "network/compress_network_body.hpp"
+#include "network/network_config.hpp"
+#include "network/network_string.hpp"
+#include "network/rewind_manager.hpp"
 #include "physics/physics.hpp"
 #include "tracks/track.hpp"
 #include "utils/constants.hpp"
 #include "utils/string_utils.hpp"
 #include "utils/vs.hpp"
+
+#include <typeinfo>
 
 // static variables:
 float         Flyable::m_st_speed       [PowerupManager::POWERUP_MAX];
@@ -53,7 +63,7 @@ Vec3          Flyable::m_st_extend      [PowerupManager::POWERUP_MAX];
 
 Flyable::Flyable(AbstractKart *kart, PowerupManager::PowerupType type,
                  float mass)
-       : Moveable(), TerrainInfo()
+       : Moveable(), TerrainInfo(), m_mass(mass)
 {
     // get the appropriate data from the static fields
     m_speed                        = m_st_speed[type];
@@ -66,23 +76,32 @@ Flyable::Flyable(AbstractKart *kart, PowerupManager::PowerupType type,
     m_type                         = type;
     m_has_hit_something            = false;
     m_shape                        = NULL;
-    m_mass                         = mass;
+    m_animation                    = NULL;
     m_adjust_up_velocity           = true;
-    m_time_since_thrown            = 0;
+    m_ticks_since_thrown           = 0;
     m_position_offset              = Vec3(0,0,0);
     m_owner_has_temporary_immunity = true;
     m_do_terrain_info              = true;
-    m_max_lifespan = -1;
+    m_deleted_once                 = false;
+    m_max_lifespan                 = -1;
+    m_compressed_gravity_vector    = 0;
+    // It will be reset for each state restore
+    m_has_server_state = true;
+    m_last_deleted_ticks = -1;
 
     // Add the graphical model
+#ifndef SERVER_ONLY
     setNode(irr_driver->addMesh(m_st_model[type], StringUtils::insertValues("flyable_%i", (int)type)));
-    irr_driver->applyObjectPassShader(getNode());
 #ifdef DEBUG
     std::string debug_name("flyable: ");
     debug_name += type;
     getNode()->setName(debug_name.c_str());
 #endif
-
+#endif
+    // Smooth network body for flyable doesn't seem to be needed, most of the
+    // time it rewinds almost the same
+    SmoothNetworkBody::setEnable(false);
+    m_created_ticks = World::getWorld()->getTicksSinceStart();
 }   // Flyable
 
 // ----------------------------------------------------------------------------
@@ -101,10 +120,12 @@ Flyable::Flyable(AbstractKart *kart, PowerupManager::PowerupType type,
  */
 void Flyable::createPhysics(float forw_offset, const Vec3 &velocity,
                             btCollisionShape *shape,
-                            float restitution, const float gravity,
+                            float restitution, const btVector3& gravity,
                             const bool rotates, const bool turn_around,
                             const btTransform* custom_direction)
 {
+    // Remove previously physics data if any
+    removePhysics();
     // Get Kart heading direction
     btTransform trans = ( !custom_direction ? m_owner->getAlignedTransform()
                                             : *custom_direction          );
@@ -112,8 +133,8 @@ void Flyable::createPhysics(float forw_offset, const Vec3 &velocity,
     // Apply offset
     btTransform offset_transform;
     offset_transform.setIdentity();
-    assert(!isnan(m_average_height));
-    assert(!isnan(forw_offset));
+    assert(!std::isnan(m_average_height));
+    assert(!std::isnan(forw_offset));
     offset_transform.setOrigin(Vec3(0,m_average_height,forw_offset));
 
     // turn around
@@ -131,9 +152,14 @@ void Flyable::createPhysics(float forw_offset, const Vec3 &velocity,
     m_shape = shape;
     createBody(m_mass, trans, m_shape, restitution);
     m_user_pointer.set(this);
-    World::getWorld()->getPhysics()->addBody(getBody());
+    Physics::getInstance()->addBody(getBody());
 
-    m_body->setGravity(btVector3(0.0f, gravity, 0));
+    m_body->setGravity(gravity);
+    if (gravity.length2() != 0.0f && m_do_terrain_info)
+    {
+        m_compressed_gravity_vector = MiniGLM::compressVector3(
+            Vec3(m_body->getGravity().normalized()).toIrrVector());
+    }
 
     // Rotate velocity to point in the right direction
     btVector3 v=trans.getBasis()*velocity;
@@ -142,22 +168,21 @@ void Flyable::createPhysics(float forw_offset, const Vec3 &velocity,
     {
 #ifdef DEBUG
         // Just to get some additional information if the assert is triggered
-        if(isnan(v.getX()) || isnan(v.getY()) || isnan(v.getZ()))
+        if(std::isnan(v.getX()) || std::isnan(v.getY()) || std::isnan(v.getZ()))
         {
             Log::debug("[Flyable]", "vel %f %f %f v %f %f %f",
                         velocity.getX(),velocity.getY(),velocity.getZ(),
                         v.getX(),v.getY(),v.getZ());
         }
 #endif
-        assert(!isnan(v.getX()));
-        assert(!isnan(v.getY()));
-        assert(!isnan(v.getZ()));
+        assert(!std::isnan(v.getX()));
+        assert(!std::isnan(v.getY()));
+        assert(!std::isnan(v.getZ()));
         m_body->setLinearVelocity(v);
         if(!rotates) m_body->setAngularFactor(0.0f);   // prevent rotations
     }
     m_body->setCollisionFlags(m_body->getCollisionFlags() |
                               btCollisionObject::CF_NO_CONTACT_RESPONSE);
-
 }   // createPhysics
 
 // -----------------------------------------------------------------------------
@@ -178,13 +203,6 @@ void Flyable::init(const XMLNode &node, scene::IMesh *model,
     node.get("min-height",      &(m_st_min_height[type])  );
     node.get("max-height",      &(m_st_max_height[type])  );
     node.get("force-updown",    &(m_st_force_updown[type]));
-    core::vector3df scale(1.0f, 1.0f, 1.0f);
-    if(node.get("scale",        &scale))
-    {
-        irr::scene::IMeshManipulator *mani =
-            irr_driver->getVideoDriver()->getMeshManipulator();
-        mani->scale(model, scale);
-    }
 
     // Store the size of the model
     Vec3 min, max;
@@ -196,9 +214,29 @@ void Flyable::init(const XMLNode &node, scene::IMesh *model,
 //-----------------------------------------------------------------------------
 Flyable::~Flyable()
 {
-    if(m_shape) delete m_shape;
-    World::getWorld()->getPhysics()->removeBody(getBody());
+    removePhysics();
+    if (m_animation)
+    {
+        m_animation->handleResetRace();
+        delete m_animation;
+    }
 }   // ~Flyable
+
+//-----------------------------------------------------------------------------
+/* Called when delete this flyable or re-firing during rewind. */
+void Flyable::removePhysics()
+{
+    if (m_shape)
+    {
+        delete m_shape;
+        m_shape = NULL;
+    }
+    if (m_body.get())
+    {
+        Physics::getInstance()->removeBody(m_body.get());
+        m_body.reset();
+    }
+}   // removePhysics
 
 //-----------------------------------------------------------------------------
 /** Returns information on what is the closest kart and at what distance it is.
@@ -228,14 +266,11 @@ void Flyable::getClosestKart(const AbstractKart **minKart,
             kart->isInvulnerable()                 ||
             kart->getKartAnimation()                   ) continue;
 
-        const SoccerWorld* sw = dynamic_cast<SoccerWorld*>(World::getWorld());
-        if (sw)
-        {
-            // Don't hit teammates in soccer world
-            if (sw->getKartTeam(kart->getWorldKartId()) == sw
-                ->getKartTeam(m_owner->getWorldKartId()))
+        // Don't hit teammates in team world
+        if (world->hasTeam() &&
+            world->getKartTeam(kart->getWorldKartId()) ==
+            world->getKartTeam(m_owner->getWorldKartId()))
             continue;
-        }
 
         btTransform t=kart->getTrans();
 
@@ -296,59 +331,89 @@ void Flyable::getLinearKartItemIntersection (const Vec3 &origin,
                                              float *fire_angle,
                                              float *up_velocity)
 {
-    Vec3 relative_target_kart_loc = target_kart->getXYZ() - origin;
-
+    // Transform the target into the firing kart's frame of reference
+    btTransform inv_trans = m_owner->getTrans().inverse();
+    
+    Vec3 relative_target_kart_loc = inv_trans(target_kart->getXYZ());
+    
+    // Find the direction target is moving in
     btTransform trans = target_kart->getTrans();
     Vec3 target_direction(trans.getBasis().getColumn(2));
 
-    float dx = relative_target_kart_loc.getX();
-    float dy = relative_target_kart_loc.getY();
-    float dz = relative_target_kart_loc.getZ();
+    // Now rotate it to the firing kart's frame of reference
+    btQuaternion inv_rotate = inv_trans.getRotation();
+    target_direction = 
+        target_direction.rotate(inv_rotate.getAxis(), inv_rotate.getAngle());
+    
+    // Now we try to find the angle to aim at to hit the target. 
+    // Warning : Funky math stuff going on below. To understand, see answer by 
+    // Jeffrey Hantin here : 
+    // http://stackoverflow.com/questions/2248876/2d-game-fire-at-a-moving-target-by-predicting-intersection-of-projectile-and-u
+    
+    float target_x_speed = target_direction.getX()*target_kart->getSpeed();
+    float target_z_speed = target_direction.getZ()*target_kart->getSpeed();
+    float target_y_speed = target_direction.getY()*target_kart->getSpeed();
 
-    float gy = target_direction.getY();
+    float a = (target_x_speed*target_x_speed) + (target_z_speed*target_z_speed) -
+                (item_XZ_speed*item_XZ_speed);
+    float b = 2 * (target_x_speed * (relative_target_kart_loc.getX())
+                    + target_z_speed * (relative_target_kart_loc.getZ()));
+    float c = relative_target_kart_loc.getX()*relative_target_kart_loc.getX()
+                + relative_target_kart_loc.getZ()*relative_target_kart_loc.getZ();
+    
+    float discriminant = b*b - 4 * a*c;
+    if (discriminant < 0) discriminant = 0;
 
-    //Projected onto X-Z plane
-    float target_kart_speed = target_direction.length_2d()
-                            * target_kart->getSpeed();
-
-    float target_kart_heading = target_kart->getHeading();
-
-    float dist = -(target_kart_speed / item_XZ_speed)
-               * (dx * cosf(target_kart_heading) -
-                  dz * sinf(target_kart_heading)   );
-
-    float fire_th = (dx*dist - dz * sqrtf(dx*dx + dz*dz - dist*dist))
-                  / (dx*dx + dz*dz);
-    if(fire_th>1)
-        fire_th = 1.0f;
-    else if (fire_th<-1.0f)
-        fire_th = -1.0f;
-    fire_th = (((dist - dx*fire_th) / dz > 0) ? -acosf(fire_th)
-                                              :  acosf(fire_th));
-
-    float time = 0.0f;
-    float a = item_XZ_speed     * sinf (fire_th)
-            + target_kart_speed * sinf (target_kart_heading);
-    float b = item_XZ_speed     * cosf (fire_th)
-            + target_kart_speed * cosf (target_kart_heading);
-
-    if (fabsf(a) > fabsf(b)) time = fabsf (dx / a);
-    else if (b != 0.0f)      time = fabsf(dz / b);
-
-    if (fire_th > M_PI)
-        fire_th -= M_PI;
-    else
-        fire_th += M_PI;
+    float t1 = (-b + sqrt(discriminant)) / (2 * a);
+    float t2 = (-b - sqrt(discriminant)) / (2 * a);
+    float time;
+    if (t1 >= 0 && t1<t2) time = t1;
+    else time = t2;
 
     //createPhysics offset
-    assert(sqrt(a*a+b*b)!=0);
-    time -= forw_offset / sqrt(a*a+b*b);
+    time -= forw_offset / item_XZ_speed;
+
+    float aimX = time*target_x_speed + relative_target_kart_loc.getX();
+    float aimZ = time*target_z_speed + relative_target_kart_loc.getZ();
 
     assert(time!=0);
-    *fire_angle = fire_th;
-    *up_velocity = (0.5f * time * gravity) + (dy / time)
-                 + (gy * target_kart->getSpeed());
+    float angle = atan2f(aimX, aimZ);
+    
+    *fire_angle = angle;
+
+    // Now find the up_velocity. This is an application of newton's equation.
+    *up_velocity = (0.5f * time * gravity) + (relative_target_kart_loc.getY() / time)
+                 + ( target_y_speed);
 }   // getLinearKartItemIntersection
+
+//-----------------------------------------------------------------------------
+
+void Flyable::setAnimation(AbstractKartAnimation *animation)
+{
+    if (animation)
+    {
+        assert(m_animation == NULL);
+        // add or removeBody currently breaks animation rewind
+        moveToInfinity(/*set_moveable_trans*/false);
+    }
+    else   // animation = NULL
+    {
+        assert(m_animation != NULL);
+        m_body->setWorldTransform(getTrans());
+    }
+    m_animation = animation;
+}   // addAnimation
+
+//-----------------------------------------------------------------------------
+/** Called once per rendered frame. It is used to only update any graphical
+ *  effects.
+ *  \param dt Time step size (since last call).
+ */
+void Flyable::updateGraphics(float dt)
+{
+    Moveable::updateSmoothedGraphics(dt);
+    Moveable::updateGraphics();
+}   // updateGraphics
 
 //-----------------------------------------------------------------------------
 /** Updates this flyable. It calls Moveable::update. If this function returns
@@ -356,19 +421,40 @@ void Flyable::getLinearKartItemIntersection (const Vec3 &origin,
  *  \param dt Time step size.
  *  \returns True if this object can be deleted.
  */
-bool Flyable::updateAndDelete(float dt)
+bool Flyable::updateAndDelete(int ticks)
 {
-    m_time_since_thrown += dt;
-    if(m_max_lifespan > -1 && m_time_since_thrown > m_max_lifespan)
+    if (!m_has_server_state)
+        return false;
+
+    if (hasAnimation())
+    {
+        m_animation->update(ticks);
+        Moveable::update(ticks);
+        // Move the physical body to infinity so it doesn't interact with
+        // game objects (for easier rewind)
+        moveToInfinity(/*set_moveable_trans*/false);
+        return false;
+    }   // if animation
+
+    // 32767 for max m_ticks_since_thrown so the last bit for animation save
+    if (m_ticks_since_thrown < 32767)
+        m_ticks_since_thrown += ticks;
+    if(m_max_lifespan > -1 && (int)m_ticks_since_thrown > m_max_lifespan)
         hit(NULL);
 
     if(m_has_hit_something) return true;
+
+    // Round values in network for better synchronization
+    if (NetworkConfig::get()->roundValuesNow())
+        CompressNetworkBody::compress(m_body.get(), m_motion_state.get());
+    // Save the compressed values if done in client
+    Moveable::update(ticks);
 
     //Vec3 xyz=getBody()->getWorldTransform().getOrigin();
     const Vec3 &xyz=getXYZ();
     // Check if the flyable is outside of the track. If so, explode it.
     const Vec3 *min, *max;
-    World::getWorld()->getTrack()->getAABB(&min, &max);
+    Track::getCurrentTrack()->getAABB(&min, &max);
 
     // I have seen that the bullet AABB can be slightly different from the
     // one computed here - I assume due to minor floating point errors
@@ -379,9 +465,9 @@ bool Flyable::updateAndDelete(float dt)
     // But since we couldn't reproduce the problem, and the epsilon used
     // here does not hurt, I'll leave it in.
     float eps = 0.1f;
-    assert(!isnan(xyz.getX()));
-    assert(!isnan(xyz.getY()));
-    assert(!isnan(xyz.getZ()));
+    assert(!std::isnan(xyz.getX()));
+    assert(!std::isnan(xyz.getY()));
+    assert(!std::isnan(xyz.getZ()));
     if(xyz[0]<(*min)[0]+eps || xyz[2]<(*min)[2]+eps || xyz[1]<(*min)[1]+eps ||
        xyz[0]>(*max)[0]-eps || xyz[2]>(*max)[2]-eps || xyz[1]>(*max)[1]-eps   )
     {
@@ -389,15 +475,33 @@ bool Flyable::updateAndDelete(float dt)
         return true;
     }
 
-    // Add the position offset so that the flyable can adjust its position
-    // (usually to do the raycast from a slightly higher position to avoid
-    // problems finding the terrain in steep uphill sections).
-    if(m_do_terrain_info)
-        TerrainInfo::update(xyz+m_position_offset);
+    if (m_do_terrain_info)
+    {
+        Vec3 towards = MiniGLM::decompressVector3(m_compressed_gravity_vector);
+        // Add the position offset so that the flyable can adjust its position
+        // (usually to do the raycast from a slightly higher position to avoid
+        // problems finding the terrain in steep uphill sections).
+        // Towards is a unit vector. so we can multiply -towards to offset the
+        // position by one unit.
+        TerrainInfo::update(xyz + m_position_offset*(-towards), towards);
+
+        // Make flyable anti-gravity when the it's projected on such surface
+        const Material* m = TerrainInfo::getMaterial();
+        if (m && m->hasGravity())
+        {
+            getBody()->setGravity(TerrainInfo::getNormal() * -70.0f);
+        }
+        else
+        {
+            getBody()->setGravity(Vec3(0, 1, 0) * -70.0f);
+        }
+        m_compressed_gravity_vector = MiniGLM::compressVector3(
+            Vec3(m_body->getGravity().normalized()).toIrrVector());
+    }
 
     if(m_adjust_up_velocity)
     {
-        float hat = xyz.getY()-getHoT();
+        float hat = (xyz - getHitPoint()).length();
 
         // Use the Height Above Terrain to set the Z velocity.
         // HAT is clamped by min/max height. This might be somewhat
@@ -406,22 +510,19 @@ bool Flyable::updateAndDelete(float dt)
         float delta = m_average_height - std::max(std::min(hat, m_max_height),
                                                   m_min_height);
         Vec3 v = getVelocity();
-        assert(!isnan(v.getX()));
-        assert(!isnan(v.getX()));
-        assert(!isnan(v.getX()));
+        assert(!std::isnan(v.getX()));
+        assert(!std::isnan(v.getX()));
+        assert(!std::isnan(v.getX()));
         float heading = atan2f(v.getX(), v.getZ());
-        assert(!isnan(heading));
+        assert(!std::isnan(heading));
         float pitch   = getTerrainPitch(heading);
         float vel_up = m_force_updown*(delta);
         if (hat < m_max_height) // take into account pitch of surface
             vel_up += v.length_2d()*tanf(pitch);
-        assert(!isnan(vel_up));
+        assert(!std::isnan(vel_up));
         v.setY(vel_up);
         setVelocity(v);
     }   // if m_adjust_up_velocity
-
-    Moveable::update(dt);
-
     return false;
 }   // updateAndDelete
 
@@ -433,8 +534,8 @@ bool Flyable::updateAndDelete(float dt)
 bool Flyable::isOwnerImmunity(const AbstractKart* kart_hit) const
 {
     return m_owner_has_temporary_immunity &&
-           kart_hit == m_owner            &&
-           m_time_since_thrown < 2.0f;
+        kart_hit == m_owner            &&
+        (int)m_ticks_since_thrown < stk_config->time2Ticks(2.0f);
 }   // isOwnerImmunity
 
 // ----------------------------------------------------------------------------
@@ -446,6 +547,8 @@ bool Flyable::isOwnerImmunity(const AbstractKart* kart_hit) const
  */
 bool Flyable::hit(AbstractKart *kart_hit, PhysicalObject* object)
 {
+    if (!m_has_server_state || hasAnimation())
+        return false;
     // the owner of this flyable should not be hit by his own flyable
     if(isOwnerImmunity(kart_hit)) return false;
     m_has_hit_something=true;
@@ -471,15 +574,13 @@ void Flyable::explode(AbstractKart *kart_hit, PhysicalObject *object,
     for ( unsigned int i = 0 ; i < world->getNumKarts() ; i++ )
     {
         AbstractKart *kart = world->getKart(i);
-
-        const SoccerWorld* sw = dynamic_cast<SoccerWorld*>(World::getWorld());
-        if (sw)
-        {
-            // Don't explode teammates in soccer world
-            if (sw->getKartTeam(kart->getWorldKartId()) == sw
-                ->getKartTeam(m_owner->getWorldKartId()))
+        // Don't explode teammates in team world
+        if (world->hasTeam() &&
+            world->getKartTeam(kart->getWorldKartId()) ==
+            world->getKartTeam(m_owner->getWorldKartId()))
             continue;
-        }
+
+        if (kart->isGhostKart()) continue;
 
         // If no secondary hits should be done, only hit the
         // direct hit kart.
@@ -494,13 +595,23 @@ void Flyable::explode(AbstractKart *kart_hit, PhysicalObject *object,
             // The explosion animation will register itself with the kart
             // and will free it later.
             ExplosionAnimation::create(kart, getXYZ(), kart==kart_hit);
-            if(kart==kart_hit && world->getTrack()->isArena())
+            if (kart == kart_hit)
             {
-                world->kartHit(kart->getWorldKartId());
+                world->kartHit(kart->getWorldKartId(),
+                    m_owner->getWorldKartId());
+
+                if (m_owner->getController()->canGetAchievements())
+                {
+                    if (m_owner->getWorldKartId() != kart->getWorldKartId())
+                        PlayerManager::addKartHit(kart->getWorldKartId());
+                    PlayerManager::increaseAchievement(AchievementsStatus::ALL_HITS, 1);
+                    if (race_manager->isLinearRaceMode())
+                        PlayerManager::increaseAchievement(AchievementsStatus::ALL_HITS_1RACE, 1);
+                }
             }
         }
     }
-    world->getTrack()->handleExplosion(getXYZ(), object, secondary_hits);
+    Track::getCurrentTrack()->handleExplosion(getXYZ(), object,secondary_hits);
 }   // explode
 
 // ----------------------------------------------------------------------------
@@ -509,12 +620,180 @@ void Flyable::explode(AbstractKart *kart_hit, PhysicalObject *object,
  */
 HitEffect* Flyable::getHitEffect() const
 {
-    return new Explosion(getXYZ(), "explosion", "explosion_cake.xml");
+    return m_deleted_once ? NULL :
+        new Explosion(getXYZ(), "explosion", "explosion_cake.xml");
 }   // getHitEffect
 
 // ----------------------------------------------------------------------------
 unsigned int Flyable::getOwnerId()
 {
     return m_owner->getWorldKartId();
-}
+}   // getOwnerId
+
+// ----------------------------------------------------------------------------
+/** It's called when undoing the creation or destruction of flyables, so that
+ *  it will not affected the current game, and it will be deleted in
+ *  computeError.
+ *  \param set_moveable_trans If true, set m_transform in moveable, so the
+ *  graphical node will have the same transform, otherwise only the physical
+ *  body will be moved to infinity
+ */
+void Flyable::moveToInfinity(bool set_moveable_trans)
+{
+    const Vec3 *min, *max;
+    Track::getCurrentTrack()->getAABB(&min, &max);
+    btTransform t = m_body->getWorldTransform();
+    t.setOrigin(*max * 2.0f);
+    m_body->proceedToTransform(t);
+    if (set_moveable_trans)
+        setTrans(t);
+    else
+        m_motion_state->setWorldTransform(t);
+}   // moveToInfinity
+
+// ----------------------------------------------------------------------------
+BareNetworkString* Flyable::saveState(std::vector<std::string>* ru)
+{
+    if (m_has_hit_something)
+        return NULL;
+
+    ru->push_back(getUniqueIdentity());
+
+    BareNetworkString* buffer = new BareNetworkString();
+    uint16_t ticks_since_thrown_animation = (m_ticks_since_thrown & 32767) |
+        (hasAnimation() ? 32768 : 0);
+    buffer->addUInt16(ticks_since_thrown_animation);
+    if (m_do_terrain_info)
+        buffer->addUInt32(m_compressed_gravity_vector);
+
+    if (hasAnimation())
+        m_animation->saveState(buffer);
+    else
+    {
+        CompressNetworkBody::compress(
+            m_body.get(), m_motion_state.get(), buffer);
+    }
+    return buffer;
+}   // saveState
+
+// ----------------------------------------------------------------------------
+void Flyable::restoreState(BareNetworkString *buffer, int count)
+{
+    uint16_t ticks_since_thrown_animation = buffer->getUInt16();
+    bool has_animation_in_state =
+        (ticks_since_thrown_animation >> 15 & 1) == 1;
+    if (m_do_terrain_info)
+        m_compressed_gravity_vector = buffer->getUInt32();
+
+    if (has_animation_in_state)
+    {
+        // At the moment we only have cannon animation for rubber ball
+        if (!m_animation)
+        {
+            try
+            {
+                CannonAnimation* ca = new CannonAnimation(this, buffer);
+                setAnimation(ca);
+            }
+            catch (const KartAnimationCreationException& kace)
+            {
+                Log::error("Flyable", "Kart animation creation error: %s",
+                    kace.what());
+                buffer->skip(kace.getSkippingOffset());
+            }
+        }
+        else
+            m_animation->restoreState(buffer);
+    }
+    else
+    {
+        if (hasAnimation())
+        {
+            // Delete unconfirmed animation, destructor of cannon animation
+            // will set m_animation to null
+            delete m_animation;
+        }
+        CompressNetworkBody::decompress(
+            buffer, m_body.get(), m_motion_state.get());
+        m_transform = m_body->getWorldTransform();
+    }
+    m_ticks_since_thrown = ticks_since_thrown_animation & 32767;
+    m_has_server_state = true;
+    m_has_hit_something = false;
+}   // restoreState
+
+// ----------------------------------------------------------------------------
+void Flyable::addForRewind(const std::string& uid)
+{
+    Rewinder::setUniqueIdentity(uid);
+    Rewinder::rewinderAdd();
+}   // addForRewind
+
+// ----------------------------------------------------------------------------
+void Flyable::saveTransform()
+{
+    // It will be overwritten in restoreState (so it's confirmed by server) or
+    // onFireFlyable (before the game state all flyables are assumed to be
+    // sucessfully created)
+    moveToInfinity();
+    m_has_server_state = false;
+    m_last_deleted_ticks = -1;
+}   // saveTransform
+
+// ----------------------------------------------------------------------------
+void Flyable::computeError()
+{
+    // Remove the flyable if it doesn't exist or failed to create on server
+    // For each saveTransform it will call moveToInfinity so the invalid
+    // flyables won't affect the current game
+    const int state_ticks = RewindManager::get()->getLatestConfirmedState();
+    if (!m_has_server_state && (m_last_deleted_ticks == -1 ||
+        state_ticks > m_last_deleted_ticks))
+    {
+        const std::string& uid = getUniqueIdentity();
+        Log::debug("Flyable", "Flyable %s by %s created at %d "
+            "doesn't exist on server, remove it.",
+            typeid(*this).name(), StringUtils::wideToUtf8(
+            m_owner->getController()->getName()).c_str(), m_created_ticks);
+        projectile_manager->removeByUID(uid);
+    }
+}   // computeError
+
+// ----------------------------------------------------------------------------
+/** Call when the item is (re-)fired (during rewind if needed) by
+ *  projectile_manager. */
+void Flyable::onFireFlyable()
+{
+    if (m_animation)
+    {
+        m_animation->handleResetRace();
+        delete m_animation;
+        m_animation = NULL;
+    }
+
+    m_ticks_since_thrown = 0;
+    m_has_hit_something = false;
+    m_has_server_state = true;
+    m_deleted_once = false;
+    m_last_deleted_ticks = -1;
+    // Reset the speed each time for (re-)firing, so subclass access with same
+    // initial value
+    m_speed = m_st_speed[m_type];
+    m_extend = m_st_extend[m_type];
+    m_max_height = m_st_max_height[m_type];
+    m_min_height = m_st_min_height[m_type];
+    m_average_height = (m_min_height + m_max_height) / 2.0f;
+    m_force_updown = m_st_force_updown[m_type];
+}   // onFireFlyable
+
+// ----------------------------------------------------------------------------
+/* Call when deleting the flyable locally and save the deleted world ticks. */
+void Flyable::onDeleteFlyable()
+{
+    m_deleted_once = true;
+    m_last_deleted_ticks = World::getWorld()->getTicksSinceStart();
+    m_has_server_state = false;
+    moveToInfinity();
+}   // onDeleteFlyable
+
 /* EOF */

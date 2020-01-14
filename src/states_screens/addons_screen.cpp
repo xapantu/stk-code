@@ -30,12 +30,11 @@
 #include "states_screens/dialogs/addons_loading.hpp"
 #include "states_screens/dialogs/message_dialog.hpp"
 #include "states_screens/state_manager.hpp"
-#include "utils/translation.hpp"
+#include "utils/string_utils.hpp"
 #include "utils/ptr_vector.hpp"
+#include "utils/translation.hpp"
 
 #include <iostream>
-
-DEFINE_SCREEN_SINGLETON( AddonsScreen );
 
 using namespace Online;
 // ----------------------------------------------------------------------------
@@ -64,24 +63,23 @@ AddonsScreen::AddonsScreen() : Screen("addons_screen.stkgui")
     m_date_filters.push_back(filter_9m);
     m_date_filters.push_back(filter_1y);
     m_date_filters.push_back(filter_2y);
-
 }   // AddonsScreen
 
 // ----------------------------------------------------------------------------
 
 void AddonsScreen::loadedFromFile()
 {
-    video::ITexture* icon1 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI,
+    video::ITexture* icon1 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI_ICON,
                                                      "package.png"         ));
-    video::ITexture* icon2 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI,
+    video::ITexture* icon2 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI_ICON,
                                                      "no-package.png"      ));
-    video::ITexture* icon3 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI,
+    video::ITexture* icon3 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI_ICON,
                                                      "package-update.png"  ));
-    video::ITexture* icon4 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI,
+    video::ITexture* icon4 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI_ICON,
                                                      "package-featured.png"));
-    video::ITexture* icon5 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI,
+    video::ITexture* icon5 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI_ICON,
                                                   "no-package-featured.png"));
-    video::ITexture* icon6 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI,
+    video::ITexture* icon6 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI_ICON,
                                                      "loading.png"));
 
     m_icon_bank = new irr::gui::STKModifiedSpriteBank( GUIEngine::getGUIEnv());
@@ -95,7 +93,6 @@ void AddonsScreen::loadedFromFile()
     GUIEngine::ListWidget* w_list =
         getWidget<GUIEngine::ListWidget>("list_addons");
     w_list->setColumnListener(this);
-    
 }   // loadedFromFile
 
 
@@ -130,6 +127,15 @@ void AddonsScreen::beforeAddingWidget()
     {
         w_filter_rating->addLabel(StringUtils::toWString(n / 2.0));
     }
+
+    GUIEngine::SpinnerWidget* w_filter_installation =
+                        getWidget<GUIEngine::SpinnerWidget>("filter_installation");
+    w_filter_installation->m_properties[GUIEngine::PROP_MIN_VALUE] = "0";
+    w_filter_installation->m_properties[GUIEngine::PROP_MAX_VALUE] = "2";
+    w_filter_installation->addLabel(_("All"));
+    w_filter_installation->addLabel(_("Installed"));
+    //I18N: Addon not installed for fillter
+    w_filter_installation->addLabel(_("Not installed"));
 }
 // ----------------------------------------------------------------------------
 
@@ -137,11 +143,8 @@ void AddonsScreen::init()
 {
     Screen::init();
 
-    m_reloading = false;
-
     m_sort_desc = false;
-    m_sort_default = true;
-    m_sort_col = 0;
+    m_reloading = false;
 
     getWidget<GUIEngine::RibbonWidget>("category")->setActive(false);
 
@@ -151,12 +154,14 @@ void AddonsScreen::init()
     GUIEngine::ListWidget* w_list =
         getWidget<GUIEngine::ListWidget>("list_addons");
 
-    m_icon_height = getHeight()/8.0f;
+    // This defines the row height !
+    m_icon_height = GUIEngine::getFontHeight() * 2;
     // 128 is the height of the image file
-    m_icon_bank->setScale(m_icon_height/128.0f);
+    m_icon_bank->setScale((float)GUIEngine::getFontHeight() / 72.0f);
     w_list->setIcons(m_icon_bank, (int)(m_icon_height));
 
     m_type = "kart";
+
     bool ip = UserConfigParams::m_internet_status == RequestManager::IPERM_ALLOWED;
     getWidget<GUIEngine::IconButtonWidget>("reload")->setActive(ip);
 
@@ -170,6 +175,10 @@ void AddonsScreen::init()
     GUIEngine::SpinnerWidget* w_filter_rating =
                         getWidget<GUIEngine::SpinnerWidget>("filter_rating");
     w_filter_rating->setValue(0);
+
+    GUIEngine::SpinnerWidget* w_filter_installation =
+                        getWidget<GUIEngine::SpinnerWidget>("filter_installation");
+    w_filter_installation->setValue(0);
 
     // Set the default sort order
     Addon::setSortOrder(Addon::SO_DEFAULT);
@@ -193,11 +202,10 @@ void AddonsScreen::tearDown()
 // ----------------------------------------------------------------------------
 /** Loads the list of all addons of the given type. The gui element will be
  *  updated.
- *  \param type Must be 'kart' or 'track'.
  */
 void AddonsScreen::loadList()
 {
-
+#ifndef SERVER_ONLY
     // Get the filter by words.
     GUIEngine::TextBoxWidget* w_filter_name =
                         getWidget<GUIEngine::TextBoxWidget>("filter_name");
@@ -217,12 +225,19 @@ void AddonsScreen::loadList()
     GUIEngine::SpinnerWidget* w_filter_rating =
                         getWidget<GUIEngine::SpinnerWidget>("filter_rating");
     float rating = w_filter_rating->getValue() / 2.0f;
+    
+    GUIEngine::SpinnerWidget* w_filter_installation =
+                        getWidget<GUIEngine::SpinnerWidget>("filter_installation");
 
     // First create a list of sorted entries
     PtrVector<const Addon, REF> sorted_list;
     for(unsigned int i=0; i<addons_manager->getNumAddons(); i++)
     {
         const Addon & addon = addons_manager->getAddon(i);
+        // Ignore not installed addons if the checkbox is enabled
+        if(   (w_filter_installation->getValue() == 1 && !addon.isInstalled())
+           || (w_filter_installation->getValue() == 2 &&  addon.isInstalled()))
+            continue;
         // Ignore addons of a different type
         if(addon.getType()!=m_type) continue;
         // Ignore invisible addons
@@ -379,35 +394,24 @@ void AddonsScreen::loadList()
     else
         getWidget<GUIEngine::RibbonWidget>("category")->select("tab_update",
                                                         PLAYER_ID_GAME_MASTER);
+#endif
 }   // loadList
 
 // ----------------------------------------------------------------------------
-void AddonsScreen::onColumnClicked(int column_id)
+void AddonsScreen::onColumnClicked(int column_id, bool sort_desc, bool sort_default)
 {
-    if (m_sort_col != column_id)
-    {
-        m_sort_desc = false;
-        m_sort_default = false;
-    }
-    else
-    {
-        if (!m_sort_default) m_sort_desc = !m_sort_desc;
-        m_sort_default = !m_sort_desc && !m_sort_default;
-    }
-    
-    m_sort_col = column_id;
-
     switch(column_id)
     {
     case 0:
-        Addon::setSortOrder(m_sort_default ? Addon::SO_DEFAULT : Addon::SO_NAME);
+        Addon::setSortOrder(sort_default ? Addon::SO_DEFAULT : Addon::SO_NAME);
         break;
     case 1:
-        Addon::setSortOrder(m_sort_default ? Addon::SO_DEFAULT : Addon::SO_DATE);
+        Addon::setSortOrder(sort_default ? Addon::SO_DEFAULT : Addon::SO_DATE);
         break;
     default: assert(0); break;
     }   // switch
     /** \brief Toggle the sort order after column click **/
+    m_sort_desc = sort_desc && !sort_default;
     loadList();
 }   // onColumnClicked
 
@@ -415,6 +419,7 @@ void AddonsScreen::onColumnClicked(int column_id)
 void AddonsScreen::eventCallback(GUIEngine::Widget* widget,
                                  const std::string& name, const int playerID)
 {
+#ifndef SERVER_ONLY
     if (name == "back")
     {
         StateManager::get()->escapePressed();
@@ -468,11 +473,11 @@ void AddonsScreen::eventCallback(GUIEngine::Widget* widget,
             loadList();
         }
     }
-    else if (name == "filter_search")
+    else if (name == "filter_search" || name == "filter_installation")
     {
         loadList();
     }
-
+#endif
 }   // eventCallback
 
 // ----------------------------------------------------------------------------
@@ -497,6 +502,7 @@ void AddonsScreen::setLastSelected()
 
 void AddonsScreen::onUpdate(float dt)
 {
+#ifndef SERVER_ONLY
     if (m_reloading)
     {
         if(UserConfigParams::m_internet_status!=RequestManager::IPERM_ALLOWED)
@@ -525,4 +531,5 @@ void AddonsScreen::onUpdate(float dt)
             // Addons manager is still initialising/downloading.
         }
     }
+#endif
 }   // onUpdate

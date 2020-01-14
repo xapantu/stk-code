@@ -21,15 +21,24 @@
 
 #include "animations/animation_base.hpp"
 #include "tracks/check_line.hpp"
+#include "utils/cpp2011.hpp"
+
+#include <set>
 
 class CheckManager;
+class Flyable;
 class Ipo;
 class ShowCurve;
 class XMLNode;
 
+namespace SP
+{
+    class SPDynamicDrawCall;
+}
+
 /**
- *  \brief Implements a simple checkline that will cause a kart to be
- *         shot to a specified point.
+ *  \brief Implements a simple checkline that will cause a kart or flyable to
+ *         be shot to a specified point.
  *
  * \ingroup tracks
  */
@@ -37,7 +46,8 @@ class CheckCannon : public CheckLine
 {
 private:
     /** The target point the kart will fly to. */
-    core::line3df   m_target;
+    Vec3 m_target_left;
+    Vec3 m_target_right;
 
     /** Stores the cannon curve data. */
     Ipo *m_curve;
@@ -45,14 +55,42 @@ private:
 #ifdef DEBUG
     /** If track debugging is enabled, this will show the the curve of
      *  the cannon in the race. */
-    ShowCurve * m_show_curve;
+    ShowCurve* m_show_curve;
+
+    /** Used to display debug information about checklines. */
+    std::shared_ptr<SP::SPDynamicDrawCall> m_debug_target_dy_dc;
 #endif
 
+    std::set<Flyable*> m_all_flyables;
 public:
              CheckCannon(const XMLNode &node, unsigned int index);
+    // ------------------------------------------------------------------------
     virtual ~CheckCannon();
-    virtual void trigger(unsigned int kart_index);
-};   // CheckLine
+    // ------------------------------------------------------------------------
+    virtual void trigger(unsigned int kart_index) OVERRIDE {}
+    // ------------------------------------------------------------------------
+    virtual void changeDebugColor(bool is_active) OVERRIDE;
+    // ------------------------------------------------------------------------
+    virtual void update(float dt) OVERRIDE;
+    // ------------------------------------------------------------------------
+    virtual bool triggeringCheckline() const OVERRIDE         { return false; }
+    // ------------------------------------------------------------------------
+    /** Adds a flyable to be tested for crossing a cannon checkline.
+    *  \param flyable The flyable to be tested.
+    */
+    void addFlyable(Flyable* flyable)       { m_all_flyables.insert(flyable); }
+    // ------------------------------------------------------------------------
+    /** Removes a flyable from the tests if it crosses a checkline. Used when
+    *  the flyable is removed (e.g. explodes).
+    */
+    void removeFlyable(Flyable* flyable)     { m_all_flyables.erase(flyable); }
+    // ------------------------------------------------------------------------
+    const Vec3& getTargetLeft() const                 { return m_target_left; }
+    // ------------------------------------------------------------------------
+    const Vec3& getTargetRight() const               { return m_target_right; }
+    // ------------------------------------------------------------------------
+    Ipo* getIpo() const                                     { return m_curve; }
+};   // CheckCannon
 
 #endif
 

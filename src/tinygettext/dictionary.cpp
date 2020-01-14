@@ -15,6 +15,8 @@
 //  along with this program; if not, write to the Free Software
 //  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
+#ifndef SERVER_ONLY
+
 #include <assert.h>
 #include "dictionary.hpp"
 
@@ -221,7 +223,7 @@ std::set<wchar_t> Dictionary::get_all_used_chars()
         const std::vector<std::string>& msgstrs = i->second;
         for (unsigned int k = 0; k < msgstrs.size(); k++)
         {
-            irr::core::stringw ws = translations->fribidize((StringUtils::utf8ToWide(msgstrs[k])).c_str());
+            irr::core::stringw ws = StringUtils::utf8ToWide(msgstrs[k]);
                 for (unsigned int l = 0; l < ws.size(); ++l)
                     UsedChars.insert(ws[l]);
         }
@@ -234,7 +236,7 @@ std::set<wchar_t> Dictionary::get_all_used_chars()
             const std::vector<std::string>& msgstrs = j->second;
             for (unsigned int k = 0; k < msgstrs.size(); k++)
             {
-                irr::core::stringw ws = translations->fribidize((StringUtils::utf8ToWide(msgstrs[k])).c_str());
+                irr::core::stringw ws = StringUtils::utf8ToWide(msgstrs[k]);
                 for (unsigned int l = 0; l < ws.size(); ++l)
                     UsedChars.insert(ws[l]);
             }
@@ -246,3 +248,4 @@ std::set<wchar_t> Dictionary::get_all_used_chars()
 } // namespace tinygettext
 
 /* EOF */
+#endif

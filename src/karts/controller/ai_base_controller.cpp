@@ -20,16 +20,19 @@
 #include "karts/controller/ai_base_controller.hpp"
 
 #include "config/user_config.hpp"
+#include "graphics/camera.hpp"
 #include "karts/abstract_kart.hpp"
 #include "karts/kart_properties.hpp"
 #include "karts/controller/ai_properties.hpp"
 #include "modes/world.hpp"
+#include "network/network_string.hpp"
 #include "tracks/track.hpp"
 #include "utils/constants.hpp"
 
 #include <assert.h>
 
 bool AIBaseController::m_ai_debug = false;
+int  AIBaseController::m_test_ai  = 0;
 
 AIBaseController::AIBaseController(AbstractKart *kart)
                 : Controller(kart)
@@ -45,13 +48,14 @@ AIBaseController::AIBaseController(AbstractKart *kart)
 
 void AIBaseController::reset()
 {
+    m_enabled_network_ai = false;
     m_stuck = false;
-    m_collision_times.clear();
+    m_collision_ticks.clear();
 }   // reset
 
 //-----------------------------------------------------------------------------
 
-void AIBaseController::update(float dt)
+void AIBaseController::update(int ticks)
 {
     m_stuck = false;
 }
@@ -65,7 +69,7 @@ void AIBaseController::update(float dt)
 void AIBaseController::setControllerName(const std::string &name)
 {
 #ifdef DEBUG
-    if(m_ai_debug && !UserConfigParams::m_camera_debug)
+    if(m_ai_debug && Camera::getActiveCamera()->getType()==Camera::CM_TYPE_NORMAL)
         m_kart->setOnScreenText(core::stringw(name.c_str()).c_str());
 #endif
     Controller::setControllerName(name);
@@ -84,9 +88,7 @@ float AIBaseController::steerToPoint(const Vec3 &point)
 
     // First translate and rotate the point the AI is aiming
     // at into the kart's local coordinate system.
-    btQuaternion q(btVector3(0,1,0), -m_kart->getHeading());
-    Vec3 p  = point - m_kart->getXYZ();
-    Vec3 lc = quatRotate(q, p);
+    Vec3 lc = m_kart->getTrans().inverse()(point);
 
     // The point the kart is aiming at can be reached 'incorrectly' if the
     // point is below the y=x line: Instead of aiming at that point directly
@@ -136,7 +138,7 @@ float AIBaseController::steerToPoint(const Vec3 &point)
     if(sin_steer_angle >=  1.0f)
         return  m_kart->getMaxSteerAngle()
                *m_ai_properties->m_skidding_threshold+0.1f;
-    float steer_angle     = asin(sin_steer_angle);
+    float steer_angle     = asinf(sin_steer_angle);
 
     // After doing the exact computation, we now return an 'oversteered'
     // value. This actually helps in making tighter turns, and also in
@@ -184,16 +186,16 @@ void AIBaseController::setSteering(float angle, float dt)
 {
     float steer_fraction = angle / m_kart->getMaxSteerAngle();
     if(!canSkid(steer_fraction))
-        m_controls->m_skid = KartControl::SC_NONE;
+        m_controls->setSkidControl(KartControl::SC_NONE);
     else
-        m_controls->m_skid = steer_fraction > 0 ? KartControl::SC_RIGHT
-                                                : KartControl::SC_LEFT;
-    float old_steer      = m_controls->m_steer;
+        m_controls->setSkidControl(steer_fraction > 0 ? KartControl::SC_RIGHT
+                                                      : KartControl::SC_LEFT );
+    float old_steer      = m_controls->getSteer();
 
     if     (steer_fraction >  1.0f) steer_fraction =  1.0f;
     else if(steer_fraction < -1.0f) steer_fraction = -1.0f;
 
-    if(m_kart->getBlockedByPlungerTime()>0)
+    if(m_kart->getBlockedByPlungerTicks()>0)
     {
         if     (steer_fraction >  0.5f) steer_fraction =  0.5f;
         else if(steer_fraction < -0.5f) steer_fraction = -0.5f;
@@ -203,13 +205,13 @@ void AIBaseController::setSteering(float angle, float dt)
     float max_steer_change = dt/m_ai_properties->m_time_full_steer;
     if(old_steer < steer_fraction)
     {
-        m_controls->m_steer = (old_steer+max_steer_change > steer_fraction)
-                           ? steer_fraction : old_steer+max_steer_change;
+        m_controls->setSteer(( old_steer+max_steer_change > steer_fraction)
+                             ? steer_fraction : old_steer+max_steer_change);
     }
     else
     {
-        m_controls->m_steer = (old_steer-max_steer_change < steer_fraction)
-                           ? steer_fraction : old_steer-max_steer_change;
+        m_controls->setSteer( (old_steer-max_steer_change < steer_fraction)
+                               ? steer_fraction : old_steer-max_steer_change );
     }
 }   // setSteering
 
@@ -237,12 +239,12 @@ void AIBaseController::crashed(const Material *m)
     // the track again if it is stuck (i.e. time for the push back plus
     // time for the AI to accelerate and hit the terrain again).
     const unsigned int NUM_COLLISION = 3;
-    const float COLLISION_TIME       = 1.5f;
+    const int COLLISION_TICKS        = stk_config->time2Ticks(3.0f);
 
-    float time = World::getWorld()->getTime();
-    if(m_collision_times.size()==0)
+    int ticks = World::getWorld()->getTicksSinceStart();
+    if(m_collision_ticks.size()==0)
     {
-        m_collision_times.push_back(time);
+        m_collision_ticks.push_back(ticks);
         return;
     }
 
@@ -252,23 +254,24 @@ void AIBaseController::crashed(const Material *m)
     // collisions to happen). The time of 0.2 seconds was experimentally
     // found, typically it takes 0.5 seconds for a kart to be pushed back
     // from the terrain and accelerate to hit the same terrain again.
-    if(time - m_collision_times.back() < 0.2f)
+    if(5 * (ticks - m_collision_ticks.back()) < stk_config->time2Ticks(1.0f))
         return;
 
     // Remove all outdated entries, i.e. entries that are older than the
     // collision time plus 1 second. Older entries must be deleted,
     // otherwise a collision that happened (say) 10 seconds ago could
     // contribute to a stuck condition.
-    while(m_collision_times.size()>0 &&
-           time - m_collision_times[0] > 1.0f+COLLISION_TIME)
-           m_collision_times.erase(m_collision_times.begin());
+    while(m_collision_ticks.size()>0 &&
+           ticks - m_collision_ticks[0] > stk_config->time2Ticks(1.0f)
+                                        + COLLISION_TICKS              )
+           m_collision_ticks.erase(m_collision_ticks.begin());
 
-    m_collision_times.push_back(time);
+    m_collision_ticks.push_back(ticks);
 
     // Now detect if there are enough collision records in the
     // specified time interval.
-    if(time - m_collision_times.front() > COLLISION_TIME
-        && m_collision_times.size()>=NUM_COLLISION)
+    if(ticks - m_collision_ticks.front() > COLLISION_TICKS &&
+        m_collision_ticks.size()>=NUM_COLLISION               )
     {
         // We can't call m_kart->forceRescue here, since crased() is
         // called during physics processing, and forceRescue() removes the
@@ -280,33 +283,67 @@ void AIBaseController::crashed(const Material *m)
 
 }   // crashed(Material)
 
-//-----------------------------------------------------------------------------
-void AIBaseController::checkPosition(const Vec3 &point,
-                                     posData *pos_data,
-                                     Vec3 *lc) const
+// ----------------------------------------------------------------------------
+/** Determine the center point and radius of a circle given two points on
+ *  the circle and the tangent at the first point. This is done as follows:
+ *  1. Determine the line going through the center point start+end, which is
+ *     orthogonal to the vector from start to end. This line goes through the
+ *     center of the circle.
+ *  2. Determine the line going through the first point and is orthogonal
+ *     to the given tangent.
+ *  3. The intersection of these two lines is the center of the circle.
+ *  \param[in] end Second point on circle.
+ *  \param[out] center Center point of the circle (local coordinate).
+ *  \param[out] radius Radius of the circle.
+ */
+void AIBaseController::determineTurnRadius(const Vec3 &end, Vec3 *center,
+                                           float *radius) const
 {
-    // Convert to local coordinates from the point of view of current kart
-    btQuaternion q(btVector3(0, 1, 0), -m_kart->getHeading());
-    Vec3 p  = point - m_kart->getXYZ();
-    Vec3 local_coordinates = quatRotate(q, p);
+    // Convert end point to local coordinate, so start will be 0, 0, 0
+    Vec3 lc = m_kart->getTrans().inverse()(end);
 
-    // Save local coordinates for later use if needed
-    if (lc) *lc = local_coordinates;
+    // 1) Line through middle of start+end
+    Vec3 mid = 0.5f * lc;
+    Vec3 direction = lc;
 
-    // on_side: tell whether it's left or right hand side
-    if (local_coordinates.getX() < 0)
-        pos_data->on_side = true;
+    Vec3 orthogonal(direction.getZ(), 0, -direction.getX());
+    Vec3 q1 = mid + orthogonal;
+    irr::core::line2df line1(mid.getX(), mid.getZ(),
+                             q1.getX(),  q1.getZ()  );
+
+    irr::core::line2df line2(0, 0, 1, 0);
+    irr::core::vector2df result;
+    if (line1.intersectWith(line2, result, /*checkOnlySegments*/false))
+    {
+        Vec3 lc_center(result.X, 0, result.Y);
+        if (center)
+            *center = lc_center;
+        *radius = lc_center.length();
+    }
     else
-        pos_data->on_side = false;
+    {
+        // No intersection. In this case assume that the two points are
+        // on a semicircle, in which case the center is at 0.5*(start+end):
+        if (center)
+            *center = mid;
+        *radius = 0.5f*(lc).length();
+    }
 
-    // behind: tell whether it's behind or not
-    if (local_coordinates.getZ() < 0)
-        pos_data->behind = true;
-    else
-        pos_data->behind = false;
+}   // determineTurnRadius
 
-    pos_data->angle = atan2(fabsf(local_coordinates.getX()),
-        fabsf(local_coordinates.getZ()));
-    pos_data->distance = p.length_2d();
+//-----------------------------------------------------------------------------
+bool AIBaseController::saveState(BareNetworkString *buffer) const
+{
+    // Endcontroller needs this for proper offset in kart rewinder
+    // Must match the number of bytes in Playercontroller.
+    buffer->addUInt16(0).addUInt16(0).addUInt8(0);
+    return false;
+}   // copyToBuffer
 
-}   //  checkPosition
+//-----------------------------------------------------------------------------
+void AIBaseController::rewindTo(BareNetworkString *buffer)
+{
+    // Endcontroller needs this for proper offset in kart rewinder.
+    // Skip the same number of bytes as PlayerController.
+    buffer->skip(2 + 2 + 1);
+}   // rewindTo

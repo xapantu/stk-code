@@ -42,6 +42,8 @@ namespace irr
 	*/
 	class IrrlichtDevice : public virtual IReferenceCounted
 	{
+	protected:
+		typedef s32 (*HeightFunc)(const IrrlichtDevice*);
 	public:
 
 		//! Runs the device.
@@ -152,6 +154,10 @@ namespace irr
 		/** \param text: New text of the window caption. */
 		virtual void setWindowCaption(const wchar_t* text) = 0;
 
+		//! Sets the class of the window.
+		/** \param text: New text of the window class. */
+		virtual void setWindowClass(const char* text) = 0;
+
 		//! Returns if the window is active.
 		/** If the window is inactive,
 		nothing needs to be drawn. So if you don't want to draw anything
@@ -236,6 +242,15 @@ namespace irr
 		//! Restore the window to normal size if possible.
 		virtual void restoreWindow() =0;
 
+		//! Move window to requested position
+		/** \return true if success */
+		virtual bool moveWindow(int x, int y) = 0;
+
+		//! Get current window position.
+		/** \return true if success */
+		virtual bool getWindowPosition(int* x, int* y) = 0;
+
+
 		//! Activate any joysticks, and generate events for them.
 		/** Irrlicht contains support for joysticks, but does not generate joystick events by default,
 		as this would consume joystick info that 3rd party libraries might rely on. Call this method to
@@ -245,6 +260,15 @@ namespace irr
 				is defined, false if joysticks are not supported or support is compiled out.
 		*/
 		virtual bool activateJoysticks(core::array<SJoystickInfo>& joystickInfo) =0;
+
+		//! Returns true if system has touch device
+		virtual bool supportsTouchDevice() const = 0;
+
+		//! Returns true if system has hardware keyboard attached
+		virtual bool hasHardwareKeyboard() const = 0;
+
+		//! Returns true if system has native on screen keyboard
+		virtual bool hasOnScreenKeyboard() const = 0;
 
 		//! Set the current Gamma Value for the Display
 		virtual bool setGammaRamp(f32 red, f32 green, f32 blue,
@@ -271,6 +295,29 @@ namespace irr
 		used. */
 		virtual E_DEVICE_TYPE getType() const = 0;
 
+		/** Onscreen keyboard addition, to determine how much to move vertically. */
+		virtual u32 getScreenHeight() const = 0;
+		virtual u32 getOnScreenKeyboardHeight() const = 0;
+		virtual s32 getMovedHeight() const = 0;
+		virtual void toggleOnScreenKeyboard(bool show, s32 type = 0) = 0;
+		virtual void registerGetMovedHeightFunction(HeightFunc) = 0;
+
+		virtual bool activateAccelerometer(float updateInterval) { return false; }
+		virtual bool deactivateAccelerometer() { return false; }
+		virtual bool isAccelerometerActive() { return false; }
+		virtual bool isAccelerometerAvailable() { return false; }
+		virtual bool activateGyroscope(float updateInterval) { return false; }
+		virtual bool deactivateGyroscope() { return false; }
+		virtual bool isGyroscopeActive() { return false; }
+		virtual bool isGyroscopeAvailable() { return false; }
+		virtual bool activateDeviceMotion(float updateInterval) { return false; }
+		virtual bool deactivateDeviceMotion() { return false; }
+		virtual bool isDeviceMotionActive() { return false; }
+		virtual bool isDeviceMotionAvailable() { return false; }
+		virtual s32 getTopPadding() { return 0; }
+		virtual s32 getBottomPadding() { return 0; }
+		virtual s32 getLeftPadding() { return 0; }
+		virtual s32 getRightPadding() { return 0; }
 		//! Check if a driver type is supported by the engine.
 		/** Even if true is returned the driver may not be available
 		for a configuration requested when creating the device. */

@@ -47,6 +47,12 @@ TrackManager::~TrackManager()
 }   // ~TrackManager
 
 //-----------------------------------------------------------------------------
+void TrackManager::removeTrackSearchDirs()
+{
+    m_track_search_path.clear();
+}   // removeTrackSearchDirs
+
+//-----------------------------------------------------------------------------
 /** Adds a directory from which tracks are loaded. The track manager checks if
  *  either this directory itself contains a track, and if any subdirectory
  *  contains a track.
@@ -144,6 +150,10 @@ void TrackManager::loadTrackList()
     m_arena_groups.clear();
     m_soccer_arena_groups.clear();
     m_track_avail.clear();
+    // This function is called when install a new addons, delete previous
+    // tracks
+    for (Track* track : m_tracks)
+        delete track;
     m_tracks.clear();
 
     for(unsigned int i=0; i<m_track_search_path.size(); i++)
@@ -233,7 +243,7 @@ void TrackManager::removeTrack(const std::string &ident)
     if (it == m_tracks.end())
         Log::fatal("TrackManager", "Cannot find track '%s' in map!!", ident.c_str());
 
-    int index = it - m_tracks.begin();
+    int index = int(it - m_tracks.begin());
 
     // Remove the track from all groups it belongs to
     Group2Indices &group_2_indices =
@@ -322,3 +332,12 @@ void TrackManager::updateGroups(const Track* track)
 }   // updateGroups
 
 // ----------------------------------------------------------------------------
+int TrackManager::getTrackIndexByIdent(const std::string& ident) const
+{
+    for (unsigned i = 0; i < m_tracks.size(); i++)
+    {
+        if (m_tracks[i]->getIdent() == ident)
+            return i;
+    }
+    return -1;
+}   // getTrackIndexByIdent

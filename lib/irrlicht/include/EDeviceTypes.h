@@ -20,6 +20,9 @@ namespace irr
 		/** This device works on Windows Mobile, Pocket PC and Microsoft SmartPhone devices */
 		EIDT_WINCE,
 
+		//! A device native to Linux
+		EIDT_WAYLAND,
+
 		//! A device native to Unix style operating systems.
 		/** This device uses the X11 windowing system and works in Linux, Solaris, FreeBSD, OSX and
 		other operating systems which support X11. */
@@ -29,9 +32,9 @@ namespace irr
 		/** This device uses Apple's Cocoa API and works in Mac OSX 10.2 and above. */
 		EIDT_OSX,
         
-        //! A device native to the IPhone/IPod touch
+		//! A device native to the iOS
 		/** This device should be used with the OpenGL-ES driver. */
-		EIDT_IPHONE,
+		EIDT_IOS,
 
 		//! A device which uses Simple DirectMedia Layer
 		/** The SDL device works under all platforms supported by SDL but first must be compiled

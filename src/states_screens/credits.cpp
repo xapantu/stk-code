@@ -29,11 +29,12 @@ using irr::core::stringc;
 #include "guiengine/screen.hpp"
 #include "guiengine/widget.hpp"
 #include "io/file_manager.hpp"
+#include "online/link_helper.hpp"
 #include "states_screens/state_manager.hpp"
+#include "utils/constants.hpp"
+#include "utils/file_utils.hpp"
 #include "utils/string_utils.hpp"
 #include "utils/translation.hpp"
-
-DEFINE_SCREEN_SINGLETON( CreditsScreen );
 
 using namespace GUIEngine;
 const float TIME_SECTION_FADE = 0.8f;
@@ -70,7 +71,7 @@ public:
     {
         m_entries[m_entries.size()-1].m_subentries.push_back(subEntryString);
     }
-};   // CreditdsSection
+};   // CreditsSection
 
 // ----------------------------------------------------------------------------
 
@@ -81,45 +82,24 @@ CreditsSection* CreditsScreen::getCurrentSection()
 
 // ----------------------------------------------------------------------------
 
-bool CreditsScreen::getWideLine(std::ifstream& file, core::stringw* out)
+bool CreditsScreen::getLineAsWide(std::ifstream& file, core::stringw* out)
 {
     if (!file.good())
     {
-        Log::error("CreditsScreen", "getWideLine: File is not good!");
+        Log::error("CreditsScreen", "getLineAsWide: File is not good!");
         return false;
     }
-    wchar_t wide_char;
 
-    bool found_eol = false;
-    stringw line;
+    std::string line;
+    std::getline(file, line);
 
-    char buff[2];
+    // Replace "STKVERSION" with the actual version number
+    line = StringUtils::findAndReplace(line, "$STKVERSION$", STK_VERSION);
 
-    while (true)
-    {
-        file.read( buff, 2 );
-        if (file.good())
-        {
-            // We got no complaints so I assume the endianness code here is OK
-            wide_char = unsigned(buff[0] & 0xFF)
-                      | (unsigned(buff[1] & 0xFF) << 8);
-            line += wide_char;
-            if (wide_char == L'\n')
-            {
-                found_eol = true;
-                break;
-            }
-        }
-        else
-        {
-            break;
-        }
-    }
+    *out = StringUtils::utf8ToWide(line);
+    return file.good();
 
-    if (!found_eol) return false;
-    *out = line;
-    return true;
-}   // getWideLine
+}   // getLineAsWide
 
 // ----------------------------------------------------------------------------
 
@@ -143,7 +123,8 @@ void CreditsScreen::loadedFromFile()
 
     std::string creditsfile = file_manager->getAsset("CREDITS");
 
-    std::ifstream file( creditsfile.c_str(), std::ios::binary ) ;
+    std::ifstream file(
+        FileUtils::getPortableReadingPath(creditsfile), std::ios::binary);
 
     if (file.fail() || !file.is_open() || file.eof())
     {
@@ -153,25 +134,13 @@ void CreditsScreen::loadedFromFile()
     }
 
     stringw line;
-
-    // skip Unicode header
-    file.get();
-    file.get();
-
-    if (file.fail() || !file.is_open() || file.eof())
-    {
-        Log::error("CreditsScreen", "Failed to read file at '%s', unexpected EOF.",
-                   creditsfile.c_str());
-        return;
-    }
-
     int lineCount = 0;
 #undef DEBUG_TRANSLATIONS    // Enable to only see the translator credits
 #ifdef DEBUG_TRANSLATIONS
-        int my_counter = 0;
+    int my_counter = 0;
 #endif
-    // let's assume the file is encoded as UTF-16
-    while (getWideLine( file, &line ))
+    // Read file into wide strings (converted from utf-8 on the fly)
+    while (getLineAsWide( file, &line ))
     {
 #ifdef DEBUG_TRANSLATIONS
         if (my_counter > 0)
@@ -215,21 +184,23 @@ void CreditsScreen::loadedFromFile()
 
 
     irr::core::stringw translators_credits = _("translator-credits");
-    const int MAX_PER_SCREEN = 6;
+    const unsigned MAX_PER_SCREEN = 6;
 
     if (translators_credits != L"translator-credits")
     {
-        std::vector<irr::core::stringw> translator  =
+        std::vector<irr::core::stringw> translator =
             StringUtils::split(translators_credits, '\n');
 
         m_sections.push_back( new CreditsSection("Translations"));
-        for(unsigned int i = 1; i < translator.size(); i = i + MAX_PER_SCREEN)
+        for (unsigned int i = 1; i < translator.size(); i = i + MAX_PER_SCREEN)
         {
+#ifndef SERVER_ONLY
             line = stringw(translations->getCurrentLanguageName().c_str());
+#endif
             CreditsEntry entry(line);
             getCurrentSection()->addEntry( entry );
 
-            for(unsigned int j = 0; i + j < translator.size() && j < MAX_PER_SCREEN; j ++)
+            for (unsigned int j = 0; i + j < translator.size() && j < MAX_PER_SCREEN; j ++)
             {
                 getCurrentSection()->addSubEntry(translator[i + j]);
             }
@@ -239,7 +210,6 @@ void CreditsScreen::loadedFromFile()
         // translations should be just before the last screen
         m_sections.swap( m_sections.size() - 1, m_sections.size() - 2 );
     }
-
 }   // loadedFromFile
 
 // ----------------------------------------------------------------------------
@@ -251,7 +221,11 @@ void CreditsScreen::init()
     assert(w != NULL);
 
     reset();
-    setArea(w->m_x + 15, w->m_y + 8, w->m_w - 30, w->m_h - 16);
+    
+    setArea(w->m_x + GUIEngine::getFontHeight(),
+             w->m_y + GUIEngine::getFontHeight() / 2,
+             w->m_w - GUIEngine::getFontHeight() * 2,
+             w->m_h - GUIEngine::getFontHeight());
 }   // init
 
 // ----------------------------------------------------------------------------
@@ -278,7 +252,7 @@ void CreditsScreen::reset()
 
 // ----------------------------------------------------------------------------
 
-void CreditsScreen::onUpdate(float elapsed_time)
+void CreditsScreen::onDraw(float elapsed_time)
 {
     // multiply by 0.8 to slow it down a bit as a whole
     time_before_next_step -= elapsed_time*0.8f;
@@ -289,7 +263,7 @@ void CreditsScreen::onUpdate(float elapsed_time)
 
 
     // ---- section name
-    video::SColor color( 255 /* a */, 0 /* r */, 0 /* g */ , 75 /* b */ );
+    video::SColor color =  GUIEngine::getSkin()->getColor("credits_text::neutral");
     video::SColor white_color( 255, 255, 255, 255 );
 
     // manage fade-in
@@ -333,7 +307,7 @@ void CreditsScreen::onUpdate(float elapsed_time)
 
             color.setAlpha( alpha );
 
-            text_offset = (int)((1.0f - fade_in) * 100);
+            text_offset = (int)((1.0f - fade_in) * GUIEngine::getFontHeight());
         }
         // fade out
         else if (time_before_next_step >= m_time_element - ENTRIES_FADE_TIME)
@@ -347,7 +321,7 @@ void CreditsScreen::onUpdate(float elapsed_time)
             else if(alpha > 255) alpha = 255;
             color.setAlpha( alpha );
 
-            text_offset = -(int)(fade_out * 100);
+            text_offset = -(int)(fade_out * GUIEngine::getFontHeight());
         }
 
 
@@ -370,9 +344,9 @@ void CreditsScreen::onUpdate(float elapsed_time)
             GUIEngine::getFont()->draw(m_sections[m_curr_section]
                                        .m_entries[m_curr_element]
                                        .m_subentries[i].c_str(),
-                                       core::recti( m_x + 32,
+                                       core::recti( m_x + GUIEngine::getFontHeight()/2,
                                                     suby + text_offset/(1+1),
-                                                    m_x + m_w + 32,
+                                                    m_x + m_w + GUIEngine::getFontHeight()/2,
                                                     suby + m_h/8
                                                          + text_offset/(1+1) ),
                                        color, false/* center h */,
@@ -426,6 +400,11 @@ void CreditsScreen::eventCallback(GUIEngine::Widget* widget,
     if (name == "back")
     {
         StateManager::get()->escapePressed();
+    }
+    if (name == "donate")
+    {
+        // Open donation page
+        Online::LinkHelper::openURL(stk_config->m_donate_url);
     }
 }
 

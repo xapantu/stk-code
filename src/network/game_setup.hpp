@@ -22,15 +22,17 @@
 #ifndef GAME_SETUP_HPP
 #define GAME_SETUP_HPP
 
-#include "network/race_config.hpp"
-#include "network/remote_kart_info.hpp"
+#include <irrString.h>
 
-#include <vector>
+#include <atomic>
+#include <cassert>
+#include <memory>
 #include <string>
+#include <vector>
 
-namespace Online { class OnlineProfile; }
 class NetworkPlayerProfile;
-
+class NetworkString;
+class PeerVote;
 
 // ============================================================================
 /*! \class GameSetup
@@ -40,67 +42,108 @@ class NetworkPlayerProfile;
 class GameSetup
 {
 private:
-    /** Information about all connected players. */
-    std::vector<NetworkPlayerProfile*> m_players;
+    std::vector<std::string> m_tracks;
 
-    /** The race configuration. */
-    RaceConfig* m_race_config;
+    unsigned m_laps;
 
-    /** Stores the number of local players. */
-    int m_num_local_players;
+    int m_extra_server_info;
 
-    /** The player id of the local game master, used in 
-     *  kart selection screen. */
-    uint8_t m_local_master;
+    int m_hit_capture_limit;
+
+    float m_battle_time_limit;
+
+    bool m_reverse;
+
+    std::atomic_bool m_is_grand_prix;
+
+    irr::core::stringw m_message_of_today;
+
+    /** Utf8 server name (with xml decoded) */
+    std::string m_server_name_utf8;
+
 public:
-             GameSetup();
-    virtual ~GameSetup();
-
-    void addPlayer(NetworkPlayerProfile* profile); //!< Add a player.
-    bool removePlayer(const NetworkPlayerProfile *profile);
-    void setPlayerKart(uint8_t player_id, const std::string &kart_name);
-    void bindKartsToProfiles(); //!< Sets the right world_kart_id in profiles
-    void setLocalMaster(uint8_t player_id);
-
-    bool isLocalMaster(uint8_t player_id);
-    const NetworkPlayerProfile* getProfile(uint8_t id);
-    const NetworkPlayerProfile* getProfile(const std::string &kart_name);
-
-    /*! \brief Used to know if a kart is available.
-     *  \param kart_name : Name of the kart to check.
-     *  \return True if the kart hasn't been selected yet, false elseway.
-     */
-    bool isKartAvailable(std::string kart_name);
     // ------------------------------------------------------------------------
-    /** Sets the number of local players. */
-    void setNumLocalPlayers(int n) { m_num_local_players = n; } 
+    GameSetup();
     // ------------------------------------------------------------------------
-    /** Returns the nunber of local players. */
-    int getNumLocalPlayers() const { return m_num_local_players; }
+    ~GameSetup() {}
     // ------------------------------------------------------------------------
-    /*! \brief Used to know if a kart is playable.
-     *  \param kart_name : Name of the kart to check.
-     *  \return True if the kart is playable (standard kart).
-     *  Currently this is always true as the kart selection screen shows
-     *  only the standard karts.
-     */
-    bool isKartAllowed(std::string kart_name) { return true; }
+    void setRace(const PeerVote &vote);
     // ------------------------------------------------------------------------
-    /** Returns the configuration for this race. */
-    RaceConfig* getRaceConfig() { return m_race_config; }
-    // ------------------------------------------------------------------------
-    /** \brief Get the players that are in the game
-    *  \return A vector containing pointers on the players profiles. */
-    const std::vector<NetworkPlayerProfile*>& getPlayers()
+    void reset()
     {
-        return m_players;
-    }   // getPlayers
+        if (!isGrandPrixStarted())
+            m_tracks.clear();
+        m_laps = 0;
+        m_reverse = false;
+        m_hit_capture_limit = 0;
+        m_battle_time_limit = 0.0f;
+    }
     // ------------------------------------------------------------------------
-    /** Returns the number of connected players. */
-    int getPlayerCount() { return (int)m_players.size(); }
+    void resetExtraServerInfo()
+    {
+        m_is_grand_prix.store(false);
+        m_extra_server_info = -1;
+    }
     // ------------------------------------------------------------------------
-    /** Returns the id of the local master. */
-    int getLocalMasterID() const { return m_local_master; }
+    void setGrandPrixTrack(int tracks_no)
+    {
+        m_is_grand_prix.store(true);
+        m_extra_server_info = tracks_no;
+    }
+    // ------------------------------------------------------------------------
+    void addServerInfo(NetworkString* ns);
+    // ------------------------------------------------------------------------
+    void loadWorld();
+    // ------------------------------------------------------------------------
+    bool isGrandPrix() const                 { return m_is_grand_prix.load(); }
+    // ------------------------------------------------------------------------
+    bool hasExtraSeverInfo() const        { return m_extra_server_info != -1; }
+    // ------------------------------------------------------------------------
+    uint8_t getExtraServerInfo() const
+    {
+        assert(hasExtraSeverInfo());
+        return (uint8_t)m_extra_server_info;
+    }
+    // ------------------------------------------------------------------------
+    unsigned getTotalGrandPrixTracks() const
+    {
+        assert(isGrandPrix());
+        return m_extra_server_info;
+    }
+    // ------------------------------------------------------------------------
+    void setSoccerGoalTarget(bool val)      { m_extra_server_info = (int)val; }
+    // ------------------------------------------------------------------------
+    bool isSoccerGoalTarget() const
+    {
+        assert(hasExtraSeverInfo());
+        return m_extra_server_info != 0;
+    }
+    // ------------------------------------------------------------------------
+    bool isGrandPrixStarted() const
+    {
+        return isGrandPrix() && !m_tracks.empty() &&
+            m_tracks.size() != getTotalGrandPrixTracks();
+    }
+    // ------------------------------------------------------------------------
+    void stopGrandPrix()                                  { m_tracks.clear(); }
+    // ------------------------------------------------------------------------
+    const std::vector<std::string>& getAllTracks() const   { return m_tracks; }
+    // ------------------------------------------------------------------------
+    const std::string& getCurrentTrack() const      { return m_tracks.back(); }
+    // ------------------------------------------------------------------------
+    void sortPlayersForGrandPrix(
+        std::vector<std::shared_ptr<NetworkPlayerProfile> >& players) const;
+    // ------------------------------------------------------------------------
+    void sortPlayersForGame(
+        std::vector<std::shared_ptr<NetworkPlayerProfile> >& players) const;
+    // ------------------------------------------------------------------------
+    void setHitCaptureTime(int hc, float time)
+    {
+        m_hit_capture_limit = hc;
+        m_battle_time_limit = time;
+    }
+    // ------------------------------------------------------------------------
+    const std::string& getServerNameUtf8() const { return m_server_name_utf8; }
 };
 
 #endif // GAME_SETUP_HPP

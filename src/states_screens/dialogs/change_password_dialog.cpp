@@ -21,9 +21,10 @@
 #include "config/player_manager.hpp"
 #include "guiengine/engine.hpp"
 #include "guiengine/widgets.hpp"
+#include "online/xml_request.hpp"
 #include "states_screens/state_manager.hpp"
-#include "utils/translation.hpp"
 #include "utils/string_utils.hpp"
+#include "utils/translation.hpp"
 
 #include <IGUIEnvironment.h>
 #include <irrString.h>
@@ -105,11 +106,11 @@ void ChangePasswordDialog::changePassword(const stringw &current_password,
         }   // callback
 
     public:
-        ChangePasswordRequest() : XMLRequest(true) {}
+        ChangePasswordRequest() : XMLRequest() {}
     };   // ChangePasswordRequest
     // ------------------------------------------------------------------------
 
-    ChangePasswordRequest * request = new ChangePasswordRequest();
+    auto request = std::make_shared<ChangePasswordRequest>();
     PlayerManager::setUserDetails(request, "change-password");
     request->addParameter("current", current_password);
 

@@ -133,6 +133,20 @@ namespace scene
 			}
 		}
 
+		virtual void recursiveUpdateAbsolutePosition()
+		{
+			if (IsVisible)
+			{
+				// update absolute position
+				updateAbsolutePosition();
+
+				// perform the post render process on all children
+
+				ISceneNodeList::Iterator it = Children.begin();
+				for (; it != Children.end(); ++it)
+					(*it)->recursiveUpdateAbsolutePosition();
+			}
+		}
 
 		//! Renders the node.
 		virtual void render() = 0;
@@ -171,7 +185,6 @@ namespace scene
 		getTransformedBoundingBox(), which does the same.
 		\return The non-transformed bounding box. */
 		virtual const core::aabbox3d<f32>& getBoundingBox() const = 0;
-
 
 		//! Get the axis aligned, transformed and animated absolute bounding box of this node.
 		/** \return The transformed bounding box. */
@@ -590,6 +603,12 @@ namespace scene
 			return Children;
 		}
 
+		//! Returns a list of all children (non-const version).
+		/** \return The list of all children of this node. */
+		core::list<ISceneNode*>& getChildren()
+		{
+			return Children;
+		}
 
 		//! Changes the parent of the scene node.
 		/** \param newParent The new parent to be used. */

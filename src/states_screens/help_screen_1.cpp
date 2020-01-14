@@ -21,6 +21,7 @@
 #include "config/player_manager.hpp"
 #include "config/user_config.hpp"
 #include "guiengine/widget.hpp"
+#include "guiengine/widgets/button_widget.hpp"
 #include "guiengine/widgets/list_widget.hpp"
 #include "guiengine/widgets/ribbon_widget.hpp"
 #include "input/device_manager.hpp"
@@ -31,12 +32,16 @@
 #include "states_screens/help_screen_2.hpp"
 #include "states_screens/help_screen_3.hpp"
 #include "states_screens/help_screen_4.hpp"
+#include "states_screens/help_screen_5.hpp"
+#include "states_screens/help_screen_6.hpp"
+#include "states_screens/help_screen_7.hpp"
 #include "states_screens/state_manager.hpp"
 
 using namespace GUIEngine;
 
-DEFINE_SCREEN_SINGLETON( HelpScreen1 );
-
+// FIXME : it's hugely repetitive to have one class per help screen when
+//         THEY ALL DO THE SAME THING
+//         (the specialized test of this first screen is a tiny exception)
 // -----------------------------------------------------------------------------
 
 HelpScreen1::HelpScreen1() : Screen("help1.stkgui")
@@ -101,6 +106,12 @@ void HelpScreen1::eventCallback(Widget* widget, const std::string& name, const i
             screen = HelpScreen3::getInstance();
         else if (selection == "page4")
             screen = HelpScreen4::getInstance();
+        else if (selection == "page5")
+            screen = HelpScreen5::getInstance();
+        else if (selection == "page6")
+            screen = HelpScreen6::getInstance();
+        else if (selection == "page7")
+            screen = HelpScreen7::getInstance();
         if(screen)
             StateManager::get()->replaceTopMostScreen(screen);
     }
@@ -118,10 +129,14 @@ void HelpScreen1::init()
     RibbonWidget* w = this->getWidget<RibbonWidget>("category");
     ButtonWidget* tutorial = getWidget<ButtonWidget>("startTutorial");
 
-    tutorial->setActive(StateManager::get()->getGameState() != 
+    tutorial->setActive(StateManager::get()->getGameState() !=
                                                        GUIEngine::INGAME_MENU);
 
-    if (w != NULL)  w->select( "page1", PLAYER_ID_GAME_MASTER );
+    if (w != NULL)
+    {
+        w->setFocusForPlayer(PLAYER_ID_GAME_MASTER);
+        w->select( "page1", PLAYER_ID_GAME_MASTER );
+    }
 }   //init
 
 // -----------------------------------------------------------------------------

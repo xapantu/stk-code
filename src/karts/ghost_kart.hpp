@@ -21,6 +21,7 @@
 
 #include "karts/kart.hpp"
 #include "replay/replay_base.hpp"
+#include "utils/cpp2011.hpp"
 
 #include "LinearMath/btTransform.h"
 
@@ -36,38 +37,70 @@
 class GhostKart : public Kart
 {
 private:
-    /** The list of the times at which the transform were reached. */
-    std::vector<float>       m_all_times;
-
     /** The transforms to assume at the corresponding time in m_all_times. */
-    std::vector<btTransform> m_all_transform;
+    std::vector<btTransform>                 m_all_transform;
 
-    std::vector<ReplayBase::KartReplayEvent> m_replay_events;
+    std::vector<ReplayBase::PhysicInfo>      m_all_physic_info;
 
-    /** Pointer to the last index in m_all_times that is smaller than
-     *  the current world time. */
-    unsigned int m_current_transform;
+    std::vector<ReplayBase::BonusInfo>       m_all_bonus_info;
 
-    /** Index of the next kart replay event. */
-    unsigned int m_next_event;
+    std::vector<ReplayBase::KartReplayEvent> m_all_replay_events;
 
-    void         updateTransform(float t, float dt);
+    unsigned int                             m_last_egg_idx = 0;
+
+    // ----------------------------------------------------------------------------
+    /** Compute the time at which the ghost finished the race */
+    void          computeFinishTime();
+
 public:
-                 GhostKart(const std::string& ident);
-    virtual void update (float dt);
-    virtual void addTransform(float time, const btTransform &trans);
-    virtual void addReplayEvent(const ReplayBase::KartReplayEvent &kre);
-    virtual void reset();
-    // ------------------------------------------------------------------------
-    /** No physics body for ghost kart, so nothing to adjust. */
-    virtual void updateWeight() {};
+                  GhostKart(const std::string& ident, unsigned int world_kart_id,
+                            int position, float color_hue);
+    virtual void  update(int ticks) OVERRIDE;
+    virtual void  updateGraphics(float dt) OVERRIDE;
+    virtual void  reset() OVERRIDE;
     // ------------------------------------------------------------------------
     /** No physics for ghost kart. */
-    virtual void applyEngineForce (float force) {}
+    virtual void  applyEngineForce (float force) OVERRIDE {};
     // ------------------------------------------------------------------------
     // Not needed to create any physics for a ghost kart.
-    virtual void createPhysics() {}
+    virtual void  createPhysics() OVERRIDE {};
     // ------------------------------------------------------------------------
+    const float   getSuspensionLength(int index, int wheel) const
+               { return m_all_physic_info[index].m_suspension_length[wheel]; }
+    // ------------------------------------------------------------------------
+    void          addReplayEvent(float time,
+                                 const btTransform &trans,
+                                 const ReplayBase::PhysicInfo &pi,
+                                 const ReplayBase::BonusInfo &bi,
+                                 const ReplayBase::KartReplayEvent &kre);
+    // ------------------------------------------------------------------------
+    /** Returns whether this kart is a ghost (replay) kart. */
+    virtual bool  isGhostKart() const OVERRIDE { return true; }
+    // ------------------------------------------------------------------------
+    /** Ghost can't be hunted. */
+    virtual bool  isInvulnerable() const OVERRIDE { return true; }
+    // ------------------------------------------------------------------------
+    /** Returns the speed of the kart in meters/second. */
+    virtual float getSpeed() const OVERRIDE;
 
+    // ------------------------------------------------------------------------
+    /** Returns the finished time for a ghost kart. */
+    float  getGhostFinishTime() { computeFinishTime(); return m_finish_time; }
+
+    // ------------------------------------------------------------------------
+    /** Returns the time at which the kart was at a given distance.
+      * Returns -1.0f if none */
+    virtual float getTimeForDistance(float distance) OVERRIDE;
+
+    // ----------------------------------------------------------------------------
+    /** Returns the smallest time at which the kart had the required number of eggs
+      * Returns -1.0f if none */
+    float getTimeForEggs(int egg_number);
+
+    // ------------------------------------------------------------------------
+    virtual void kartIsInRestNow() OVERRIDE {}
+    // ------------------------------------------------------------------------
+    virtual void makeKartRest() OVERRIDE {}
 };   // GhostKart
 #endif
+

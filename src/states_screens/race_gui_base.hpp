@@ -39,6 +39,7 @@ class AbstractKart;
 class Camera;
 class Material;
 class Referee;
+class RaceGUIMultitouch;
 
 /**
   * \brief An abstract base class for the two race guis (race_gui and
@@ -65,6 +66,8 @@ public:
 
         /** Current lap of this kart, or -1 if irrelevant. */
         int lap;
+
+        bool m_outlined_font = false;
     };   // KartIconDisplayInfo
 
 private:
@@ -87,6 +90,8 @@ private:
         bool                m_important;
         bool                m_big_font;
 
+        bool                m_outline;
+
         // -----------------------------------------------------
         // std::vector needs standard copy-ctor and std-assignment op.
         // let compiler create defaults .. they'll do the job, no
@@ -94,7 +99,7 @@ private:
         TimedMessage(const irr::core::stringw &message,
                      const AbstractKart *kart, float time,
                      const video::SColor &color, const bool important,
-                     bool big_font)
+                     bool big_font, bool outline)
         {
             m_message        = message;
             m_kart           = kart;
@@ -102,6 +107,7 @@ private:
             m_color          = color;
             m_important      = important;
             m_big_font       = big_font;
+            m_outline        = outline;
         }   // TimedMessage
         // -----------------------------------------------------
         // in follow leader the clock counts backwards
@@ -121,10 +127,14 @@ private:
     int              m_max_font_height;
 
     /** Musical notes icon (for music description and credits) */
-    Material        *m_music_icon;
+        video::ITexture* m_music_icon;
 
+    /** Texture for the 'plunger in the face' texture. */
+    video::ITexture* m_plunger_face;
+    
     /** Translated strings 'ready', 'set', 'go'. */
-    core::stringw    m_string_ready, m_string_set, m_string_go, m_string_goal;
+    core::stringw    m_string_ready, m_string_set, m_string_go, m_string_goal,
+        m_string_waiting_for_others, m_string_waiting_for_the_server;
 
     /** The position of the referee for all karts. */
     std::vector<Vec3> m_referee_pos;
@@ -140,10 +150,11 @@ private:
     /** The referee scene node. */
     Referee *m_referee;
 
+    /* True if spectating is possible in current GUI (when local player
+     * finished). */
+    bool m_enabled_network_spectator;
 
 protected:
-    /** Material for the 'plunger in the face' texture. */
-    Material        *m_plunger_face;
 
     /** State of the plunger: From the 'init' states the plunger switches
      *  between two slow moving states ('shakily moving') till the end of
@@ -177,9 +188,13 @@ protected:
     video::ITexture *m_gauge_goal;
 
     /** The frame around player karts in the mini map. */
-    Material         *m_icons_frame;
+    video::ITexture* m_icons_frame;
 
-    void cleanupMessages(const float dt);
+    /** Texture for the lap icon*/
+    video::ITexture* m_lap_flag;
+    
+    RaceGUIMultitouch* m_multitouch_gui;
+
     //void createMarkerTexture();
     void createRegularPolygon(unsigned int n, float radius,
                               const core::vector2df &center,
@@ -226,17 +241,30 @@ public:
                             const video::SColor &color=
                                 video::SColor(255, 255, 0, 255),
                             bool important=true,
-                            bool big_font=false);
+                            bool big_font=false, bool outline=false);
     virtual void update(float dt);
     virtual void preRenderCallback(const Camera *camera);
     // ------------------------------------------------------------------------
     /** Returns the size of the texture on which to render the minimap to. */
     virtual const core::dimension2du
                   getMiniMapSize() const = 0;
+    virtual void calculateMinimapSize() {};
     // ------------------------------------------------------------------------
     virtual void clearAllMessages() { m_messages.clear(); }
 
     void drawGlobalPlayerIcons(int bottom_margin);
+    void drawPlayerIcon(AbstractKart *kart, int x, int y, int w,
+                        bool is_local);
+    
+    virtual void drawEnergyMeter(int x, int y, const AbstractKart *kart,
+                                 const core::recti &viewport,
+                                 const core::vector2df &scaling) {};
+
+    void cleanupMessages(const float dt);
+    void removeReferee();
+    
+    RaceGUIMultitouch* getMultitouchGUI() {return m_multitouch_gui;}
+    void recreateMultitouchGUI();
 
 };   // RaceGUIBase
 

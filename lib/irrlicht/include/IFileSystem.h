@@ -159,6 +159,8 @@ public:
 	//! Get the number of archives currently attached to the file system
 	virtual u32 getFileArchiveCount() const =0;
 
+	virtual void removeAllFileArchives() =0;
+
 	//! Removes an archive from the file system.
 	/** This will close the archive and free any file handles, but will not
 	close resources which have already been loaded and are now cached, for
@@ -303,6 +305,10 @@ public:
 	it has to be deleted using its IFileList::drop() method.
 	See IReferenceCounted::drop() for more information. */
 	virtual IFileList* createFileList() =0;
+
+	//! Creates a list of files and directories in specified directory
+	//! and returns it.
+	virtual IFileList* createFileList(const io::path& directory) =0;
 
 	//! Creates an empty filelist
 	/** \return a Pointer to the created IFileList is returned. After the list has been used

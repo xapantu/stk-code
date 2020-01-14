@@ -18,17 +18,33 @@
 
 #include "network/event.hpp"
 
-#include "network/stk_host.hpp"
+#include "network/crypto.hpp"
+#include "network/protocols/client_lobby.hpp"
 #include "network/stk_peer.hpp"
 #include "utils/log.hpp"
+#include "utils/time.hpp"
 
 #include <string.h>
 
 /** \brief Constructor
  *  \param event : The event that needs to be translated.
  */
-Event::Event(ENetEvent* event)
+
+// ============================================================================
+constexpr bool isConnectionRequestPacket(unsigned char* data, size_t length)
 {
+    // Connection request is not synchronous
+    return length < 2 ? false : (uint8_t)data[0] == PROTOCOL_LOBBY_ROOM &&
+        (uint8_t)data[1] == LobbyProtocol::LE_CONNECTION_REQUESTED;
+}   // isConnectionRequestPacket
+
+// ============================================================================
+Event::Event(ENetEvent* event, std::shared_ptr<STKPeer> peer)
+{
+    m_arrival_time = StkTime::getMonoTimeMs();
+    m_pdi = PDI_TIMEOUT;
+    m_peer = peer;
+
     switch (event->type)
     {
     case ENET_EVENT_TYPE_CONNECT:
@@ -36,6 +52,7 @@ Event::Event(ENetEvent* event)
         break;
     case ENET_EVENT_TYPE_DISCONNECT:
         m_type = EVENT_TYPE_DISCONNECTED;
+        m_pdi = (PeerDisconnectInfo)event->data;
         break;
     case ENET_EVENT_TYPE_RECEIVE:
         m_type = EVENT_TYPE_MESSAGE;
@@ -46,20 +63,38 @@ Event::Event(ENetEvent* event)
     }
     if (m_type == EVENT_TYPE_MESSAGE)
     {
-        m_data = NetworkString(std::string((char*)(event->packet->data),
-                               event->packet->dataLength-1));
-    }
+        if (!m_peer->isValidated() && !isConnectionRequestPacket
+            (event->packet->data, event->packet->dataLength))
+        {
+            throw std::runtime_error("Invalid packet before validation.");
+        }
 
-    m_packet = NULL;
+        auto cl = LobbyProtocol::get<ClientLobby>();
+        if (event->channelID == EVENT_CHANNEL_UNENCRYPTED && (!cl ||
+            (cl && !cl->waitingForServerRespond())))
+        {
+            throw std::runtime_error("Unencrypted content at wrong state.");
+        }
+        if (m_peer->getCrypto() && (event->channelID == EVENT_CHANNEL_NORMAL ||
+            event->channelID == EVENT_CHANNEL_DATA_TRANSFER))
+        {
+            m_data = m_peer->getCrypto()->decryptRecieve(event->packet);
+        }
+        else
+        {
+            m_data = new NetworkString(event->packet->data, 
+                (int)event->packet->dataLength);
+        }
+    }
+    else
+        m_data = NULL;
+
     if (event->packet)
     {
-        m_packet = event->packet;
         // we got all we need, just remove the data.
-        enet_packet_destroy(m_packet);
+        enet_packet_destroy(event->packet);
     }
-    m_packet = NULL;
 
-    m_peer = STKHost::get()->getPeer(event->peer);
 }   // Event(ENetEvent)
 
 // ----------------------------------------------------------------------------
@@ -67,18 +102,6 @@ Event::Event(ENetEvent* event)
  */
 Event::~Event()
 {
-    // Do not delete m_peer, it's a pointer to the enet data structure
-    // which is persistent.
-    m_peer = NULL;
-    m_packet = NULL;
+    delete m_data;
 }   // ~Event
-
-// ----------------------------------------------------------------------------
-/** \brief Remove bytes at the beginning of data.
- *  \param size : The number of bytes to remove.
- */
-void Event::removeFront(int size)
-{
-    m_data.removeFront(size);
-}   // removeFront
 

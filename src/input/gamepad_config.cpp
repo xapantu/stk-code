@@ -126,14 +126,14 @@ void GamepadConfig::setDefaultBinds ()
 {
     setBinding(PA_STEER_LEFT,   Input::IT_STICKMOTION, 0, Input::AD_NEGATIVE);
     setBinding(PA_STEER_RIGHT,  Input::IT_STICKMOTION, 0, Input::AD_POSITIVE);
-    setBinding(PA_ACCEL,        Input::IT_STICKMOTION, 1, Input::AD_NEGATIVE);
-    setBinding(PA_BRAKE,        Input::IT_STICKMOTION, 1, Input::AD_POSITIVE);
-    setBinding(PA_FIRE,         Input::IT_STICKBUTTON, 0);
-    setBinding(PA_NITRO,        Input::IT_STICKBUTTON, 1);
-    setBinding(PA_DRIFT,        Input::IT_STICKBUTTON, 2);
-    setBinding(PA_RESCUE,       Input::IT_STICKBUTTON, 3);
-    setBinding(PA_LOOK_BACK,    Input::IT_STICKBUTTON, 4);
-    setBinding(PA_PAUSE_RACE,   Input::IT_STICKBUTTON, 5);
+    setBinding(PA_ACCEL,        Input::IT_STICKBUTTON, 0, Input::AD_NEGATIVE);
+    setBinding(PA_BRAKE,        Input::IT_STICKBUTTON, 3, Input::AD_POSITIVE);
+    setBinding(PA_FIRE,         Input::IT_STICKBUTTON, 1);
+    setBinding(PA_NITRO,        Input::IT_STICKBUTTON, 4);
+    setBinding(PA_DRIFT,        Input::IT_STICKBUTTON, 5);
+    setBinding(PA_RESCUE,       Input::IT_STICKBUTTON, 8);
+    setBinding(PA_LOOK_BACK,    Input::IT_STICKBUTTON, 6);
+    setBinding(PA_PAUSE_RACE,   Input::IT_STICKBUTTON, 9);
 
     setBinding(PA_MENU_UP,      Input::IT_STICKMOTION, 1, Input::AD_NEGATIVE);
     setBinding(PA_MENU_DOWN,    Input::IT_STICKMOTION, 1, Input::AD_POSITIVE);
@@ -236,10 +236,7 @@ core::stringw GamepadConfig::getBindingAsString(const PlayerAction action) const
                                                     // I18N: name of stick on gamepads
                                                     : _("Left thumb up");
                                                     // I18N: name of stick on gamepads
-            case 2: return (ad==Input::AD_POSITIVE) ? _("Left trigger")
-                                                    // I18N: name of stick on gamepads
-                                                    : _("Right trigger");
-                                                    // I18N: name of stick on gamepads
+            case 2: return _("Left trigger");       // I18N: name of trigger on gamepads
             case 3: return (ad==Input::AD_POSITIVE) ? _("Right thumb down")
                                                     // I18N: name of stick on gamepads
                                                     : _("Right thumb up");
@@ -248,7 +245,8 @@ core::stringw GamepadConfig::getBindingAsString(const PlayerAction action) const
                                                     // I18N: name of stick on gamepads
                                                     : _("Right thumb left");
                                                     // I18N: name of buttons on gamepads
-            case Input::HAT_H_ID: return (ad == Input::AD_POSITIVE) ? _("DPad up") 
+            case 5: return _("Right trigger");      // I18N: name of trigger on gamepads
+            case Input::HAT_H_ID: return (ad == Input::AD_POSITIVE) ? _("DPad up")
                                                     // I18N: name of buttons on gamepads
                                                                     : _("DPad down");
                                                     // I18N: name of buttons on gamepads

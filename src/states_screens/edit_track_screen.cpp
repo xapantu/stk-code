@@ -26,14 +26,13 @@
 #include "states_screens/state_manager.hpp"
 #include "tracks/track.hpp"
 #include "tracks/track_manager.hpp"
-
+#include "utils/string_utils.hpp"
+#include "utils/translation.hpp"
 
 using namespace GUIEngine;
 using namespace irr::core;
 
 const char* EditTrackScreen::ALL_TRACKS_GROUP_ID = "all";
-
-DEFINE_SCREEN_SINGLETON( EditTrackScreen );
 
 // -----------------------------------------------------------------------------
 EditTrackScreen::EditTrackScreen()
@@ -177,8 +176,6 @@ void EditTrackScreen::init()
 // -----------------------------------------------------------------------------
 void EditTrackScreen::loadTrackList()
 {
-    bool belongs_to_group;
-
     DynamicRibbonWidget* tracks_widget = getWidget<DynamicRibbonWidget>("tracks");
     assert(tracks_widget != NULL);
 
@@ -187,13 +184,13 @@ void EditTrackScreen::loadTrackList()
     for (unsigned int i = 0; i < track_manager->getNumberOfTracks(); i++)
     {
         Track* t = track_manager->getTrack(i);
-        belongs_to_group = (m_track_group.empty()                ||
+        bool belongs_to_group = (m_track_group.empty()                ||
                           m_track_group == ALL_TRACKS_GROUP_ID ||
                           t->isInGroup(m_track_group)                );
         if (!t->isArena()    && !t->isSoccer() &&
             !t->isInternal() && belongs_to_group       )
         {
-            tracks_widget->addItem(translations->fribidize(t->getName()),
+            tracks_widget->addItem(t->getName(),
                                    t->getIdent(),
                                    t->getScreenshotFile(), 0,
                                    IconButtonWidget::ICON_PATH_TYPE_ABSOLUTE);
@@ -224,7 +221,7 @@ void EditTrackScreen::selectTrack(const std::string& id)
     if (m_track)
     {
         tracks->setSelection(m_track->getIdent(), PLAYER_ID_GAME_MASTER, true);
-        selected_track->setText(translations->fribidize(m_track->getName()), true);
+        selected_track->setText(m_track->getName(), true);
 
         laps->setValue(m_laps);
 

@@ -26,34 +26,34 @@ class Player;
 
 class PlayerController : public Controller
 {
+friend class KartRewinder;
 protected:
     int            m_steer_val, m_steer_val_l, m_steer_val_r;
-    int            m_prev_accel;
+    uint16_t       m_prev_accel;
     bool           m_prev_brake;
     bool           m_prev_nitro;
 
-    float          m_penalty_time;
+    int            m_penalty_ticks;
 
-    virtual void  steer(float, int);
-    // ------------------------------------------------------------------------
-    /** Called when this kart started too early and got a start penalty. */
-    virtual void  displayPenaltyWarning() {}
-    // ------------------------------------------------------------------------
+    virtual void  steer(int ticks, int steer_val);
 
 public:
                  PlayerController(AbstractKart *kart);
     virtual     ~PlayerController  ();
-    virtual void update            (float) OVERRIDE;
-    virtual void action            (PlayerAction action, int value) OVERRIDE;
+    virtual void update            (int ticks) OVERRIDE;
+    virtual bool action            (PlayerAction action, int value,
+                                    bool dry_run = false           ) OVERRIDE;
+    virtual void actionFromNetwork(PlayerAction action, int value,
+                                   int value_l, int value_r);
     virtual void skidBonusTriggered() OVERRIDE;
     virtual void reset             () OVERRIDE;
     virtual void handleZipper(bool play_sound) OVERRIDE;
     virtual void resetInputState();
+    virtual bool saveState(BareNetworkString *buffer) const OVERRIDE;
+    virtual void rewindTo(BareNetworkString *buffer) OVERRIDE;
     // ------------------------------------------------------------------------
-    virtual void  collectedItem(const Item &item, int add_info=-1,
-                                float previous_energy=0            ) OVERRIDE
-    {
-    };
+    virtual void  collectedItem(const ItemState &item,
+                                float previous_energy=0 ) OVERRIDE { };
     // ------------------------------------------------------------------------
     virtual bool isPlayerController() const OVERRIDE { return true; }
     // ------------------------------------------------------------------------
@@ -88,6 +88,12 @@ public:
     virtual void finishedRace(float time) OVERRIDE
     {
     }   // finishedRace
+    // ------------------------------------------------------------------------
+    /** Returns the name of the player profile. */
+    core::stringw getName(bool include_handicap_string = true) const OVERRIDE;
+    // ------------------------------------------------------------------------
+    /** Called when this kart started too early and got a start penalty. */
+    virtual void  displayPenaltyWarning();
 
 };   // class PlayerController
 

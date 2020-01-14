@@ -20,12 +20,17 @@
 #include "states_screens/race_gui_overworld.hpp"
 
 #include "challenges/challenge_status.hpp"
+#include "challenges/story_mode_timer.hpp"
 #include "challenges/unlock_manager.hpp"
 #include "config/player_manager.hpp"
 #include "config/user_config.hpp"
 #include "graphics/camera.hpp"
 #include "graphics/2dutils.hpp"
+#ifndef SERVER_ONLY
 #include "graphics/glwrap.hpp"
+#endif
+#include "graphics/irr_driver.hpp"
+#include "graphics/material.hpp"
 #include "graphics/material_manager.hpp"
 #include "guiengine/engine.hpp"
 #include "guiengine/modaldialog.hpp"
@@ -43,6 +48,7 @@
 #include "modes/world.hpp"
 #include "race/grand_prix_manager.hpp"
 #include "race/race_manager.hpp"
+#include "states_screens/race_gui_multitouch.hpp"
 #include "tracks/track.hpp"
 #include "tracks/track_manager.hpp"
 #include "utils/constants.hpp"
@@ -60,6 +66,7 @@ const int OPEN = 1;
 const int COMPLETED_EASY = 2;
 const int COMPLETED_MEDIUM = 3;
 const int COMPLETED_HARD = 4;
+const int COMPLETED_BEST = 5;
 
 /** The constructor is called before anything is attached to the scene node.
  *  So rendering to a texture can be done here. But world is not yet fully
@@ -68,20 +75,91 @@ const int COMPLETED_HARD = 4;
 RaceGUIOverworld::RaceGUIOverworld()
 {
     m_enabled = true;
-    m_is_first_render_call = true;
+
+    if (UserConfigParams::m_artist_debug_mode && UserConfigParams::m_hide_gui)
+        m_enabled = false;
+
+    m_is_minimap_initialized = false;
     m_close_to_a_challenge = false;
     m_current_challenge = NULL;
-    m_trophy1 = irr_driver->getTexture(FileManager::GUI, "cup_bronze.png");
-    m_trophy2 = irr_driver->getTexture(FileManager::GUI, "cup_silver.png");
-    m_trophy3 = irr_driver->getTexture(FileManager::GUI, "cup_gold.png"  );
+    m_trophy[0] = irr_driver->getTexture(FileManager::GUI_ICON, "cup_bronze.png");
+    m_trophy[1] = irr_driver->getTexture(FileManager::GUI_ICON, "cup_silver.png");
+    m_trophy[2] = irr_driver->getTexture(FileManager::GUI_ICON, "cup_gold.png"  );
+    m_trophy[3] = irr_driver->getTexture(FileManager::GUI_ICON, "cup_platinum.png"  );
 
-    const float scaling = irr_driver->getFrameSize().Height / 420.0f;
+    bool multitouch_enabled = (UserConfigParams::m_multitouch_active == 1 && 
+                               irr_driver->getDevice()->supportsTouchDevice()) ||
+                               UserConfigParams::m_multitouch_active > 1;
+    
+    if (multitouch_enabled && UserConfigParams::m_multitouch_draw_gui &&
+        race_manager->getNumLocalPlayers() == 1)
+    {
+        m_multitouch_gui = new RaceGUIMultitouch(this);
+    }
+
+    calculateMinimapSize();
+
+    m_speed_meter_icon = material_manager->getMaterial("speedback.png");
+    m_speed_bar_icon   = material_manager->getMaterial("speedfore.png");
+    //createMarkerTexture();
+
+    m_active_challenge = NULL;
+
+    // Determine maximum length of the rank/lap text, in order to
+    // align those texts properly on the right side of the viewport.
+    gui::ScalableFont* font = GUIEngine::getFont();
+    m_trophy_points_width = font->getDimension(L"1000").Width;
+
+    m_lock           = irr_driver->getTexture(FileManager::GUI_ICON,"gui_lock.png");
+    m_open_challenge = irr_driver->getTexture(FileManager::GUI_ICON,"challenge.png");
+    m_locked_bonus   = irr_driver->getTexture(FileManager::GUI_ICON,"mystery_unlock.png");
+
+    m_icons[0] = m_lock;
+    m_icons[1] = m_open_challenge;
+    m_icons[2] = m_trophy[0];
+    m_icons[3] = m_trophy[1];
+    m_icons[4] = m_trophy[2];
+    m_icons[5] = m_trophy[3];
+    m_icons[6] = m_locked_bonus;
+}   // RaceGUIOverworld
+
+//-----------------------------------------------------------------------------
+RaceGUIOverworld::~RaceGUIOverworld()
+{
+    delete m_multitouch_gui;
+}   // ~RaceGUIOverworld
+
+//-----------------------------------------------------------------------------
+void RaceGUIOverworld::calculateMinimapSize()
+{
+    float scaling = std::min(irr_driver->getFrameSize().Height,  
+        irr_driver->getFrameSize().Width) / 420.0f;
+    const float map_size = 250.0f;
+    
+    // Check if we have enough space for minimap when touch steering is enabled
+    if (m_multitouch_gui != NULL)
+    {
+        const float map_bottom = (float)(irr_driver->getActualScreenSize().Height - 
+                                         m_multitouch_gui->getHeight());
+        
+        if ((map_size + 20.0f) * scaling > map_bottom)
+        {
+            scaling = map_bottom / (map_size + 20.0f);
+        }
+        
+        // Use some reasonable minimum scale, because minimap size can be 
+        // changed during the race
+        scaling = std::max(scaling,
+                           irr_driver->getActualScreenSize().Height * 0.2f / 
+                           (map_size + 20.0f));
+    }
+
     // Marker texture has to be power-of-two for (old) OpenGL compliance
     //m_marker_rendered_size  =  2 << ((int) ceil(1.0 + log(32.0 * scaling)));
     m_minimap_challenge_size = (int)( 12.0f * scaling);
     m_minimap_player_size    = (int)( 24.0f * scaling);
-    m_map_width              = (int)(250.0f * scaling);
-    m_map_height             = (int)(250.0f * scaling);
+    m_map_width              = (int)(map_size * scaling);
+    m_map_height             = (int)(map_size * scaling);
 
     m_map_left   = 20;
     m_map_bottom = irr_driver->getActualScreenSize().Height-10;
@@ -91,43 +169,15 @@ RaceGUIOverworld::RaceGUIOverworld()
     m_map_rendered_width    = map_texture;
     m_map_rendered_height   = map_texture;
 
-
-    // special case : when 3 players play, use available 4th space for such things
-    if (race_manager->getNumLocalPlayers() == 3)
+    if (m_multitouch_gui != NULL)
     {
-        m_map_left = irr_driver->getActualScreenSize().Width - m_map_width;
+        m_map_left = (int)((irr_driver->getActualScreenSize().Width - 
+                                                        m_map_width) * 0.9f);
+        m_map_bottom = m_map_height + int(10 * scaling);
     }
-
-    m_speed_meter_icon = material_manager->getMaterial("speedback.png");
-    m_speed_bar_icon   = material_manager->getMaterial("speedfore.png");
-    //createMarkerTexture();
-
-    // Translate strings only one in constructor to avoid calling
-    // gettext in each frame.
-    //I18N: Shown at the end of a race
-    m_string_lap      = _("Lap");
-    m_string_rank     = _("Rank");
-
-
-    // Determine maximum length of the rank/lap text, in order to
-    // align those texts properly on the right side of the viewport.
-    gui::ScalableFont* font = GUIEngine::getFont();
-    m_trophy_points_width = font->getDimension(L"1000").Width;
-
-    m_lock           = irr_driver->getTexture(FileManager::GUI,"gui_lock.png");
-    m_open_challenge = irr_driver->getTexture(FileManager::GUI,"challenge.png");
-
-    m_icons[0] = m_lock;
-    m_icons[1] = m_open_challenge;
-    m_icons[2] = m_trophy1;
-    m_icons[3] = m_trophy2;
-    m_icons[4] = m_trophy3;
-}   // RaceGUIOverworld
-
-//-----------------------------------------------------------------------------
-RaceGUIOverworld::~RaceGUIOverworld()
-{
-}   // ~RaceGUIOverworld
+    
+    m_is_minimap_initialized = false;
+}
 
 //-----------------------------------------------------------------------------
 /** Render all global parts of the race gui, i.e. things that are only
@@ -136,42 +186,25 @@ RaceGUIOverworld::~RaceGUIOverworld()
  */
 void RaceGUIOverworld::renderGlobal(float dt)
 {
+#ifndef SERVER_ONLY
     RaceGUIBase::renderGlobal(dt);
     cleanupMessages(dt);
 
-    // Special case : when 3 players play, use 4th window to display such
-    // stuff (but we must clear it)
-    if (race_manager->getNumLocalPlayers() == 3 &&
-        !GUIEngine::ModalDialog::isADialogActive())
-    {
-        static video::SColor black = video::SColor(255,0,0,0);
-        GL32_draw2DRectangle(black,
-                          core::rect<s32>(irr_driver->getActualScreenSize().Width/2,
-                                          irr_driver->getActualScreenSize().Height/2,
-                                          irr_driver->getActualScreenSize().Width,
-                                          irr_driver->getActualScreenSize().Height));
-    }
-
-    World *world = World::getWorld();
-    assert(world != NULL);
-    if(world->getPhase() >= WorldStatus::READY_PHASE &&
-       world->getPhase() <= WorldStatus::GO_PHASE      )
-    {
-        drawGlobalReadySetGo();
-    }
-
-    // Timer etc. are not displayed unless the game is actually started.
-    if(!world->isRacePhase()) return;
     if (!m_enabled) return;
 
-    drawTrophyPoints();
+    if (m_multitouch_gui == NULL)
+    {
+        drawTrophyPoints();
+    }
 
-    // minimap has no mipmaps so disable material2D
-    //irr_driver->getVideoDriver()->enableMaterial2D(false);
+    // Display the story mode timer if not in speedrun mode
+    // If in speedrun mode, it is taken care of in GUI engine
+    // as it must be displayed in all the game's screens
+    if (UserConfigParams::m_display_story_mode_timer && !UserConfigParams::m_speedrun_mode)
+        irr_driver->displayStoryModeTimer();
+
     drawGlobalMiniMap();
-    //irr_driver->getVideoDriver()->enableMaterial2D();
-
-    m_is_first_render_call = false;
+#endif
 }   // renderGlobal
 
 //-----------------------------------------------------------------------------
@@ -182,9 +215,12 @@ void RaceGUIOverworld::renderGlobal(float dt)
 void RaceGUIOverworld::renderPlayerView(const Camera *camera, float dt)
 {
     if (!m_enabled) return;
+    
+    RaceGUIBase::renderPlayerView(camera, dt);
+    
     const AbstractKart *kart = camera->getKart();
     if(!kart) return;
-
+    
     const core::recti &viewport = camera->getViewport();
     core::vector2df scaling     = camera->getScaling();
     //Log::info("RaceGUIOverworld", "Applied ratio: %f", viewport.getWidth()/800.0f);
@@ -197,9 +233,10 @@ void RaceGUIOverworld::renderPlayerView(const Camera *camera, float dt)
 
     if(!World::getWorld()->isRacePhase()) return;
 
-    drawPowerupIcons    (kart, viewport, scaling);
-
-    RaceGUIBase::renderPlayerView(camera, dt);
+    if (m_multitouch_gui == NULL)
+    {
+        drawPowerupIcons(kart, viewport, scaling);
+    }
 }   // renderPlayerView
 
 //-----------------------------------------------------------------------------
@@ -207,10 +244,12 @@ void RaceGUIOverworld::renderPlayerView(const Camera *camera, float dt)
  */
 void RaceGUIOverworld::drawTrophyPoints()
 {
+#ifndef SERVER_ONLY
     PlayerProfile *player = PlayerManager::getCurrentPlayer();
     const int points = player->getPoints();
-    std::string s = StringUtils::toString(points);
-    core::stringw sw(s.c_str());
+    const int next_unlock_points = player->getNextUnlockPoints();
+    core::stringw sw(StringUtils::toString(points).c_str());
+    core::stringw swg(StringUtils::toString(next_unlock_points).c_str());
 
     static video::SColor time_color = video::SColor(255, 255, 255, 255);
 
@@ -219,73 +258,88 @@ void RaceGUIOverworld::drawTrophyPoints()
     core::rect<s32> pos(irr_driver->getActualScreenSize().Width - dist_from_right, 10,
                         irr_driver->getActualScreenSize().Width                  , 50);
 
-    gui::ScalableFont* font = GUIEngine::getFont();
+    gui::ScalableFont* font = GUIEngine::getHighresDigitFont();
 
     bool vcenter = true;
 
-    const int size = irr_driver->getActualScreenSize().Width/20;
+    const int size = std::min((int)irr_driver->getActualScreenSize().Width/20,
+                                      2 * GUIEngine::getFontHeight());
     core::rect<s32> dest(size, pos.UpperLeftCorner.Y,
                          size*2, pos.UpperLeftCorner.Y + size);
-    core::rect<s32> source(core::position2di(0, 0), m_trophy3->getSize());
+    core::rect<s32> source(core::position2di(0, 0), m_trophy[3]->getSize());
 
-    font->setShadow(video::SColor(255,0,0,0));
+    float place_between_trophies =
+        PlayerManager::getCurrentPlayer()->isLocked("difficulty_best") ? size*2.0f : size*1.0f;
 
-    if (!m_close_to_a_challenge)
+    // Draw trophies icon and the number of trophy obtained by type
+    for (unsigned int i=0;i<4;i++)
     {
-        draw2DImage(m_trophy1, dest, source, NULL,
-                                                  NULL, true /* alpha */);
+        if (m_close_to_a_challenge)
+            break;
+
+        if (i==3 && PlayerManager::getCurrentPlayer()->isLocked("difficulty_best"))
+            break;
+
+        draw2DImage(m_trophy[i], dest, source, NULL, NULL, true /* alpha */);
+
+        dest += core::position2di((int)(size*1.5f), 0);
+        std::string trophies = (i==0) ? StringUtils::toString(player->getNumEasyTrophies())   :
+                               (i==1) ? StringUtils::toString(player->getNumMediumTrophies()) :
+                               (i==2) ? StringUtils::toString(player->getNumHardTrophies())   :
+                                        StringUtils::toString(player->getNumBestTrophies());
+        core::stringw trophiesW(trophies.c_str());
+        font->setBlackBorder(true);
+        font->draw(trophiesW.c_str(), dest, time_color, false, vcenter, NULL, true /* ignore RTL */);
+        font->setBlackBorder(false);
+
+        dest += core::position2di(place_between_trophies, 0);
     }
 
-    dest += core::position2di((int)(size*1.5f), 0);
-    std::string easyTrophies = StringUtils::toString(player->getNumEasyTrophies());
-    core::stringw easyTrophiesW(easyTrophies.c_str());
-    if (!m_close_to_a_challenge)
-    {
-        font->draw(easyTrophiesW.c_str(), dest, time_color, false, vcenter, NULL, true /* ignore RTL */);
-    }
+    dest = core::rect<s32>(pos.UpperLeftCorner.X - size, pos.UpperLeftCorner.Y,
+                           pos.UpperLeftCorner.X, pos.UpperLeftCorner.Y + size);
 
-    dest += core::position2di(size*2, 0);
-    if (!m_close_to_a_challenge)
-    {
-        draw2DImage(m_trophy2, dest, source, NULL,
-                                                  NULL, true /* alpha */);
-    }
+    draw2DImage(m_open_challenge, dest, source, NULL, NULL, true /* alpha */);
 
-    dest += core::position2di((int)(size*1.5f), 0);
-    std::string mediumTrophies = StringUtils::toString(player->getNumMediumTrophies());
-    core::stringw mediumTrophiesW(mediumTrophies.c_str());
-    if (!m_close_to_a_challenge)
-    {
-        font->draw(mediumTrophiesW.c_str(), dest, time_color, false, vcenter, NULL, true /* ignore RTL */);
-    }
+    core::dimension2du area = font->getDimension(L"9");
+    int small_width = area.Width;
+    area = font->getDimension(L"99");
+    int middle_width = area.Width;
+    area = font->getDimension(L"999");
+    int large_width = area.Width;
 
-    dest += core::position2di(size*2, 0);
-    if (!m_close_to_a_challenge)
-    {
-        draw2DImage(m_trophy3, dest, source, NULL,
-                                                  NULL, true /* alpha */);
-    }
-    dest += core::position2di((int)(size*1.5f), 0);
-    std::string hardTrophies = StringUtils::toString(player->getNumHardTrophies());
-    core::stringw hardTrophiesW(hardTrophies.c_str());
-    if (!m_close_to_a_challenge)
-    {
-        font->draw(hardTrophiesW.c_str(), dest, time_color, false, vcenter, NULL, true /* ignore RTL */);
-    }
+    int number_width = (points <= 9)  ? small_width  :
+                       (points <= 99) ? middle_width : large_width;
 
-    dest = core::rect<s32>(pos.UpperLeftCorner.X - size - 5, pos.UpperLeftCorner.Y,
-                           pos.UpperLeftCorner.X - 5, pos.UpperLeftCorner.Y + size);
+    pos.LowerRightCorner.Y = int(dest.LowerRightCorner.Y + 1.5f*size);
+    pos.UpperLeftCorner.X -= int(0.5f*size + number_width*0.5f);
 
-    draw2DImage(m_open_challenge, dest, source, NULL,
-                                              NULL, true /* alpha */);
-
-    pos.LowerRightCorner.Y = dest.LowerRightCorner.Y;
-    pos.UpperLeftCorner.X += 5;
-
-
+    font->setBlackBorder(true);
     font->draw(sw.c_str(), pos, time_color, false, vcenter, NULL, true /* ignore RTL */);
-    font->disableShadow();
+    font->setBlackBorder(false);
 
+    pos.UpperLeftCorner.X += int(0.5f*size + number_width*0.5f);
+
+    if (next_unlock_points > points && (points + 80) >= next_unlock_points)
+    {
+        if (next_unlock_points < 9) number_width = small_width;
+        else if (next_unlock_points <99) number_width = middle_width;
+        else number_width = large_width;
+
+        dest = core::rect<s32>(int(pos.UpperLeftCorner.X - 2.5f*size),
+                               pos.UpperLeftCorner.Y,
+                               int(pos.UpperLeftCorner.X - 1.5f*size),
+                               pos.UpperLeftCorner.Y + size);
+
+        draw2DImage(m_locked_bonus, dest, source, NULL,
+                                                  NULL, true /* alpha */);
+
+        pos.UpperLeftCorner.X -= int(2*size + number_width*0.5f);
+
+        font->setBlackBorder(true);
+        font->draw(swg.c_str(), pos, time_color, false, vcenter, NULL, true /* ignore RTL */);
+        font->setBlackBorder(false);
+    }
+#endif
 }   // drawTrophyPoints
 
 //-----------------------------------------------------------------------------
@@ -293,34 +347,40 @@ void RaceGUIOverworld::drawTrophyPoints()
  */
 void RaceGUIOverworld::drawGlobalMiniMap()
 {
+#ifndef SERVER_ONLY
     World *world = World::getWorld();
-    // arenas currently don't have a map.
-    if(world->getTrack()->isArena() || world->getTrack()->isSoccer()) return;
-
-    Track* track = world->getTrack();
-    const std::vector<OverworldChallenge>& challenges =
-                                                     track->getChallengeList();
+    Track* track = Track::getCurrentTrack();
+    const std::vector<OverworldChallenge>& challenges = track->getChallengeList();
 
     // The trophies might be to the left of the minimap on large displays
     // Adjust the left side of the minimap to take this into account.
     // This can't be done in the constructor of this object, since at
     // that time the scene.xml file has not been read (so the challenges
     // are not defined yet).
-    if(m_is_first_render_call)
+    if (!m_is_minimap_initialized)
     {
         float left_most = 0;
+        float right_most = 0;
+
         for (unsigned int n=0; n<challenges.size(); n++)
         {
             Vec3 draw_at;
             track->mapPoint2MiniMap(challenges[n].m_position, &draw_at);
             if(draw_at.getX()<left_most) left_most = draw_at.getX();
+            if(draw_at.getX()>right_most) right_most = draw_at.getX();
         }
-        m_map_left -= (int)left_most;
+
+        if (m_multitouch_gui != NULL)
+        {
+            m_map_left += m_map_width - (int)right_most;
+        }
+        else
+        {
+            m_map_left -= (int)left_most;
+        }
+        
+        m_is_minimap_initialized = true;
     }
-
-
-    const video::ITexture *old_rtt_mini_map = world->getTrack()->getOldRttMiniMap();
-    const FrameBuffer* new_rtt_mini_map = world->getTrack()->getNewRttMiniMap();
 
     int upper_y = m_map_bottom - m_map_height;
     int lower_y = m_map_bottom;
@@ -328,68 +388,46 @@ void RaceGUIOverworld::drawGlobalMiniMap()
     core::rect<s32> dest(m_map_left, upper_y,
                          m_map_left + m_map_width, lower_y);
 
-    if (old_rtt_mini_map != NULL)
-    {
-        core::rect<s32> source(core::position2di(0, 0), old_rtt_mini_map->getSize());
-        draw2DImage(old_rtt_mini_map, dest, source, 0, 0, true);
-    }
-    else if (new_rtt_mini_map != NULL)
-    {
-        core::rect<s32> source(0, 0, (int)new_rtt_mini_map->getWidth(),
-                               (int)new_rtt_mini_map->getHeight());
-        draw2DImageFromRTT(new_rtt_mini_map->getRTT()[0],
-            new_rtt_mini_map->getWidth(), new_rtt_mini_map->getHeight(),
-            dest, source, NULL, video::SColor(127, 255, 255, 255), true);
-    }
+    track->drawMiniMap(dest);
 
     Vec3 kart_xyz;
 
-    // In the first iteration, only draw AI karts, then only draw
-    // player karts. This guarantees that player kart icons are always
-    // on top of AI kart icons.
-    for(unsigned int only_draw_player_kart=0; only_draw_player_kart<=1;
-        only_draw_player_kart++)
+    // There can be only player karts on the overworld.
+    for(unsigned int i=0; i<world->getNumKarts(); i++)
     {
-        for(unsigned int i=0; i<world->getNumKarts(); i++)
+        const AbstractKart *kart = world->getKart(i);
+
+        kart_xyz= kart->getXYZ();
+        Vec3 draw_at;
+        track->mapPoint2MiniMap(kart_xyz, &draw_at);
+
+        video::ITexture* icon = kart->getKartProperties()->getMinimapIcon();
+        if (icon == NULL)
+            continue;
+
+        core::rect<s32> source(core::position2di(0, 0), icon->getSize());
+        int marker_half_size = m_minimap_player_size>>1;
+        core::rect<s32> position(m_map_left+(int)(draw_at.getX()-marker_half_size),
+                                 lower_y   -(int)(draw_at.getY()+marker_half_size),
+                                 m_map_left+(int)(draw_at.getX()+marker_half_size),
+                                 lower_y   -(int)(draw_at.getY()-marker_half_size));
+
+        // Highlight the player icons with some background image.
+        if (m_icons_frame != NULL)
         {
-            const AbstractKart *kart = world->getKart(i);
-            if(kart->isEliminated()) continue;   // don't draw eliminated kart
-                                                 // Make sure to only draw AI kart icons first, then
-                                                 // only player karts.
-            if(kart->getController()->isLocalPlayerController()
-               !=(only_draw_player_kart==1)) continue;
-            kart_xyz= kart->getXYZ();
-            Vec3 draw_at;
-            track->mapPoint2MiniMap(kart_xyz, &draw_at);
-
-            video::ITexture* icon = kart->getKartProperties()->getMinimapIcon();
-            core::rect<s32> source(core::position2di(0, 0), icon->getSize());
-            int marker_half_size = (kart->getController()->isLocalPlayerController()
-                                    ? m_minimap_player_size
-                                    : m_minimap_challenge_size                        )>>1;
-            core::rect<s32> position(m_map_left+(int)(draw_at.getX()-marker_half_size),
-                                     lower_y   -(int)(draw_at.getY()+marker_half_size),
-                                     m_map_left+(int)(draw_at.getX()+marker_half_size),
-                                     lower_y   -(int)(draw_at.getY()-marker_half_size));
-
-            // Highlight the player icons with some backgorund image.
-            if (kart->getController()->isLocalPlayerController())
+            video::SColor colors[4];
+            for (unsigned int i=0;i<4;i++)
             {
-                video::SColor colors[4];
-                for (unsigned int i=0;i<4;i++)
-                {
-                    colors[i]=kart->getKartProperties()->getColor();
-                }
-                const core::rect<s32> rect(core::position2d<s32>(0,0),
-                                           m_icons_frame->getTexture()->getSize());
+                colors[i]=kart->getKartProperties()->getColor();
+            }
+            const core::rect<s32> rect(core::position2d<s32>(0,0),
+                                       m_icons_frame->getSize());
 
-                draw2DImage(m_icons_frame->getTexture(), position,
-                                                          rect, NULL, colors, true);
-            }   // if isPlayerController
+            draw2DImage(m_icons_frame, position, rect, NULL, colors, true);
+        }
 
-            draw2DImage(icon, position, source, NULL, NULL, true);
-        }   // for i<getNumKarts
-    }   // for only_draw_player_kart
+        draw2DImage(icon, position, source, NULL, NULL, true);
+    }   // for i<getNumKarts
 
     m_current_challenge = NULL;
     for (unsigned int n=0; n<challenges.size(); n++)
@@ -398,15 +436,32 @@ void RaceGUIOverworld::drawGlobalMiniMap()
 
         Vec3 draw_at;
         track->mapPoint2MiniMap(challenges[n].m_position, &draw_at);
-
+        
         const ChallengeData* challenge = unlock_manager->getChallengeData(challenges[n].m_challenge_id);
         const unsigned int val = challenge->getNumTrophies();
         bool unlocked = (PlayerManager::getCurrentPlayer()->getPoints() >= val);
+        if (challenges[n].m_challenge_id == "fortmagma")
+        {
+            // For each track, check whether any difficulty has been completed ; fortmagma will not affect our decision (`n == m`) ; tutorial is ignored because it has no completion level
+            for (unsigned int m = 0; unlocked && m < challenges.size(); m++)
+            {
+                if (challenges[m].m_challenge_id == "tutorial") continue;
+                    unlocked = unlocked &&
+                        (PlayerManager::getCurrentPlayer()
+                            ->getChallengeStatus(challenges[m].m_challenge_id)
+                            ->isSolvedAtAnyDifficulty() || n == m);
+            }
+        }
+
         int state = (unlocked ? OPEN : LOCKED);
+        
+        if (UserConfigParams::m_unlock_everything > 0)
+            state = OPEN;
 
         const ChallengeStatus* c = PlayerManager::getCurrentPlayer()
                                   ->getChallengeStatus(challenges[n].m_challenge_id);
-        if      (c->isSolved(RaceManager::DIFFICULTY_HARD))   state = COMPLETED_HARD;
+        if      (c->isSolved(RaceManager::DIFFICULTY_BEST))   state = COMPLETED_BEST;
+        else if (c->isSolved(RaceManager::DIFFICULTY_HARD))   state = COMPLETED_HARD;
         else if (c->isSolved(RaceManager::DIFFICULTY_MEDIUM)) state = COMPLETED_MEDIUM;
         else if (c->isSolved(RaceManager::DIFFICULTY_EASY))   state = COMPLETED_EASY;
 
@@ -447,6 +502,10 @@ void RaceGUIOverworld::drawGlobalMiniMap()
             const ChallengeData* challenge = unlock_manager->getChallengeData(challenges[n].m_challenge_id);
             const unsigned int val = challenge->getNumTrophies();
             bool unlocked = (PlayerManager::getCurrentPlayer()->getPoints() >= val);
+            
+            if (UserConfigParams::m_unlock_everything > 0)
+                unlocked = true;
+                            
             if (!unlocked)
                 continue;
         }
@@ -466,7 +525,7 @@ void RaceGUIOverworld::drawGlobalMiniMap()
                                      irr_driver->getActualScreenSize().Height - GUIEngine::getFontHeight()*2,
                                      irr_driver->getActualScreenSize().Width,
                                      irr_driver->getActualScreenSize().Height);
-                GUIEngine::getOutlineFont()->draw(_("Press fire to play the tutorial"), pos2,
+                GUIEngine::getOutlineFont()->draw(_("Press fire to start the tutorial"), pos2,
                                            GUIEngine::getSkin()->getColor("font::normal"),
                                            true, true /* vcenter */, NULL);
                 continue;
@@ -497,15 +556,7 @@ void RaceGUIOverworld::drawGlobalMiniMap()
                 }
 
                 gui::ScalableFont* font = GUIEngine::getTitleFont();
-                font->draw(translations->fribidize(gp->getName()), pos, video::SColor(255,255,255,255),
-                           false, true /* vcenter */, NULL);
-
-                core::rect<s32> pos2(pos);
-                pos2.UpperLeftCorner.Y += 10 + GUIEngine::getTitleFontHeight();
-                pos2.LowerRightCorner.Y += 10 + GUIEngine::getTitleFontHeight();
-
-                //just below GP name
-                font->draw(_("Type: Grand Prix"), pos2, video::SColor(255,255,255,255),
+                font->draw(gp->getName(), pos, video::SColor(255,255,255,255),
                            false, true /* vcenter */, NULL);
             }
             else
@@ -521,97 +572,42 @@ void RaceGUIOverworld::drawGlobalMiniMap()
                 }
 
                 gui::ScalableFont* font = GUIEngine::getTitleFont();
-                font->draw(translations->fribidize(track->getName()),
+                font->draw(track->getName(),
                            pos, video::SColor(255, 255, 255, 255),
                            false, true /* vcenter */, NULL);
             }
 
             pos.UpperLeftCorner.Y += GUIEngine::getTitleFontHeight();
             pos.LowerRightCorner.Y = irr_driver->getActualScreenSize().Height;
-            GUIEngine::getFont()->draw(challenge->getChallengeDescription().c_str(),
-                                       pos, video::SColor(255,255,255,255),
-                                       false, false /* vcenter */, NULL);
+
+            if (m_active_challenge != challenge)
+            {
+                m_active_challenge = challenge;
+                m_challenge_description = challenge->getChallengeDescription();
+            }
+
+            gui::ScalableFont* font = GUIEngine::getLargeFont();
+            //FIXME : large font is upscaled and blurry
+            font->setBlackBorder(true);
+            font->draw(m_challenge_description, pos, video::SColor(255,255,255,255),
+                       false, false /* vcenter */, NULL);
 
             core::rect<s32> pos2(0,
                                  irr_driver->getActualScreenSize().Height - GUIEngine::getFontHeight()*2,
                                  irr_driver->getActualScreenSize().Width,
                                  irr_driver->getActualScreenSize().Height);
-            GUIEngine::getOutlineFont()->draw(_("Press fire to start the challenge"), pos2,
-                                       GUIEngine::getSkin()->getColor("font::normal"),
-                                       true, true /* vcenter */, NULL);
+            font->draw(_("Press fire to start the challenge"), pos2,
+                        GUIEngine::getSkin()->getColor("font::normal"),
+                        true, true /* vcenter */, NULL);
+            font->setBlackBorder(false);
         }
     }
-
+    
+    if (m_multitouch_gui != NULL)
+    {
+        m_multitouch_gui->setGuiAction(m_close_to_a_challenge);
+    }
+#endif   // SERVER_ONLY
 }   // drawGlobalMiniMap
 
 //-----------------------------------------------------------------------------
-/** Energy meter that gets filled with nitro. This function is called from
- *  drawSpeedAndEnergy, which defines the correct position of the energy
- *  meter.
- *  \param x X position of the meter.
- *  \param y Y position of the meter.
- *  \param kart Kart to display the data for.
- *  \param scaling Scaling applied (in case of split screen)
- */
-void RaceGUIOverworld::drawEnergyMeter(int x, int y, const AbstractKart *kart,
-                              const core::recti &viewport,
-                              const core::vector2df &scaling)
-{
-    float state = (float)(kart->getEnergy())
-                / kart->getKartProperties()->getNitroMax();
-    if (state < 0.0f) state = 0.0f;
-    else if (state > 1.0f) state = 1.0f;
-
-    int h = (int)(viewport.getHeight()/3);
-    int w = h/4; // gauge image is so 1:4
-
-    y -= h;
-
-    x    -= w;
-
-    // Background
-    draw2DImage(m_gauge_empty, core::rect<s32>(x, y, x+w, y+h) /* dest rect */,
-                                              core::rect<s32>(0, 0, 64, 256) /* source rect */,
-                                              NULL /* clip rect */, NULL /* colors */,
-                                              true /* alpha */);
-
-    // Target
-    if (race_manager->getCoinTarget() > 0)
-    {
-        float coin_target = (float)race_manager->getCoinTarget()
-                          / kart->getKartProperties()->getNitroMax();
-
-        const int EMPTY_TOP_PIXELS = 4;
-        const int EMPTY_BOTTOM_PIXELS = 3;
-        int y1 = y + (int)(EMPTY_TOP_PIXELS +
-                           (h - EMPTY_TOP_PIXELS - EMPTY_BOTTOM_PIXELS)
-                           *(1.0f - coin_target)                        );
-        if (state >= 1.0f) y1 = y;
-
-        core::rect<s32> clip(x, y1, x + w, y + h);
-        draw2DImage(m_gauge_goal, core::rect<s32>(x, y, x+w, y+h) /* dest rect */,
-                                                  core::rect<s32>(0, 0, 64, 256) /* source rect */,
-                                                  &clip, NULL /* colors */, true /* alpha */);
-    }
-
-    // Filling (current state)
-    if (state > 0.0f)
-    {
-        const int EMPTY_TOP_PIXELS = 4;
-        const int EMPTY_BOTTOM_PIXELS = 3;
-        int y1 = y + (int)(EMPTY_TOP_PIXELS
-                           + (h - EMPTY_TOP_PIXELS - EMPTY_BOTTOM_PIXELS)
-                           *(1.0f - state)                             );
-        if (state >= 1.0f) y1 = y;
-
-        core::rect<s32> clip(x, y1, x + w, y + h);
-        draw2DImage(m_gauge_full, core::rect<s32>(x, y, x+w, y+h) /* dest rect */,
-                                                  core::rect<s32>(0, 0, 64, 256) /* source rect */,
-                                                  &clip, NULL /* colors */, true /* alpha */);
-    }
-
-
-}   // drawEnergyMeter
-
-//-----------------------------------------------------------------------------
-

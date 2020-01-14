@@ -47,14 +47,13 @@ private:
     *  one time only (which might get triggered more than once). */
     enum AnimTimeType { ATT_CYCLIC, ATT_CYCLIC_ONCE } m_anim_type;
 
-    /** The current time used in the IPOs. */
-    float m_current_time;
-
     /** The inital position of this object. */
     Vec3 m_initial_xyz;
 
     /** The initial rotation of this object. */
     Vec3 m_initial_hpr;
+
+    void calculateAnimationDuration();
 
 protected:
     /** All IPOs for this animation. */
@@ -62,13 +61,21 @@ protected:
 
     /** True if the animation is currently playing. */
     bool  m_playing;
-    
+
+    float m_animation_duration;
+
+    /** The current time used in the IPOs. */
+    float m_current_time;
+
 public:
                  AnimationBase(const XMLNode &node);
                  AnimationBase(Ipo *ipo);
     virtual      ~AnimationBase() {}
-    virtual void update(float dt, Vec3 *xyz=NULL, Vec3 *hpr=NULL,
-                                  Vec3 *scale=NULL);
+    virtual void update(float dt,  Vec3 *xyz=NULL, Vec3 *hpr=NULL,
+                                   Vec3 *scale=NULL);
+    virtual void getAt(float time, Vec3 *xyz = NULL, Vec3 *hpr = NULL,
+                                   Vec3 *scale = NULL);
+    virtual void getDerivativeAt(float time, Vec3 *xyz);
     /** This needs to be implemented by the inheriting classes. It is called
      *  once per frame from the track. It has a dummy implementation that
      *  just asserts so that this class can be instantiated in
@@ -82,18 +89,7 @@ public:
     void         setPlaying(bool playing) {m_playing = playing; }
 
     // ------------------------------------------------------------------------
-
-    float getAnimationDuration() const
-    {
-        float duration = -1;
-
-        for (const Ipo* currIpo : m_all_ipos)
-        {
-            duration = std::max(duration, currIpo->getEndTime());
-        }
-
-        return duration;
-    }
+    float getAnimationDuration() const         { return m_animation_duration; }
 
 };   // AnimationBase
 

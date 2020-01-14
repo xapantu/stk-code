@@ -208,6 +208,8 @@ namespace GUIEngine
         int m_left_border, m_right_border, m_top_border, m_bottom_border;
         bool m_preserve_h_aspect_ratios;
         float m_hborder_out_portion, m_vborder_out_portion;
+        float m_horizontal_inner_padding, m_vertical_inner_padding;
+        float m_horizontal_margin, m_vertical_margin;
 
         // this parameter is a bit special since it's the only one that can
         // change at runtime
@@ -221,6 +223,7 @@ namespace GUIEngine
         static const int RIGHT = 4;
         static const int TOP = 8;
         static const int BOTTOM = 16;
+        static const int ALL = BODY+LEFT+RIGHT+TOP+BOTTOM;
 
         core::rect<s32> m_source_area_left;
         core::rect<s32> m_source_area_center;
@@ -267,7 +270,7 @@ namespace GUIEngine
         gui::IGUISkin* m_fallback_skin;
 
 
-        video::ITexture* bg_image;
+        video::ITexture* m_bg_image;
         std::vector<Widget*> m_tooltips;
         std::vector<bool> m_tooltip_at_mouse;
 
@@ -316,7 +319,7 @@ namespace GUIEngine
                                  const bool pressed, const bool bottomArrow);
 
         void drawTooltip(Widget* widget, bool atMouse);
-
+        irr::video::SColorf getPlayerColor(int player_id);
 
     public:
 
@@ -336,6 +339,9 @@ namespace GUIEngine
         void drawBgImage();
         void drawBGFadeColor();
         void drawBadgeOn(const Widget* widget, const core::rect<s32>& rect);
+        void drawProgressBarInScreen(SkinWidgetContainer* swc,
+                                     const core::rect< s32 > &rect,
+                                     float progress, bool deactivated = false);
 
         // irrlicht's callbacks
         virtual void draw2DRectangle (gui::IGUIElement *element,
@@ -417,7 +423,40 @@ namespace GUIEngine
 
         gui::IGUISkin* getFallbackSkin() { return m_fallback_skin; }
 
+        const std::string& getDataPath() const;
 
+        bool hasIconTheme() const;
+
+        bool hasFont() const;
+
+        const std::vector<std::string>& getNormalTTF() const;
+
+        const std::vector<std::string>& getDigitTTF() const;
+
+        const std::string& getColorEmojiTTF() const;
+
+        std::string getThemedIcon(const std::string& relative_path) const;
+
+        float getScalingFactor(std::string params, float height);
     };   // Skin
 }   // guiengine
+
+namespace SkinConfig
+{
+    enum options {
+        MARGIN,
+        BORDER,
+        PADDING,
+        TOP,
+        BOTTOM,
+        LEFT,
+        RIGHT,
+        HORIZONTAL,
+        VERTICAL
+    };
+    float getVerticalInnerPadding(int wtype, GUIEngine::Widget* widget);
+    float getHorizontalInnerPadding(int wtype, GUIEngine::Widget* widget);
+    float getInnerPadding(int wtype, int rtype, int axis);
+    float getValue(int value_type, int widget_type, int ribbon_type, int axis);
+}
 #endif
