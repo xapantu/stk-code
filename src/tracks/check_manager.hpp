@@ -25,7 +25,9 @@
 #include <string>
 #include <vector>
 
+class AbstractKart;
 class CheckStructure;
+class Flyable;
 class Track;
 class XMLNode;
 class Vec3;
@@ -38,34 +40,22 @@ class CheckManager : public NoCopy
 {
 private:
     std::vector<CheckStructure*> m_all_checks;
-    static CheckManager         *m_check_manager;
-           /** Private constructor, to make sure it is only called via
-            *  the static create function. */
-           CheckManager()       {m_all_checks.clear();};
-          ~CheckManager();
 public:
+    ~CheckManager();
     void   add(CheckStructure* strct) { m_all_checks.push_back(strct); }
+    void   addFlyableToCannons(Flyable *flyable);
+    void   removeFlyableFromCannons(Flyable *flyable);
     void   load(const XMLNode &node);
     void   update(float dt);
     void   reset(const Track &track);
+    void   resetAfterKartMove(AbstractKart *kart);
+    void   resetAfterRewind();
     unsigned int getLapLineIndex() const;
     int    getChecklineTriggering(const Vec3 &from, const Vec3 &to) const;
     // ------------------------------------------------------------------------
-    /** Creates an instance of the check manager. */
-    static void create()
-    {
-        assert(!m_check_manager);
-        m_check_manager = new CheckManager();
-    }   // create
-    // ------------------------------------------------------------------------
-    /** Returns the instance of the check manager. */
-    static CheckManager* get() { return m_check_manager; }
-    // ------------------------------------------------------------------------
-    /** Destroys the check manager. */
-    static void destroy() { delete m_check_manager; m_check_manager = NULL; }
-    // ------------------------------------------------------------------------
     /** Returns the number of check structures defined. */
-    unsigned int getCheckStructureCount() const { return (unsigned int) m_all_checks.size(); }
+    unsigned int getCheckStructureCount() const
+                                 { return (unsigned int) m_all_checks.size(); }
     // ------------------------------------------------------------------------
     /** Returns the nth. check structure. */
     CheckStructure *getCheckStructure(unsigned int n) const

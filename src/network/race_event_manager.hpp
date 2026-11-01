@@ -16,18 +16,13 @@
 //  along with this program; if not, write to the Free Software
 //  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
-/*! \file network_world.hpp
- */
-
 #ifndef NETWORK_WORLD_HPP
 #define NETWORK_WORLD_HPP
 
-#include "input/input.hpp"
-#include "utils/singleton.hpp"
-#include <map>
+#include <memory>
 
 class Controller;
-class KartUpdateProtocol;
+class GameEventsProtocol;
 class AbstractKart;
 class Item;
 
@@ -37,31 +32,47 @@ class Item;
  *  server to all clients. This object then triggers the right message
  *  from the various running protocols.
 */
-class RaceEventManager : public AbstractSingleton<RaceEventManager>
+class RaceEventManager
 {
 private:
     bool m_running;
-    float m_race_time;
 
-    friend class AbstractSingleton<RaceEventManager>;
+    std::weak_ptr<GameEventsProtocol> m_game_events_protocol;
 
-             RaceEventManager();
-    virtual ~RaceEventManager();
+    RaceEventManager();
+    ~RaceEventManager();
 
 public:
-    void update(float dt);
-
-    void start();
-    void stop();
-    bool isRaceOver();
-
-    void collectedItem(Item *item, AbstractKart *kart);
-    void controllerAction(Controller* controller, PlayerAction action, 
-                          int value);
-    void kartFinishedRace(AbstractKart *kart, float time);
+    // ----------------------------------------------------------------------------------------
+    static RaceEventManager* get();
+    // ----------------------------------------------------------------------------------------
+    static void create();
+    // ----------------------------------------------------------------------------------------
+    static void destroy();
+    // ----------------------------------------------------------------------------------------
+    static void clear();
+    // ------------------------------------------------------------------------
+    void update(int ticks, bool fast_forward);
+    // ------------------------------------------------------------------------
+    void start(std::shared_ptr<GameEventsProtocol> gep)
+    {
+        m_game_events_protocol = gep;
+        m_running = true;
+    }
+    // ------------------------------------------------------------------------
+    void stop()                                          { m_running = false; }
     // ------------------------------------------------------------------------
     /** Returns if this instance is in running state or not. */
-    bool isRunning() { return m_running; }
+    bool isRunning()                                      { return m_running; }
+    // ------------------------------------------------------------------------
+    std::shared_ptr<GameEventsProtocol> getProtocol() const
+                                      { return m_game_events_protocol.lock(); }
+    // ------------------------------------------------------------------------
+    bool protocolStopped() const   { return m_game_events_protocol.expired(); }
+    // ------------------------------------------------------------------------
+    bool isRaceOver();
+    // ------------------------------------------------------------------------
+    void kartFinishedRace(AbstractKart *kart, float time);
 
 };
 

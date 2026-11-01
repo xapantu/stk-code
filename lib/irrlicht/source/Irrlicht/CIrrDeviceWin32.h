@@ -51,6 +51,9 @@ namespace irr
 		//! sets the caption of the window
 		virtual void setWindowCaption(const wchar_t* text);
 
+		//! sets the class of the window
+		virtual void setWindowClass(const char* text) {}
+
 		//! returns if window is active. if not, nothing need to be drawn
 		virtual bool isWindowActive() const;
 
@@ -84,6 +87,12 @@ namespace irr
 
 		//! Restores the window size.
 		virtual void restoreWindow();
+		
+		//! Move window to requested position
+		virtual bool moveWindow(int x, int y);
+
+		//! Get current window position.
+		virtual bool getWindowPosition(int* x, int* y);
 
 		//! Activate any joysticks, and generate events for them.
 		virtual bool activateJoysticks(core::array<SJoystickInfo> & joystickInfo);
@@ -298,7 +307,7 @@ namespace irr
             //! Return a system-specific size which is supported for cursors. Larger icons will fail, smaller icons might work.
 			virtual core::dimension2di getSupportedIconSize() const;
 
-            void update();
+			void update();
 
 		private:
 
@@ -377,6 +386,12 @@ namespace irr
 		//! returns the win32 cursor control
 		CCursorControl* getWin32CursorControl();
 
+		HWND getHandle() const { return HWnd; }
+
+		bool isIMEComposingStarted() const { return m_ime_composing_started; }
+
+		void setIMEComposingStarted(bool started) { m_ime_composing_started = started; }
+
 	private:
 
 		//! create the driver
@@ -389,6 +404,7 @@ namespace irr
 
 		void resizeIfNecessary();
 
+		bool m_ime_composing_started;
 		HWND HWnd;
 
 		bool ChangedToFullScreen;

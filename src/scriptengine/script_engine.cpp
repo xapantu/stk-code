@@ -16,11 +16,16 @@
 //  along with this program; if not, write to the Free Software
 //  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
+extern "C"
+{
+    #include <mcpp_lib.h>
+}
 #include <assert.h>
 #include <angelscript.h>
 #include "io/file_manager.hpp"
 #include "karts/kart.hpp"
 #include "modes/world.hpp"
+#include "scriptengine/aswrappedcall.hpp"
 #include "scriptengine/script_audio.hpp"
 #include "scriptengine/script_challenges.hpp"
 #include "scriptengine/script_kart.hpp"
@@ -31,10 +36,12 @@
 #include "scriptengine/script_utils.hpp"
 #include "scriptengine/scriptstdstring.hpp"
 #include "scriptengine/scriptvec3.hpp"
+#include "scriptengine/scriptarray.hpp"
 #include <string.h>
-#include "states_screens/dialogs/tutorial_message_dialog.hpp"
 #include "tracks/track_object_manager.hpp"
 #include "tracks/track.hpp"
+#include "utils/file_utils.hpp"
+#include "utils/string_utils.hpp"
 #include "utils/profiler.hpp"
 
 
@@ -69,7 +76,7 @@ namespace Scripting
         // The script compiler will write any compiler messages to the callback.
         m_engine->SetMessageCallback(asFUNCTION(AngelScript_ErrorCallback), 0, asCALL_CDECL);
 
-        // Configure the script engine with all the functions, 
+        // Configure the script engine with all the functions,
         // and variables that the script should be able to use.
         configureEngine(m_engine);
     }
@@ -77,6 +84,8 @@ namespace Scripting
     ScriptEngine::~ScriptEngine()
     {
         // Release the engine
+        m_pending_timeouts.clearAndDeleteAll();
+        m_engine->DiscardModule(MODULE_ID_MAIN_SCRIPT_FILE);
         m_engine->Release();
     }
 
@@ -88,31 +97,78 @@ namespace Scripting
     */
     std::string getScript(std::string script_path)
     {
-        //std::string script_path = World::getWorld()->getTrack()->getTrackFile(fileName);
-
-        FILE *f = fopen(script_path.c_str(), "rb");
-        if (f == NULL)
+        std::string script_file = FileUtils::getPortableReadingPath(script_path);
+        if (!file_manager->fileExists(script_file))
         {
-            Log::debug("Scripting", "File does not exist : {0}", script_path.c_str());
+#ifndef SERVER_ONLY
+            Log::debug("Scripting", "File does not exist : %s", script_path.c_str());
+#endif
             return "";
         }
 
-        // Determine the size of the file   
-        fseek(f, 0, SEEK_END);
-        int len = ftell(f);
-        fseek(f, 0, SEEK_SET);
+        // libmcpp ignores the first argument (like real main which is the exe)
+        std::string cmd1 = "mcpp";
+        std::string int_version =
+            StringUtils::toString(StringUtils::versionToInt(STK_VERSION));
+        // Preprocessing (atm add stk version)
+        std::string cmd2  = "-DSTK_VERSION=";
+        cmd2 += int_version;
+        // -P Don't output #line lines.
+        std::string cmd3 = "-P";
+        // -j Don't output the source line in diagnostics.
+        std::string cmd4 = "-j";
+        // -e <encoding>   Change the default multi-byte character encoding to one of:
+        //    euc_jp, gb2312, ksc5601, big5, sjis, iso2022_jp, utf8.
+        std::string cmd5 = "-e";
+        std::string cmd6 = "utf8";
+        std::string cmd7 = script_file;
+        std::vector<char*> all_cmds;
+        all_cmds.push_back(&cmd1[0]);
+        all_cmds.push_back(&cmd2[0]);
+        all_cmds.push_back(&cmd3[0]);
+        all_cmds.push_back(&cmd4[0]);
+        all_cmds.push_back(&cmd5[0]);
+        all_cmds.push_back(&cmd6[0]);
+        all_cmds.push_back(&cmd7[0]);
+        mcpp_use_mem_buffers(1);
+        mcpp_lib_main(all_cmds.size(), all_cmds.data());
 
-        // Read the entire file
-        std::string script;
-        script.resize(len);
-        int c = fread(&script[0], len, 1, f);
-        fclose(f);
-        if (c != 1)
+        char* err = mcpp_get_mem_buffer((OUTDEST)1/*error buffer*/);
+        bool has_error = false;
+        if (err)
         {
-            Log::error("Scripting", "Failed to load script file.");
-            return "";
+            std::string total = err;
+            auto errs = StringUtils::split(total, '\n');
+            for (auto& e : errs)
+            {
+                if (e.find("warning: Converted [CR+LF] to [LF]") !=
+                    std::string::npos)
+                    continue;
+
+                if (e.find("fatal:") != std::string::npos ||
+                    e.find("error:") != std::string::npos)
+                {
+                    has_error = true;
+                    Log::error("Scripting preprocessing", "%s", e.c_str());
+                }
+                else
+                {
+                    Log::warn("Scripting preprocessing", "%s", e.c_str());
+                }
+            }
         }
-        return script;
+
+        std::string result;
+        if (!has_error)
+        {
+            char* buf = mcpp_get_mem_buffer((OUTDEST)0/*output buffer*/);
+            if (buf)
+                result = buf;
+        }
+
+        // Calling this again causes the memory buffers to be freed.
+        mcpp_use_mem_buffers(1);
+        return result;
     }
 
     //-----------------------------------------------------------------------------
@@ -202,7 +258,7 @@ namespace Scripting
             else if (r == asEXECUTION_EXCEPTION)
             {
                 Log::error("Scripting", "The script ended with an exception : (line %i) %s",
-                    ctx->GetExceptionLineNumber(), 
+                    ctx->GetExceptionLineNumber(),
                     ctx->GetExceptionString());
             }
             else
@@ -219,7 +275,7 @@ namespace Scripting
     /*
     void ScriptEngine::runMethod(asIScriptObject* obj, std::string methodName)
     {
-        asIObjectType* type = obj->GetObjectType();
+        asITypeInfo* type = obj->GetObjectType();
         asIScriptFunction* method = type->GetMethodByName(methodName.c_str());
         if (method == NULL)
             Log::error("Scripting", ("runMethod: object does not implement method " + methodName).c_str());
@@ -305,15 +361,30 @@ namespace Scripting
             // Find the function for the function we want to execute.
             //      This is how you call a normal function with arguments
             //      asIScriptFunction *func = engine->GetModule(0)->GetFunctionByDecl("void func(arg1Type, arg2Type)");
-            func = m_engine->GetModule(MODULE_ID_MAIN_SCRIPT_FILE)
-                        ->GetFunctionByDecl(function_name.c_str());
-        
+            asIScriptModule* module = m_engine->GetModule(MODULE_ID_MAIN_SCRIPT_FILE);
+
+            if (module == NULL)
+            {
+#ifndef SERVER_ONLY
+                if (warn_if_not_found)
+                    Log::warn("Scripting", "Scripting function was not found : %s (module not found)", function_name.c_str());
+                else
+                    Log::debug("Scripting", "Scripting function was not found : %s (module not found)", function_name.c_str());
+#endif
+                m_functions_cache[function_name] = NULL; // remember that this function is unavailable
+                return;
+            }
+
+            func = module->GetFunctionByDecl(function_name.c_str());
+            
             if (func == NULL)
             {
+#ifndef SERVER_ONLY
                 if (warn_if_not_found)
                     Log::warn("Scripting", "Scripting function was not found : %s", function_name.c_str());
                 else
                     Log::debug("Scripting", "Scripting function was not found : %s", function_name.c_str());
+#endif
                 m_functions_cache[function_name] = NULL; // remember that this function is unavailable
                 return;
             }
@@ -345,8 +416,8 @@ namespace Scripting
 
         // Prepare the script context with the function we wish to execute. Prepare()
         // must be called on the context before each new script function that will be
-        // executed. Note, that if because we intend to execute the same function 
-        // several times, we will store the function returned by 
+        // executed. Note, that if because we intend to execute the same function
+        // several times, we will store the function returned by
         // GetFunctionByDecl(), so that this relatively slow call can be skipped.
         r = ctx->Prepare(func);
         if (r < 0)
@@ -357,7 +428,7 @@ namespace Scripting
             return;
         }
 
-        // Here, we can pass parameters to the script functions. 
+        // Here, we can pass parameters to the script functions.
         //ctx->setArgType(index, value);
         //for example : ctx->SetArgFloat(0, 3.14159265359f);
 
@@ -378,7 +449,7 @@ namespace Scripting
                 Log::error("Scripting", "The script ended with an exception.");
 
                 // Write some information about the script exception
-                asIScriptFunction *func = ctx->GetExceptionFunction();
+                //asIScriptFunction *func = ctx->GetExceptionFunction();
                 //std::cout << "func: " << func->GetDeclaration() << std::endl;
                 //std::cout << "modl: " << func->GetModuleName() << std::endl;
                 //std::cout << "sect: " << func->GetScriptSectionName() << std::endl;
@@ -426,6 +497,7 @@ namespace Scripting
         // Register the script string type
         RegisterStdString(engine); //register std::string
         RegisterVec3(engine);      //register Vec3
+        RegisterScriptArray(engine, true);
 
         Scripting::Track::registerScriptFunctions(m_engine);
         Scripting::Challenges::registerScriptFunctions(m_engine);
@@ -433,15 +505,15 @@ namespace Scripting
         Scripting::Kart::registerScriptEnums(m_engine);
         Scripting::Physics::registerScriptFunctions(m_engine);
         Scripting::Utils::registerScriptFunctions(m_engine);
-        Scripting::GUI::registerScriptFunctions(m_engine);
         Scripting::GUI::registerScriptEnums(m_engine);
+        Scripting::GUI::registerScriptFunctions(m_engine);
         Scripting::Audio::registerScriptFunctions(m_engine);
 
-        // It is possible to register the functions, properties, and types in 
+        // It is possible to register the functions, properties, and types in
         // configuration groups as well. When compiling the scripts it can then
         // be defined which configuration groups should be available for that
         // script. If necessary a configuration group can also be removed from
-        // the engine, so that the engine configuration could be changed 
+        // the engine, so that the engine configuration could be changed
         // without having to recompile all the scripts.
     }
 
@@ -459,7 +531,7 @@ namespace Scripting
         }
 
         // Add the script sections that will be compiled into executable code.
-        // If we want to combine more than one file into the same script, then 
+        // If we want to combine more than one file into the same script, then
         // we can call AddScriptSection() several times for the same module and
         // the script engine will treat them all as if they were one. The script
         // section name, will allow us to localize any errors in the script code.
@@ -483,7 +555,7 @@ namespace Scripting
         asIScriptModule *mod = m_engine->GetModule(MODULE_ID_MAIN_SCRIPT_FILE, asGM_CREATE_IF_NOT_EXISTS);
 
         // Compile the script. If there are any compiler messages they will
-        // be written to the message stream that we set right after creating the 
+        // be written to the message stream that we set right after creating the
         // script engine. If there are no errors, and no warnings, nothing will
         // be written to the stream.
         r = mod->Build();
@@ -497,9 +569,9 @@ namespace Scripting
         // returned. So if the script needs to be recompiled, then all the script
         // sections must be added again.
 
-        // If we want to have several scripts executing at different times but 
+        // If we want to have several scripts executing at different times but
         // that have no direct relation with each other, then we can compile them
-        // into separate script modules. Each module uses their own namespace and 
+        // into separate script modules. Each module uses their own namespace and
         // scope, so function names, and global variables will not conflict with
         // each other.
 
@@ -508,10 +580,17 @@ namespace Scripting
 
     //-----------------------------------------------------------------------------
 
-    PendingTimeout::PendingTimeout(double time, asIScriptFunction* callback_delegate) 
+    PendingTimeout::PendingTimeout(double time, asIScriptFunction* callback_delegate)
     {
         m_time = time;
         m_callback_delegate = callback_delegate;
+        
+        #if ANGELSCRIPT_VERSION < 23300
+        if (strstr(asGetLibraryOptions(), "AS_MAX_PORTABILITY"))
+        {
+            callback_delegate->AddRef();
+        }
+        #endif
     }
 
     //-----------------------------------------------------------------------------
@@ -520,7 +599,6 @@ namespace Scripting
     {
         if (m_callback_delegate != NULL)
         {
-            asIScriptEngine* engine = World::getWorld()->getScriptEngine()->getEngine();
             m_callback_delegate->Release();
         }
     }
@@ -541,7 +619,7 @@ namespace Scripting
 
     //-----------------------------------------------------------------------------
 
-    void ScriptEngine::update(double dt)
+    void ScriptEngine::update(float dt)
     {
         for (int i = m_pending_timeouts.size() - 1; i >= 0; i--)
         {

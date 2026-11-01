@@ -20,14 +20,15 @@
 
 #include "addons/addons_manager.hpp"
 #include "guiengine/screen.hpp"
-#include "guiengine/widgets/label_widget.hpp"
-#include "states_screens/dialogs/addons_loading.hpp"
+#include "guiengine/widgets/list_widget.hpp"
+#include "guiengine/widgets/text_box_widget.hpp"
 
 /* used for the installed/unsinstalled icons*/
 namespace irr { namespace gui { class STKModifiedSpriteBank; } }
 
-namespace GUIEngine { class Widget; }
+namespace GUIEngine { class LabelWidget; class Widget; }
 
+class AddonsLoading;
 struct DateFilter {
     core::stringw label;
     int year;
@@ -41,12 +42,12 @@ struct DateFilter {
   */
 class AddonsScreen : public GUIEngine::Screen,
                      public GUIEngine::ScreenSingleton<AddonsScreen>,
-                     public GUIEngine::IListWidgetHeaderListener
+                     public GUIEngine::IListWidgetHeaderListener,
+                     public GUIEngine::ITextBoxWidgetListener
 {
     friend class GUIEngine::ScreenSingleton<AddonsScreen>;
 private:
     AddonsScreen();
-    AddonsManager   *m_addons;
     AddonsLoading   *m_load;
     void             loadInformations();
     /** Icon for installed addon, which can be updated. */
@@ -60,8 +61,6 @@ private:
 
     irr::gui::STKModifiedSpriteBank
                     *m_icon_bank;
-    GUIEngine::LabelWidget
-                    *m_update_status;
 
     /** Currently selected type. */
     std::string      m_type;
@@ -70,16 +69,9 @@ private:
      *  addons_loading is being displayed. */
     int              m_selected_index;
 
-    float            m_icon_height;
-
     bool             m_reloading;
 
-    /** \brief To check (and set) if sort order is descending **/
     bool             m_sort_desc;
-
-    bool             m_sort_default;
-    
-    int              m_sort_col;
 
     /** List of date filters **/
     std::vector<DateFilter> m_date_filters;
@@ -101,13 +93,19 @@ public:
     /** \brief implement callback from parent class GUIEngine::Screen */
     virtual void beforeAddingWidget() OVERRIDE;
 
-    virtual void onColumnClicked(int columnId) OVERRIDE;
+    virtual void onColumnClicked(int column_id, bool sort_desc, bool sort_default) OVERRIDE;
 
     virtual void init() OVERRIDE;
     virtual void tearDown() OVERRIDE;
 
     /** \brief implement callback from parent class GUIEngine::Screen */
     virtual void onUpdate(float dt) OVERRIDE;
+
+    /** \brief rebuild the list based on search text */
+    virtual void onTextUpdated() OVERRIDE
+    {
+        loadList();
+    }
 
     void    setLastSelected();
 

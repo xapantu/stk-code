@@ -49,8 +49,9 @@ public:
 	virtual bool isALoadableFileFormat(io::IReadFile* file) const;
 
 	//! creates a surface from the file
-	virtual IImage* loadImage(io::IReadFile* file) const;
+	virtual IImage* loadImage(io::IReadFile* file, bool skip_checking = false) const;
 
+	virtual bool getImageSize(io::IReadFile* file, core::dimension2du* dim) const;
 private:
 
     #ifdef _IRR_COMPILE_WITH_LIBJPEG_
@@ -99,9 +100,6 @@ private:
 	/* Terminate source --- called by jpeg_finish_decompress() after all
 	data has been read.  Often a no-op. */
 	static void term_source (j_decompress_ptr cinfo);
-
-	// Copy filename to have it around for error-messages
-	static io::path Filename;
 
 	#endif // _IRR_COMPILE_WITH_LIBJPEG_
 };

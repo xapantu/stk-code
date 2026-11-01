@@ -26,47 +26,53 @@
   * objects.
   */
 
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include <irrString.h>
+#include <rect.h>
+#include <SColor.h>
+
 namespace irr
 {
-    namespace video { class ITexture; class SColor;       }
-    namespace scene { class IMesh; class ILightSceneNode; }
+    namespace scene
+    {
+        class IMesh; class ISceneNode;
+    }
+    namespace video
+    {
+        class IImage; class ITexture;
+    }
 }
+
 using namespace irr;
-class ModelDefinitionLoader;
 
 #include "LinearMath/btTransform.h"
 
-#include "graphics/material.hpp"
-#include "items/item.hpp"
-#include "scriptengine/script_engine.hpp"
-#include "tracks/quad_graph.hpp"
-#include "tracks/battle_graph.hpp"
-#include "utils/aligned_array.hpp"
-#include "utils/translation.hpp"
+#include "utils/log.hpp"
+#include "utils/random_generator.hpp"
 #include "utils/vec3.hpp"
-#include "utils/ptr_vector.hpp"
+#include "utils/stk_process.hpp"
 
+class AbstractKart;
 class AnimationManager;
 class BezierCurve;
 class CheckManager;
+class ItemManager;
+class ModelDefinitionLoader;
 class MovingTexture;
 class MusicInformation;
-class ParticleEmitter;
 class ParticleKind;
 class PhysicalObject;
+class RenderTarget;
+class TrackObject;
 class TrackObjectManager;
 class TriangleMesh;
-class World;
 class XMLNode;
-class TrackObject;
-
-namespace Scripting
-{
-    class ScriptEngine;
-}
 
 const int HEIGHT_MAP_RESOLUTION = 256;
 
@@ -108,14 +114,25 @@ class Track
 {
 private:
 
+    /** If a race is in progress, this stores the active track object.
+     *  NULL otherwise. */
+    static std::atomic<Track*> m_current_track[PT_COUNT];
+
 #ifdef DEBUG
     unsigned int             m_magic_number;
 #endif
 
+    /* Gravity to be used for this track. */
     float                    m_gravity;
+
+    /** Friction to be used for the track. */
+    float                    m_friction;
+
     std::string              m_ident;
     std::string              m_screenshot;
+    bool                     m_is_day;
     std::vector<MusicInformation*> m_music;
+    unsigned                       m_music_idx;
 
     /** Will only be used on overworld */
     std::vector<OverworldChallenge> m_challenges;
@@ -124,7 +141,7 @@ private:
 
     /** Start transforms of karts (either the default, or the ones taken
      *  from the scene file). */
-    AlignedArray<btTransform> m_start_transforms;
+    std::vector<btTransform> m_start_transforms;
 
     std::string              m_item_style;
     std::string              m_description;
@@ -188,10 +205,12 @@ private:
     std::vector<std::string> m_old_mesh_buffers;
 #endif
 
-    PtrVector<ParticleEmitter>      m_all_emitters;
     scene::ISceneNode  *m_sun;
     /** Used to collect the triangles for the bullet mesh. */
     TriangleMesh*            m_track_mesh;
+    /** Used to collect the triangles for the height map mesh used for
+     *  particle rendering. */
+    TriangleMesh*            m_height_map_mesh;
     /** Used to collect the triangles which do not have a physical
      *  representation, but are needed for some raycast effects. An
      *  example is a water surface: the karts ignore this (i.e.
@@ -202,8 +221,11 @@ private:
     Vec3                     m_aabb_min;
     /** Maximum coordinates of this track. */
     Vec3                     m_aabb_max;
+    btTransform              m_red_flag;
+    btTransform              m_blue_flag;
     /** True if this track is an arena. */
     bool                     m_is_arena;
+    bool                     m_is_ctf;
     /** Max players supported by an arena. */
     unsigned int             m_max_arena_players;
     /** True if this track has easter eggs. */
@@ -242,16 +264,16 @@ private:
 
     /** The type of sky to be used for the track. */
     enum {SKY_NONE, SKY_BOX,
-          SKY_DOME, SKY_COLOR}          m_sky_type;
+          SKY_COLOR}          m_sky_type;
 
     /** sky rotation speed */
     float m_sky_dx, m_sky_dy;
 
     /** A list of the textures for the sky to use. It contains one texture
      *  in case of a dome, and 6 textures for a box. */
-    std::vector<video::ITexture*> m_sky_textures;
+    std::vector<void*> m_sky_textures;
 
-    std::vector<video::ITexture*> m_spherical_harmonics_textures;
+    std::vector<void*> m_spherical_harmonics_textures;
 
     /** Used if m_sky_type is SKY_COLOR only */
     irr::video::SColor m_sky_color;
@@ -324,9 +346,16 @@ private:
     /** The name used in sorting the track. */
     core::stringw       m_sort_name;
 
+    /** True if the track uses fog. */
     bool                m_use_fog;
+
+    /** Can be set to force fog off (e.g. for rendering minimap). */
+    bool                m_force_disable_fog;
+
     /** True if this track supports using smoothed normals. */
     bool                m_smooth_normals;
+
+    bool                m_is_addon;
 
     float               m_fog_max;
     float               m_fog_start;
@@ -341,14 +370,12 @@ private:
     video::SColor       m_sun_diffuse_color;
     video::SColor       m_fog_color;
 
-    /** The texture for the mini map, which is displayed in the race gui. */
-    video::ITexture         *m_old_rtt_mini_map;
-    FrameBuffer             *m_new_rtt_mini_map;
-    core::dimension2du      m_mini_map_size;
+    /** The render target for the mini map, which is displayed in the race gui. */
+    RenderTarget           *m_render_target;
+    CheckManager*           m_check_manager;
+    std::shared_ptr<ItemManager> m_item_manager;
     float                   m_minimap_x_scale;
     float                   m_minimap_y_scale;
-
-    bool m_clouds;
 
     bool m_bloom;
     float m_bloom_threshold;
@@ -361,7 +388,9 @@ private:
     bool m_shadows;
 
     float m_displacement_speed;
-    float m_caustics_speed;
+    int m_physical_object_uid;
+
+    bool m_minimap_invert_x_z;
 
     /** The levels for color correction
      * m_color_inlevel(black, gamma, white)
@@ -372,6 +401,8 @@ private:
     /** List of all bezier curves in the track - for e.g. camera, ... */
     std::vector<BezierCurve*> m_all_curves;
 
+    std::vector<std::pair<TrackObject*, TrackObject*> > m_meta_library;
+
     /** The number of laps the track will be raced in a random GP.
      * m_actual_number_of_laps is initialised with this value.*/
     int m_default_number_of_laps;
@@ -380,9 +411,9 @@ private:
     int m_actual_number_of_laps;
 
     void loadTrackInfo();
-    void loadQuadGraph(unsigned int mode_id, const bool reverse);
-    void loadBattleGraph();
-    void convertTrackToBullet(scene::ISceneNode *node);
+    void loadDriveGraph(unsigned int mode_id, const bool reverse);
+    void loadArenaGraph(const XMLNode &node);
+    btQuaternion getArenaStartRotation(const Vec3& xyz, float heading);
     bool loadMainTrack(const XMLNode &node);
     void loadMinimap();
     void createWater(const XMLNode &node);
@@ -390,11 +421,40 @@ private:
                              std::vector<MusicInformation*>& m_music   );
     void loadCurves(const XMLNode &node);
     void handleSky(const XMLNode &root, const std::string &filename);
-
+    void freeCachedMeshVertexBuffer();
+    void copyFromMainProcess();
+    video::IImage* getSkyTexture(std::string path) const;
+    scene::IMesh* getClonedMesh(const std::string& filename) const;
 public:
 
-    bool reverseAvailable() const { return m_reverse_available; }
+    /** Static function to get the current track. NULL if no current
+     *  track is defined (i.e. no race is active atm) */
+    static Track* getCurrentTrack()
+    {
+        ProcessType type = STKProcess::getType();
+        return m_current_track[type];
+    }
+    // ------------------------------------------------------------------------
+    Track* clone()
+    {
+        Track* child_track = new Track(*this);
+        child_track->copyFromMainProcess();
+        return child_track;
+    }
+    // ------------------------------------------------------------------------
+    void initChildTrack();
+    // ------------------------------------------------------------------------
+    static void cleanChildTrack();
+    // ------------------------------------------------------------------------
     void handleAnimatedTextures(scene::ISceneNode *node, const XMLNode &xml);
+
+    /** Flag to avoid loading navmeshes (useful to speedup debugging: e.g.
+     *  the temple navmesh distance matric computation takes around 12
+     *  minutes(!) in debug mode to be computed. */
+    static bool        m_dont_load_navmesh;
+
+    /** Static helper function to pre-upload vertex buffer in spm. */
+    static void uploadNodeVertexBuffer(scene::ISceneNode *node);
 
     static const float NOHIT;
 
@@ -404,15 +464,16 @@ public:
     void               removeCachedData  ();
     void               startMusic        () const;
 
-    bool               setTerrainHeight(Vec3 *pos) const;
-    void               createPhysicsModel(unsigned int main_track_count);
-    void               update(float dt);
+    void               createPhysicsModel(unsigned int main_track_count,
+                                          bool for_height_map);
+    void               updateGraphics(float dt);
+    void               update(int ticks);
     void               reset();
-    void               adjustForFog(scene::ISceneNode *node);
-    void               adjustForFog(scene::IMesh* mesh,
-                                    scene::ISceneNode* parent_scene_node);
     void               itemCommand(const XMLNode *node);
+    Vec3               flagCommand(const XMLNode *node);
+    //-----------------------------------------------------------------------------
     core::stringw      getName() const;
+    //-----------------------------------------------------------------------------
     core::stringw      getSortName() const;
     bool               isInGroup(const std::string &group_name);
     const core::vector3df& getSunRotation();
@@ -427,15 +488,13 @@ public:
     bool findGround(AbstractKart *kart);
 
     std::vector< std::vector<float> > buildHeightMap();
-    // ------------------------------------------------------------------------
-    /** Returns the texture with the mini map for this track. */
-    const video::ITexture*    getOldRttMiniMap() const { return m_old_rtt_mini_map; }
-    const FrameBuffer*        getNewRttMiniMap() const { return m_new_rtt_mini_map; }
-    // ------------------------------------------------------------------------
-    const core::dimension2du& getMiniMapSize() const { return m_mini_map_size; }
+    void               drawMiniMap(const core::rect<s32>& dest_rect) const;
+    void               updateMiniMapScale();
     // ------------------------------------------------------------------------
     /** Returns true if this track has an arena mode. */
     bool isArena() const { return m_is_arena; }
+    // ------------------------------------------------------------------------
+    bool isCTF() const { return m_is_ctf; }
     // ------------------------------------------------------------------------
     /** Returns true if this track is a racing track. This means it is not an
      *  internal track (like cut scenes), arena, or soccer field. */
@@ -447,6 +506,9 @@ public:
     /** Returns true if this track has easter eggs. */
     bool hasEasterEggs() const { return m_has_easter_eggs; }
     // ------------------------------------------------------------------------
+    /** Returns true if this race can be driven in reverse. */
+    bool reverseAvailable() const { return m_reverse_available; }
+    // ------------------------------------------------------------------------
     /** Returns true if this track navmesh. */
     bool hasNavMesh() const { return m_has_navmesh; }
     // ------------------------------------------------------------------------
@@ -455,10 +517,6 @@ public:
         scene::ISceneNode* parent, TrackObject* parent_library);
     // ------------------------------------------------------------------------
     bool               isSoccer             () const { return m_is_soccer; }
-    // ------------------------------------------------------------------------
-    void               loadTrackModel  (World* parent,
-                                        bool reverse_track = false,
-                                        unsigned int mode_id=0);
     // ------------------------------------------------------------------------
     void               addMusic          (MusicInformation* mi)
                                                   {m_music.push_back(mi);     }
@@ -469,8 +527,7 @@ public:
     int                getVersion        () const {return m_version;          }
     // ------------------------------------------------------------------------
     /** Returns the length of the main driveline. */
-    float              getTrackLength    () const
-                                     {return QuadGraph::get()->getLapLength();}
+    float              getTrackLength    () const;
     // ------------------------------------------------------------------------
     /** Returns a unique identifier for this track (the directory name). */
     const std::string& getIdent          () const {return m_ident;            }
@@ -488,6 +545,12 @@ public:
     /** Returns an absolute path to the screenshot file of this track */
     const std::string& getScreenshotFile () const {return m_screenshot;       }
     // ------------------------------------------------------------------------
+    /** Returns if the track is during day time */
+    const bool getIsDuringDay () const {return m_is_day;               }
+    // ------------------------------------------------------------------------
+    /** Returns if invert minimap */
+    const bool getMinimapInvert () const {return m_minimap_invert_x_z;               }
+    // ------------------------------------------------------------------------
     /** Returns the start coordinates for a kart with a given index.
      *  \param index Index of kart ranging from 0 to kart_num-1. */
     const btTransform& getStartTransform (unsigned int index) const
@@ -495,6 +558,14 @@ public:
         if (index >= m_start_transforms.size())
             Log::fatal("Track", "No start position for kart %i.", index);
         return m_start_transforms[index];
+    }
+    // ------------------------------------------------------------------------
+    /** Shuffles the start transformations
+    */
+    void shuffleStartTransforms()
+    {
+       std::shuffle(m_start_transforms.begin(), m_start_transforms.end(),
+                    RandomGenerator::getGenerator());
     }
     // ------------------------------------------------------------------------
     /** Sets pointer to the aabb of this track. */
@@ -507,8 +578,7 @@ public:
      *  in the direction of the default way on the track.
      *  \param n Number of the quad for which the angle is asked.
      */
-    float              getAngle(int n) const
-                            { return QuadGraph::get()->getAngleToNext(n, 0);  }
+    float              getAngle(int n) const;
     // ------------------------------------------------------------------------
     /** Returns the 2d coordinates of a point when drawn on the mini map
      *  texture.
@@ -556,11 +626,20 @@ public:
     // ------------------------------------------------------------------------
     bool getWeatherLightning() {return m_weather_lightning;}
     // ------------------------------------------------------------------------
-    std::string getWeatherSound() {return m_weather_sound;}
+    const std::string& getWeatherSound() {return m_weather_sound;}
     // ------------------------------------------------------------------------
     ParticleKind* getSkyParticles         () { return m_sky_particles; }
     // ------------------------------------------------------------------------
-    bool  isFogEnabled() const { return m_use_fog;   }
+    /** Override track fog value to force disabled */
+    void forceFogDisabled(bool v) { m_force_disable_fog = v; }
+    //-------------------------------------------------------------------------
+    /** Returns if fog is currently enabled. It can be disabled per track, or
+     *  temporary be disabled (e.g. for rendering mini map). */
+    bool isFogEnabled() const
+    {
+        return !m_force_disable_fog && m_use_fog;
+    }   // isFogEnabled
+
     // ------------------------------------------------------------------------
     float getFogStart()  const { return m_fog_start; }
     // ------------------------------------------------------------------------
@@ -612,9 +691,6 @@ public:
     const std::vector<Subtitle>& getSubtitles() const { return m_subtitles; }
 
     // ------------------------------------------------------------------------
-    bool hasClouds() const { return m_clouds; }
-
-    // ------------------------------------------------------------------------
     bool hasBloom() const { return m_bloom; }
 
     // ------------------------------------------------------------------------
@@ -645,7 +721,7 @@ public:
     // ------------------------------------------------------------------------
     float getDisplacementSpeed() const { return m_displacement_speed;    }
     // ------------------------------------------------------------------------
-    float getCausticsSpeed() const { return m_caustics_speed;        }
+    int getPhysicalObjectUID()              { return m_physical_object_uid++; }
     // ------------------------------------------------------------------------
     const int getDefaultNumberOfLaps() const { return m_default_number_of_laps;}
     // ------------------------------------------------------------------------
@@ -658,6 +734,33 @@ public:
     // ------------------------------------------------------------------------
     /** Adds mesh to cleanup list */
     void addCachedMesh(scene::IMesh* mesh) { m_all_cached_meshes.push_back(mesh); }
+    // ------------------------------------------------------------------------
+    /** Adds the parent of the meta library for correction later */
+    void addMetaLibrary(TrackObject* parent, TrackObject* meta_library)
+                         { m_meta_library.emplace_back(parent, meta_library); }
+    // ------------------------------------------------------------------------
+    const btTransform& getRedFlag() const                { return m_red_flag; }
+    // ------------------------------------------------------------------------
+    const btTransform& getBlueFlag() const              { return m_blue_flag; }
+    // ------------------------------------------------------------------------
+    bool isAddon() const                                 { return m_is_addon; }
+    // ------------------------------------------------------------------------
+    void convertTrackToBullet(scene::ISceneNode *node,
+                      std::vector<std::array<btVector3, 3> >* occluder = NULL);
+    // ------------------------------------------------------------------------
+    CheckManager* getCheckManager() const           { return m_check_manager; }
+    // ------------------------------------------------------------------------
+    ItemManager* getItemManager() const        { return m_item_manager.get(); }
+    // ------------------------------------------------------------------------
+    bool isOnGround(const Vec3& xyz, const Vec3& down, Vec3* hit_point,
+                    Vec3* normal, bool print_warning = true);
+    // ------------------------------------------------------------------------
+    MusicInformation* getTrackMusic() const
+    {
+        if (m_music_idx < m_music.size())
+            return m_music[m_music_idx];
+        return NULL;
+    }
 };   // class Track
 
 #endif

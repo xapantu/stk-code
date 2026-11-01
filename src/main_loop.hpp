@@ -20,30 +20,74 @@
 #ifndef HEADER_MAIN_LOOP_HPP
 #define HEADER_MAIN_LOOP_HPP
 
-typedef unsigned long Uint32;
-
+#include "utils/synchronised.hpp"
+#include "utils/types.hpp"
+#include <atomic>
+#include <chrono>
 
 /** Management class for the whole gameflow, this is where the
     main-loop is */
 class MainLoop
 {
 private:
-    bool m_abort;
+    using TimePoint = std::chrono::steady_clock::time_point;
+    /** True if the main loop should exit. */
+    std::atomic_bool m_abort;
+
+    std::atomic_bool m_request_abort;
+
+    std::atomic_bool m_paused;
+
+    /** True if the frame rate should be throttled. */
     bool m_throttle_fps;
 
-    Uint32   m_curr_time;
-    Uint32   m_prev_time;
-    float    getLimitedDt();
-    void     updateRace(float dt);
+    /** True if dt is not decreased for low fps */
+    bool m_allow_large_dt;
+
+    bool m_frame_before_loading_world;
+
+    bool m_download_assets;
+
+    Synchronised<int> m_ticks_adjustment;
+
+    TimePoint m_curr_time;
+    TimePoint m_prev_time;
+    unsigned m_parent_pid;
+    double   getLimitedDt();
+    void     updateRace(int ticks, bool fast_forward);
+    double   convertToTime(const TimePoint& cur, const TimePoint& prev) const
+    {
+        auto duration = cur - prev;
+        auto value =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(duration);
+        return value.count() / (1000.0 * 1000.0);
+    }
 public:
-         MainLoop();
+         MainLoop(unsigned parent_pid, bool download_assets = false);
         ~MainLoop();
     void run();
-    void abort();
+    /** Set the abort flag, causing the mainloop to be left. */
+    void abort() { m_abort = true; }
+    void requestAbort() { m_request_abort = true; }
     void setThrottleFPS(bool throttle) { m_throttle_fps = throttle; }
+    void setAllowLargeDt(bool enable) { m_allow_large_dt = enable; }
+    void renderGUI(int phase, int loop_index=-1, int loop_size=-1);
     // ------------------------------------------------------------------------
     /** Returns true if STK is to be stoppe. */
     bool isAborted() const { return m_abort; }
+    // ------------------------------------------------------------------------
+    void setFrameBeforeLoadingWorld()  { m_frame_before_loading_world = true; }
+    // ------------------------------------------------------------------------
+    void setTicksAdjustment(int ticks)
+    {
+        m_ticks_adjustment.lock();
+        m_ticks_adjustment.getData() += ticks;
+        m_ticks_adjustment.unlock();
+    }
+    // ------------------------------------------------------------------------
+    void setPaused(bool val)                           { m_paused.store(val); }
+    // ------------------------------------------------------------------------
+    bool isPaused() const                           { return m_paused.load(); }
 };   // MainLoop
 
 extern MainLoop* main_loop;

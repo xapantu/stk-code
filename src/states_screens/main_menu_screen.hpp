@@ -20,8 +20,9 @@
 
 #include "guiengine/screen.hpp"
 
-namespace GUIEngine { class Widget;       class ListWidget; 
-                      class ButtonWidget; class IconButtonWidget; }
+namespace GUIEngine { class Widget;       class ListWidget;
+                      class ButtonWidget; class IconButtonWidget;
+                      class STKModifiedSpriteBank; }
 
 /**
   * \brief Handles the main menu
@@ -32,22 +33,20 @@ class MainMenuScreen : public GUIEngine::Screen, public GUIEngine::ScreenSinglet
 private:
     friend class GUIEngine::ScreenSingleton<MainMenuScreen>;
 
-    /** Keep the widget to avoid looking it up every frame. */
-    GUIEngine::IconButtonWidget* m_online;
-
     /** Keep the widget to to the user name. */
     GUIEngine::ButtonWidget *m_user_id;
 
+    core::stringw m_news_text;
+
     MainMenuScreen();
-
 public:
-    /** Temporary disable the online menu while it is being worked at. */
-    static bool m_enable_online;
-
     virtual void onUpdate(float delta) OVERRIDE;
 
     /** \brief implement callback from parent class GUIEngine::Screen */
     virtual void loadedFromFile() OVERRIDE;
+    
+    /** \brief implement callback from parent class GUIEngine::Screen */
+    virtual void beforeAddingWidget() OVERRIDE;
 
     /** \brief implement callback from parent class GUIEngine::Screen */
     virtual void eventCallback(GUIEngine::Widget* widget, const std::string& name,
@@ -61,6 +60,10 @@ public:
 
     /** \brief implement callback from parent class GUIEngine::Screen */
     virtual void onDisabledItemClicked(const std::string& item) OVERRIDE;
+
+    /** \brief implement optional callback from parent
+     *  class GUIEngine::Screen */
+    virtual bool onEscapePressed() OVERRIDE;
 };
 
 #endif

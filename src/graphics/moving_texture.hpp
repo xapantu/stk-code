@@ -20,7 +20,6 @@
 #define MOVING_TEXTURE_HPP
 
 #include "utils/no_copy.hpp"
-
 #include <string>
 #include <matrix4.h>
 using namespace irr;
@@ -31,7 +30,7 @@ class XMLNode;
   * \brief Handles animated textures (textures that move)
   * \ingroup graphics
   */
-class MovingTexture : public NoCopy
+class MovingTexture
 {
 private:
     /** Translation increment per second. */
@@ -47,18 +46,25 @@ private:
     /** The texture matrix of this texture. */
     core::matrix4       *m_matrix;
 
+    // For sp
+    float* m_sp_tm;
+
 public:
                  MovingTexture(core::matrix4 *matrix, const XMLNode &node);
                  MovingTexture(core::matrix4 *matrix, float dx, float dy);
-                 MovingTexture(float dx, float dy);
+                 MovingTexture(float dx, float dy, float dt = 0.0f,
+                               bool animated_by_step = false);
     virtual     ~MovingTexture();
 
     /** Sets the speed of the animation. */
     void         setSpeed(float dx, float dy) {m_dx = dx; m_dy = dy;}
     /** Sets the texture matrix. */
     void         setTextureMatrix(core::matrix4 *matrix) {m_matrix=matrix;}
+    void setSPTM(float* sp_tm) { m_sp_tm = sp_tm; }
     virtual void update  (float dt);
     virtual void reset   ();
+    float        getCurrentX() const { return m_x; }
+    float        getCurrentY() const { return m_y; }
 }
 ;   // MovingTexture
 

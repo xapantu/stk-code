@@ -21,14 +21,18 @@
 #define HEADER_SPINNER_HPP
 
 #include <irrString.h>
+#include <functional>
 namespace irr
 {
     namespace video { class ITexture; }
+    namespace gui { class IGUIImage; }
 }
 
 #include "guiengine/widget.hpp"
 #include "utils/leak_check.hpp"
 #include "utils/ptr_vector.hpp"
+
+#include <rect.h>
 
 namespace GUIEngine
 {
@@ -51,11 +55,15 @@ namespace GUIEngine
             virtual EventPropagation onSpinnerConfirmed() = 0;
         };
         
-    protected:
-        
+    private:
+        std::function<void(SpinnerWidget* spinner)> m_value_updated_callback;
         ISpinnerConfirmListener* m_listener;
         
         int m_value, m_min, m_max;
+        float m_step;
+
+        bool m_incorrect;
+        irr::gui::IGUIImage* m_red_mark_widget;
         
         int m_spinner_widget_player_id;
         bool m_use_background_color;
@@ -76,10 +84,22 @@ namespace GUIEngine
         /** \brief Whether to wrap back to the first value when going "beyond" the last value */
         bool m_wrap_around;
 
+        /** \brief Whether this widget is a color slider */
+        bool m_color_slider;
+
+        /** \brief Whether the left arrow is the currently selected one  */
+        bool m_left_selected;
+
+        /** \brief Whether the right arrow is the currently selected one  */
+        bool m_right_selected;
+
+        /** \the arrow of the spinner  */
+        core::rect<s32> m_left_arrow;
+
         /** \brief Keeps track of the custom text in spinner (a text which isn't related to a value)
         *   to remember it and set it back (example : when we deactivate the widget)
         */
-        core::stringw m_customText;
+        core::stringw m_custom_text;
         
         /** \brief implementing method from base class Widget */
         virtual EventPropagation transmitEvent(Widget* w,
@@ -91,9 +111,6 @@ namespace GUIEngine
         
         /** \brief implementing method from base class Widget */
         virtual EventPropagation leftPressed(const int playerID);
-
-        /** \brief implementing method from base class Widget */
-        virtual void onClick();
         
         /** When inferring widget size from its label length, this method will be called to
          * if/how much space must be added to the raw label's size for the widget to be large enough */
@@ -105,6 +122,9 @@ namespace GUIEngine
         
         /** Call only if this spinner is graphical. Returns the current texture to display */
         irr::video::ITexture* getTexture();
+
+        /** Pick the appropriate font size to display the current spinner label */
+        void resizeLabel();
        
     public:
 
@@ -112,19 +132,45 @@ namespace GUIEngine
         
         SpinnerWidget(const bool gauge=false);
         virtual ~SpinnerWidget() {}
-        virtual void move(const int x, const int y, const int w, const int h);
-                
+        virtual void resize();
+
         void addLabel(irr::core::stringw label);
         void clearLabels();
 
     // next four functions are for background colour behind playername in multikart screen selection
-        void setUseBackgroundColor()                {m_use_background_color=true;        }
-        bool getUseBackgroundColor()                {return m_use_background_color;      }
-        void setSpinnerWidgetPlayerID(int playerID) {m_spinner_widget_player_id=playerID;}
-        int getSpinnerWidgetPlayerID()              {return m_spinner_widget_player_id;  }
-        void unsetUseBackgroundColor()              {m_use_background_color=false;       }
+        void setUseBackgroundColor()                { m_use_background_color=true;         }
+        bool getUseBackgroundColor() const          { return m_use_background_color;       }
+        void setSpinnerWidgetPlayerID(int playerID) { m_spinner_widget_player_id=playerID; }
+        int getSpinnerWidgetPlayerID() const        { return m_spinner_widget_player_id;   }
+        void unsetUseBackgroundColor()              { m_use_background_color=false;        }
 
-
+        void activateSelectedButton();
+        void setSelectedButton(bool right)
+        {
+            if (right)
+            {
+                m_left_selected = false;
+                m_right_selected = true;
+            }
+            else
+            {
+                m_left_selected = true;
+                m_right_selected = false;
+            }
+        }
+        void clearSelected()
+        {
+            m_left_selected = false;
+            m_right_selected = false;
+        }
+        bool isButtonSelected(bool right)
+        {
+            if (right && m_right_selected)
+                return true;
+            else if (!right && m_left_selected)
+                return true;
+            return false;
+        }
 
         void setListener(ISpinnerConfirmListener* listener) { m_listener = listener; }
 
@@ -136,6 +182,12 @@ namespace GUIEngine
          * \param new_value  the new value that will be become the current value of this spinner.
          */
         void setValue(const int new_value);
+
+        /**
+         * \brief            sets the float value of the spinner
+         * \param new_value  the new value that will be become the current value of this spinner.
+         */
+        void setFloatValue(const float new_value) { setValue(int(round(new_value/m_step))); }
         
         /**
           * \brief        sets the current value of the spinner
@@ -148,12 +200,23 @@ namespace GUIEngine
           * \return whether this spinner is of "gauge" type
           */
         bool isGauge()  const { return m_gauge; }
-        
+
+        /**
+          * \return whether this spinner is of "color_slider" type
+          */
+        bool isColorSlider()  const { return m_color_slider; }
+
         /**
          * \brief retrieve the current value of the spinner
          * \return the current value of the spinner, in a int form
          */
         int  getValue() const { return m_value; }
+
+        /**
+         * \brief retrieve the current value of the spinner
+         * \return the current value of the spinner, in a float form
+         */
+        float getFloatValue() const { return m_value*m_step; }
         
         /**
           * \brief retrieve the current value of the spinner
@@ -161,6 +224,29 @@ namespace GUIEngine
           */
         irr::core::stringw getStringValue() const;
 
+        /**
+          * \brief retrieve the value of the spinner from id
+          * \return the value of the spinner from id, in a string form
+          */
+        irr::core::stringw getStringValueFromID(unsigned id) const
+        {
+            if (id > m_labels.size())
+                return L"";
+            return m_labels[id];
+        }
+
+        /**
+          * \return the step value of the spinner
+          */
+        // --------------------------------------------------------------------
+        /** Returns the step value. */
+        float  getStep()  const { return m_step; }
+        // --------------------------------------------------------------------
+        /** \brief Sets the maximum value for a spinner.
+         *  If the current value is larger than the new maximum, the current
+         *  value is set to the new maximum. */
+        void setStep(float n) { m_step = n; }
+        // --------------------------------------------------------------------
         /**
           * \return the maximum value the spinner can take
           */
@@ -190,6 +276,15 @@ namespace GUIEngine
             m_min = n;
             if(getValue()<m_min) setValue(m_min);
         }   // setMin
+
+        core::rect<s32> getLeftArrow() const { return m_left_arrow; }
+
+        // ------------------------------------------------------------------------
+        /** Add a red mark on the spinner to mean "invalid choice" */
+        void markAsIncorrect();
+        // ------------------------------------------------------------------------
+        /** Remove any red mark set with 'markAsIncorrect' */
+        void markAsCorrect();
         
         // --------------------------------------------------------------------
         /** Override method from base class Widget */
@@ -197,6 +292,30 @@ namespace GUIEngine
 
         /** Display custom text in spinner */
         void setCustomText(const core::stringw& text);
+        const core::stringw& getCustomText() const { return m_custom_text; }
+
+        /* Set a spinner with numeric values min <= i <= max, with a precision of defined by step */
+        void setRange(float min, float max, float step);
+        void setRange(int min, int max) { setRange(min, max, 1.0); }
+
+        void onPressed(int x, int y);
+        void doValueUpdatedCallback()
+        {
+            if (m_value_updated_callback)
+                m_value_updated_callback(this);
+        }
+        void setValueUpdatedCallback(
+            std::function<void(SpinnerWidget* spinner)> callback)
+        {
+            m_value_updated_callback = callback;
+        }
+        virtual void elementRemoved()
+        {
+            m_incorrect = false;
+            m_red_mark_widget = NULL;
+            Widget::elementRemoved();
+        }
+
     };
 
 }

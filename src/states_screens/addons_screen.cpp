@@ -20,22 +20,23 @@
 #include "addons/addons_manager.hpp"
 #include "addons/news_manager.hpp"
 #include "config/user_config.hpp"
+#include "graphics/irr_driver.hpp"
 #include "guiengine/CGUISpriteBank.hpp"
 #include "guiengine/modaldialog.hpp"
 #include "guiengine/scalable_font.hpp"
 #include "guiengine/widget.hpp"
 #include "guiengine/widgets/ribbon_widget.hpp"
+#include "guiengine/widgets/spinner_widget.hpp"
 #include "io/file_manager.hpp"
 #include "online/request_manager.hpp"
 #include "states_screens/dialogs/addons_loading.hpp"
 #include "states_screens/dialogs/message_dialog.hpp"
 #include "states_screens/state_manager.hpp"
-#include "utils/translation.hpp"
+#include "utils/string_utils.hpp"
 #include "utils/ptr_vector.hpp"
+#include "utils/translation.hpp"
 
 #include <iostream>
-
-DEFINE_SCREEN_SINGLETON( AddonsScreen );
 
 using namespace Online;
 // ----------------------------------------------------------------------------
@@ -64,24 +65,23 @@ AddonsScreen::AddonsScreen() : Screen("addons_screen.stkgui")
     m_date_filters.push_back(filter_9m);
     m_date_filters.push_back(filter_1y);
     m_date_filters.push_back(filter_2y);
-
 }   // AddonsScreen
 
 // ----------------------------------------------------------------------------
 
 void AddonsScreen::loadedFromFile()
 {
-    video::ITexture* icon1 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI,
+    video::ITexture* icon1 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI_ICON,
                                                      "package.png"         ));
-    video::ITexture* icon2 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI,
+    video::ITexture* icon2 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI_ICON,
                                                      "no-package.png"      ));
-    video::ITexture* icon3 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI,
+    video::ITexture* icon3 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI_ICON,
                                                      "package-update.png"  ));
-    video::ITexture* icon4 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI,
+    video::ITexture* icon4 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI_ICON,
                                                      "package-featured.png"));
-    video::ITexture* icon5 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI,
+    video::ITexture* icon5 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI_ICON,
                                                   "no-package-featured.png"));
-    video::ITexture* icon6 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI,
+    video::ITexture* icon6 = irr_driver->getTexture( file_manager->getAsset(FileManager::GUI_ICON,
                                                      "loading.png"));
 
     m_icon_bank = new irr::gui::STKModifiedSpriteBank( GUIEngine::getGUIEnv());
@@ -92,10 +92,8 @@ void AddonsScreen::loadedFromFile()
     m_icon_loading = m_icon_bank->addTextureAsSprite(icon6);
     m_icon_needs_update  = m_icon_bank->addTextureAsSprite(icon3);
 
-    GUIEngine::ListWidget* w_list =
-        getWidget<GUIEngine::ListWidget>("list_addons");
+    GUIEngine::ListWidget* w_list = getWidget<GUIEngine::ListWidget>("list_addons");
     w_list->setColumnListener(this);
-    
 }   // loadedFromFile
 
 
@@ -103,8 +101,7 @@ void AddonsScreen::loadedFromFile()
 
 void AddonsScreen::beforeAddingWidget()
 {
-    GUIEngine::ListWidget* w_list =
-        getWidget<GUIEngine::ListWidget>("list_addons");
+    GUIEngine::ListWidget* w_list = getWidget<GUIEngine::ListWidget>("list_addons");
     assert(w_list != NULL);
     w_list->clearColumns();
     w_list->addColumn( _("Add-on name"), 3 );
@@ -130,6 +127,23 @@ void AddonsScreen::beforeAddingWidget()
     {
         w_filter_rating->addLabel(StringUtils::toWString(n / 2.0));
     }
+
+    GUIEngine::SpinnerWidget* w_filter_installation =
+                        getWidget<GUIEngine::SpinnerWidget>("filter_installation");
+    w_filter_installation->m_properties[GUIEngine::PROP_MIN_VALUE] = "0";
+    w_filter_installation->m_properties[GUIEngine::PROP_MAX_VALUE] = "2";
+    w_filter_installation->addLabel(_("All"));
+    w_filter_installation->addLabel(_("Installed"));
+    //I18N: Addon not installed for fillter
+    w_filter_installation->addLabel(_("Not installed"));
+
+    GUIEngine::SpinnerWidget* w_filter_featured =
+                        getWidget<GUIEngine::SpinnerWidget>("filter_featured");
+    w_filter_featured->m_properties[GUIEngine::PROP_MIN_VALUE] = "0";
+    w_filter_featured->m_properties[GUIEngine::PROP_MAX_VALUE] = "2";
+    w_filter_featured->addLabel(_("All"));
+    w_filter_featured->addLabel(_("Featured"));
+    w_filter_featured->addLabel(_("Not featured"));
 }
 // ----------------------------------------------------------------------------
 
@@ -137,26 +151,23 @@ void AddonsScreen::init()
 {
     Screen::init();
 
-    m_reloading = false;
-
     m_sort_desc = false;
-    m_sort_default = true;
-    m_sort_col = 0;
+    m_reloading = false;
 
     getWidget<GUIEngine::RibbonWidget>("category")->setActive(false);
 
     if(UserConfigParams::logAddons())
         Log::info("addons", "Using directory <%s>", file_manager->getAddonsDir().c_str());
 
-    GUIEngine::ListWidget* w_list =
-        getWidget<GUIEngine::ListWidget>("list_addons");
+    GUIEngine::ListWidget* w_list = getWidget<GUIEngine::ListWidget>("list_addons");
 
-    m_icon_height = getHeight()/8.0f;
+    m_icon_bank->setScale(1.0f / 96.0f);
     // 128 is the height of the image file
-    m_icon_bank->setScale(m_icon_height/128.0f);
-    w_list->setIcons(m_icon_bank, (int)(m_icon_height));
+    m_icon_bank->setTargetIconSize(128, 128);
+    w_list->setIcons(m_icon_bank);
 
     m_type = "kart";
+
     bool ip = UserConfigParams::m_internet_status == RequestManager::IPERM_ALLOWED;
     getWidget<GUIEngine::IconButtonWidget>("reload")->setActive(ip);
 
@@ -164,12 +175,23 @@ void AddonsScreen::init()
     GUIEngine::TextBoxWidget* w_filter_name =
                         getWidget<GUIEngine::TextBoxWidget>("filter_name");
     w_filter_name->setText(L"");
+    // Add listener for incremental update when search text is changed
+    w_filter_name->clearListeners();
+    w_filter_name->addListener(this);
     GUIEngine::SpinnerWidget* w_filter_date =
                         getWidget<GUIEngine::SpinnerWidget>("filter_date");
     w_filter_date->setValue(0);
     GUIEngine::SpinnerWidget* w_filter_rating =
                         getWidget<GUIEngine::SpinnerWidget>("filter_rating");
     w_filter_rating->setValue(0);
+
+    GUIEngine::SpinnerWidget* w_filter_installation =
+                        getWidget<GUIEngine::SpinnerWidget>("filter_installation");
+    w_filter_installation->setValue(0);
+
+    GUIEngine::SpinnerWidget* w_filter_featured =
+                        getWidget<GUIEngine::SpinnerWidget>("filter_featured");
+    w_filter_featured->setValue(0);
 
     // Set the default sort order
     Addon::setSortOrder(Addon::SO_DEFAULT);
@@ -193,11 +215,10 @@ void AddonsScreen::tearDown()
 // ----------------------------------------------------------------------------
 /** Loads the list of all addons of the given type. The gui element will be
  *  updated.
- *  \param type Must be 'kart' or 'track'.
  */
 void AddonsScreen::loadList()
 {
-
+#ifndef SERVER_ONLY
     // Get the filter by words.
     GUIEngine::TextBoxWidget* w_filter_name =
                         getWidget<GUIEngine::TextBoxWidget>("filter_name");
@@ -217,12 +238,25 @@ void AddonsScreen::loadList()
     GUIEngine::SpinnerWidget* w_filter_rating =
                         getWidget<GUIEngine::SpinnerWidget>("filter_rating");
     float rating = w_filter_rating->getValue() / 2.0f;
+    
+    GUIEngine::SpinnerWidget* w_filter_installation =
+                        getWidget<GUIEngine::SpinnerWidget>("filter_installation");
+
+    GUIEngine::SpinnerWidget* w_filter_featured =
+                        getWidget<GUIEngine::SpinnerWidget>("filter_featured");
 
     // First create a list of sorted entries
     PtrVector<const Addon, REF> sorted_list;
     for(unsigned int i=0; i<addons_manager->getNumAddons(); i++)
     {
         const Addon & addon = addons_manager->getAddon(i);
+        // Ignore not installed addons if the checkbox is enabled
+        if(   (w_filter_featured->getValue() == 1 && !addon.testStatus(Addon::AS_FEATURED))
+           || (w_filter_featured->getValue() == 2 && addon.testStatus(Addon::AS_FEATURED)))
+            continue;
+        if(   (w_filter_installation->getValue() == 1 && !addon.isInstalled())
+           || (w_filter_installation->getValue() == 2 &&  addon.isInstalled()))
+            continue;
         // Ignore addons of a different type
         if(addon.getType()!=m_type) continue;
         // Ignore invisible addons
@@ -252,8 +286,7 @@ void AddonsScreen::loadList()
     }
     sorted_list.insertionSort(/*start=*/0, m_sort_desc);
 
-    GUIEngine::ListWidget* w_list =
-        getWidget<GUIEngine::ListWidget>("list_addons");
+    GUIEngine::ListWidget* w_list = getWidget<GUIEngine::ListWidget>("list_addons");
     w_list->clear();
 
     for(unsigned int i=0; i<sorted_list.size(); i++)
@@ -275,8 +308,10 @@ void AddonsScreen::loadList()
 
         core::stringw s;
         if (addon->getDesigner().size()==0)
+        {
             s = (addon->getName()+L"\t" +
                     core::stringc(addon->getDateAsString().c_str())).c_str();
+        }
 
        //FIXME I'd like to move this to CGUISTKListBox.cpp
 
@@ -379,35 +414,24 @@ void AddonsScreen::loadList()
     else
         getWidget<GUIEngine::RibbonWidget>("category")->select("tab_update",
                                                         PLAYER_ID_GAME_MASTER);
+#endif
 }   // loadList
 
 // ----------------------------------------------------------------------------
-void AddonsScreen::onColumnClicked(int column_id)
+void AddonsScreen::onColumnClicked(int column_id, bool sort_desc, bool sort_default)
 {
-    if (m_sort_col != column_id)
-    {
-        m_sort_desc = false;
-        m_sort_default = false;
-    }
-    else
-    {
-        if (!m_sort_default) m_sort_desc = !m_sort_desc;
-        m_sort_default = !m_sort_desc && !m_sort_default;
-    }
-    
-    m_sort_col = column_id;
-
     switch(column_id)
     {
     case 0:
-        Addon::setSortOrder(m_sort_default ? Addon::SO_DEFAULT : Addon::SO_NAME);
+        Addon::setSortOrder(sort_default ? Addon::SO_DEFAULT : Addon::SO_NAME);
         break;
     case 1:
-        Addon::setSortOrder(m_sort_default ? Addon::SO_DEFAULT : Addon::SO_DATE);
+        Addon::setSortOrder(sort_default ? Addon::SO_DEFAULT : Addon::SO_DATE);
         break;
     default: assert(0); break;
     }   // switch
     /** \brief Toggle the sort order after column click **/
+    m_sort_desc = sort_desc && !sort_default;
     loadList();
 }   // onColumnClicked
 
@@ -415,6 +439,7 @@ void AddonsScreen::onColumnClicked(int column_id)
 void AddonsScreen::eventCallback(GUIEngine::Widget* widget,
                                  const std::string& name, const int playerID)
 {
+#ifndef SERVER_ONLY
     if (name == "back")
     {
         StateManager::get()->escapePressed();
@@ -427,8 +452,7 @@ void AddonsScreen::eventCallback(GUIEngine::Widget* widget,
             m_reloading = true;
             NewsManager::get()->init(true);
 
-            GUIEngine::ListWidget* w_list =
-                       getWidget<GUIEngine::ListWidget>("list_addons");
+            GUIEngine::ListWidget* w_list = getWidget<GUIEngine::ListWidget>("list_addons");
             w_list->clear();
 
             w_list->addItem("spacer", L"");
@@ -438,8 +462,7 @@ void AddonsScreen::eventCallback(GUIEngine::Widget* widget,
 
     else if (name == "list_addons")
     {
-        GUIEngine::ListWidget* list =
-            getWidget<GUIEngine::ListWidget>("list_addons");
+        GUIEngine::ListWidget* list = getWidget<GUIEngine::ListWidget>("list_addons");
         std::string id = list->getSelectionInternalName();
 
         if (!id.empty() && addons_manager->getAddon(id) != NULL)
@@ -468,11 +491,11 @@ void AddonsScreen::eventCallback(GUIEngine::Widget* widget,
             loadList();
         }
     }
-    else if (name == "filter_search")
+    else if (name == "filter_search" || name == "filter_installation" || name == "filter_featured")
     {
         loadList();
     }
-
+#endif
 }   // eventCallback
 
 // ----------------------------------------------------------------------------
@@ -486,8 +509,7 @@ void AddonsScreen::setLastSelected()
 {
     if(m_selected_index>-1)
     {
-        GUIEngine::ListWidget* list =
-            getWidget<GUIEngine::ListWidget>("list_addons");
+        GUIEngine::ListWidget* list = getWidget<GUIEngine::ListWidget>("list_addons");
         list->setFocusForPlayer(PLAYER_ID_GAME_MASTER);
         list->setSelectionID(m_selected_index);
     }
@@ -497,6 +519,9 @@ void AddonsScreen::setLastSelected()
 
 void AddonsScreen::onUpdate(float dt)
 {
+#ifndef SERVER_ONLY
+    NewsManager::get()->joinDownloadThreadIfExit();
+
     if (m_reloading)
     {
         if(UserConfigParams::m_internet_status!=RequestManager::IPERM_ALLOWED)
@@ -525,4 +550,5 @@ void AddonsScreen::onUpdate(float dt)
             // Addons manager is still initialising/downloading.
         }
     }
+#endif
 }   // onUpdate

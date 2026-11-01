@@ -22,7 +22,11 @@
 #include "race/grand_prix_manager.hpp"
 #include "race/race_manager.hpp"
 #include "states_screens/grand_prix_cutscene.hpp"
+#include "states_screens/grand_prix_editor_screen.hpp"
+#include "states_screens/dialogs/general_text_field_dialog.hpp"
 #include "tracks/track_manager.hpp"
+#include "utils/string_utils.hpp"
+#include "utils/translation.hpp"
 
 #include <string>
 #include <vector>
@@ -32,7 +36,7 @@ typedef GUIEngine::ButtonWidget Button;
 /** A Button to save the GP if it was a random GP */
 void GrandPrixCutscene::saveGPButton()
 {
-    if (race_manager->getGrandPrix().getId() != GrandPrixData::getRandomGPID())
+    if (RaceManager::get()->getGrandPrix().getId() != GrandPrixData::getRandomGPID())
         getWidget<Button>("save")->setVisible(false);
 }   // saveGPButton
 
@@ -42,21 +46,21 @@ void GrandPrixCutscene::saveGPButton()
  *  The GP that the race_manager provides can't be used because we need some
  *  functions and settings that the GP manager only gives us through
  *  createNewGP(). */
-void GrandPrixCutscene::onNewGPWithName(const irr::core::stringw& name)
+void GrandPrixCutscene::setNewGPWithName(const irr::core::stringw& name)
 {
     // create a new GP with the correct filename and a unique id
     GrandPrixData* gp = grand_prix_manager->createNewGP(name);
-    const GrandPrixData current_gp = race_manager->getGrandPrix();
+    const GrandPrixData current_gp = RaceManager::get()->getGrandPrix();
     std::vector<std::string> tracks  = current_gp.getTrackNames();
     std::vector<int>         laps    = current_gp.getLaps();
-    std::vector<bool>        reverse = current_gp.getReverse();
+    std::vector<uint8_t>        reverse = current_gp.getReverse();
     for (unsigned int i = 0; i < laps.size(); i++)
         gp->addTrack(track_manager->getTrack(tracks[i]), laps[i], reverse[i]);
     gp->writeToFile();
 
     // Avoid double-save which can have bad side-effects
     getWidget<Button>("save")->setVisible(false);
-}   // onNewGPWithName
+}   // setNewGPWithName
 
 // ----------------------------------------------------------------------------
 
@@ -70,7 +74,9 @@ void GrandPrixCutscene::eventCallback(GUIEngine::Widget* widget,
     }
     else if (name == "save")
     {
-        new EnterGPNameDialog(this, 0.5f, 0.4f);
+        new GeneralTextFieldDialog(_("Please enter the name of the grand prix"),
+            std::bind(&GrandPrixCutscene::setNewGPWithName, this,
+            std::placeholders::_1), GrandPrixEditorScreen::validateName);
     }
 }   // eventCallback
 

@@ -31,30 +31,46 @@ class Referee;
 class RescueAnimation: public AbstractKartAnimation
 {
 protected:
-    /** The coordinates where the kart was hit originally. */
-    Vec3 m_xyz;
-
-    /** The kart's current rotation. */
-    Vec3 m_curr_rotation;
-
-    /** The artificial rotation to toss the kart around. It's in units
-     *  of rotation per second. */
-    Vec3 m_add_rotation;
-
+friend class KartRewinder;
     /** The velocity with which the kart is moved. */
     float m_velocity;
 
-    /** Duration for the animation. This can potentially be set
-     *  with different values for different karts, or depending
-     *  on difficulty (so that on easy you can drive again earlier. */
-    float m_duration;
+    /** When world ticks > this, it will move the kart above the
+     *  m_rescue_transform. */
+    int m_rescue_moment;
 
     /** The referee during a rescue operation. */
-    Referee      *m_referee;
+    Referee* m_referee;
 
+    /* Final transformation to place kart. */
+    btTransform m_rescue_transform;
+
+    /* Compressed values for server to send to avoid compressing everytime. */
+    int m_rescue_transform_compressed[4];
+
+    // ------------------------------------------------------------------------
+    RescueAnimation(AbstractKart* kart, BareNetworkString* b);
+    // ------------------------------------------------------------------------
+    RescueAnimation(AbstractKart* kart, bool is_auto_rescue);
+    // ------------------------------------------------------------------------
+    void restoreData(BareNetworkString* b);
+    // ------------------------------------------------------------------------
+    void init(const btTransform& rescue_transform, float velocity);
 public:
-                 RescueAnimation(AbstractKart *kart, bool is_auto_rescue=false);
-    virtual     ~RescueAnimation();
-    virtual void update(float dt);
+    // ------------------------------------------------------------------------
+    static RescueAnimation* create(AbstractKart* kart,
+                                   bool is_auto_rescue = false);
+    // ------------------------------------------------------------------------
+    virtual ~RescueAnimation();
+    // ------------------------------------------------------------------------
+    virtual void update(int ticks);
+    // ------------------------------------------------------------------------
+    virtual void updateGraphics(float dt);
+    // ------------------------------------------------------------------------
+    virtual KartAnimationType getAnimationType() const   { return KAT_RESCUE; }
+    // ------------------------------------------------------------------------
+    virtual void saveState(BareNetworkString* buffer);
+    // ------------------------------------------------------------------------
+    virtual void restoreState(BareNetworkString* buffer);
 };   // RescueAnimation
 #endif

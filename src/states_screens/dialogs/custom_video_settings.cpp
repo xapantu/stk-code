@@ -18,15 +18,22 @@
 #include "states_screens/dialogs/custom_video_settings.hpp"
 
 #include "config/user_config.hpp"
+#include "graphics/graphical_presets.hpp"
 #include "guiengine/widgets/check_box_widget.hpp"
+#include "guiengine/widgets/ribbon_widget.hpp"
 #include "guiengine/widgets/spinner_widget.hpp"
-#include "states_screens/options_screen_video.hpp"
-#include "utils/translation.hpp"
+#include "states_screens/options/options_screen_video.hpp"
+#include "states_screens/state_manager.hpp"
 #include "graphics/central_settings.hpp"
 #include "graphics/irr_driver.hpp"
+#include "utils/string_utils.hpp"
+#include "utils/translation.hpp"
 
 #include <IGUIEnvironment.h>
-
+#ifndef SERVER_ONLY
+#include <ge_main.hpp>
+#include <ge_vulkan_driver.hpp>
+#endif
 
 using namespace GUIEngine;
 using namespace irr;
@@ -39,7 +46,7 @@ CustomVideoSettingsDialog::CustomVideoSettingsDialog(const float w, const float 
         ModalDialog(w, h)
 {
     loadFromFile("custom_video_settings.stkgui");
-    updateActivation();
+    updateActivation("");
 }
 
 // -----------------------------------------------------------------------------
@@ -52,53 +59,55 @@ CustomVideoSettingsDialog::~CustomVideoSettingsDialog()
 
 void CustomVideoSettingsDialog::beforeAddingWidgets()
 {
-    getWidget<CheckBoxWidget>("anim_gfx")->setState(UserConfigParams::m_graphical_effects);
-    getWidget<CheckBoxWidget>("weather_gfx")->setState(UserConfigParams::m_weather_effects);
+#ifndef SERVER_ONLY
+    getWidget<CheckBoxWidget>("animated_characters")
+        ->setState(UserConfigParams::m_animated_characters);
     getWidget<CheckBoxWidget>("dof")->setState(UserConfigParams::m_dof);
-    getWidget<CheckBoxWidget>("hd-textures")
-        ->setState((UserConfigParams::m_high_definition_textures & 0x01)==0x01);
+    
+    SpinnerWidget* particles_effects = getWidget<SpinnerWidget>("particles_effects");
+    assert(particles_effects != NULL);
+    particles_effects->addLabel(_C("Particle effects", "Disabled"));
+    particles_effects->addLabel(_C("Particle effects", "Important only"));
+    particles_effects->addLabel(_C("Particle effects", "Enabled"));
+    particles_effects->setValue(UserConfigParams::m_particles_effects);
 
-    SpinnerWidget* kart_anim = getWidget<SpinnerWidget>("steering_animations");
-    kart_anim->addLabel(_("Disabled")); // 0
-    //I18N: animations setting (only karts with human players are animated)
-    kart_anim->addLabel(_("Human players only")); // 1
-    //I18N: animations setting (all karts are animated)
-    kart_anim->addLabel(_("Enabled for all")); // 2
-    kart_anim->setValue(UserConfigParams::m_show_steering_animations);
+    SpinnerWidget* geometry_level = getWidget<SpinnerWidget>("geometry_detail");
+    geometry_level->addLabel(_C("Geometry level", "Very low"));
+    geometry_level->addLabel(_C("Geometry level", "Low"));
+    geometry_level->addLabel(_C("Geometry level", "Medium"));
+    geometry_level->addLabel(_C("Geometry level", "High"));
+    geometry_level->addLabel(_C("Geometry level", "Very high"));
+    geometry_level->addLabel(_C("Geometry level", "Ultra high"));
+    geometry_level->setValue(UserConfigParams::m_geometry_level);
 
-    SpinnerWidget* filtering = getWidget<SpinnerWidget>("filtering");
-    int value = 0;
-    if (UserConfigParams::m_anisotropic == 2)  value = 2;
-    else if (UserConfigParams::m_anisotropic == 4)  value = 3;
-    else if (UserConfigParams::m_anisotropic == 8)  value = 4;
-    else if (UserConfigParams::m_anisotropic == 16) value = 5;
-    else if (UserConfigParams::m_trilinear)         value = 1;
-    filtering->addLabel(_("Bilinear"));        // 0
-    filtering->addLabel(_("Trilinear"));       // 1
-    filtering->addLabel(_("Anisotropic x2"));  // 2
-    filtering->addLabel(_("Anisotropic x4"));  // 3
-    filtering->addLabel(_("Anisotropic x8"));  // 4
-    filtering->addLabel(_("Anisotropic x16")); // 5
-
-    filtering->setValue(value);
+    SpinnerWidget* filtering = getWidget<SpinnerWidget>("image_quality");
+    filtering->addLabel(_C("Image quality", "Very low"));
+    filtering->addLabel(_C("Image quality", "Low"));
+    filtering->addLabel(_C("Image quality", "High"));
+    filtering->setValue(GraphicalPresets::getImageQuality());
 
     SpinnerWidget* shadows = getWidget<SpinnerWidget>("shadows");
-    shadows->addLabel(_("Disabled"));   // 0
-    shadows->addLabel(_("low"));        // 1
-    shadows->addLabel(_("high"));       // 2
-    if (CVS->supportsShadows())
-        shadows->setValue(UserConfigParams::m_shadows_resolution / 512);
-    else
-        shadows->setValue(0);
+    shadows->addLabel(_C("Shadows", "Disabled"));   // 0
+    shadows->addLabel(_C("Shadows", "Low"));        // 1
+    shadows->addLabel(_C("Shadows", "Medium"));     // 2
+    shadows->addLabel(_C("Shadows", "High"));       // 3
+    shadows->addLabel(_C("Shadows", "Very high"));  // 4
+    shadows->setValue(UserConfigParams::m_shadows_resolution == 2048 ?
+                      (UserConfigParams::m_pcss ? 4 : 3) :
+                      UserConfigParams::m_shadows_resolution == 1024 ? 2 :
+                      UserConfigParams::m_shadows_resolution ==  512 ? 1 : 0);
+
     getWidget<CheckBoxWidget>("dynamiclight")->setState(UserConfigParams::m_dynamic_lights);
     getWidget<CheckBoxWidget>("lightshaft")->setState(UserConfigParams::m_light_shaft);
     getWidget<CheckBoxWidget>("ibl")->setState(!UserConfigParams::m_degraded_IBL);
-    getWidget<CheckBoxWidget>("global_illumination")->setState(UserConfigParams::m_gi);
     getWidget<CheckBoxWidget>("motionblur")->setState(UserConfigParams::m_motionblur);
     getWidget<CheckBoxWidget>("mlaa")->setState(UserConfigParams::m_mlaa);
     getWidget<CheckBoxWidget>("glow")->setState(UserConfigParams::m_glow);
     getWidget<CheckBoxWidget>("ssao")->setState(UserConfigParams::m_ssao);
+    getWidget<CheckBoxWidget>("ssr")->setState(UserConfigParams::m_ssr);
     getWidget<CheckBoxWidget>("bloom")->setState(UserConfigParams::m_bloom);
+    getWidget<CheckBoxWidget>("lightscattering")->setState(UserConfigParams::m_light_scatter);
+    getWidget<CheckBoxWidget>("speedstreaks")->setState(UserConfigParams::m_speed_streaks);
     if (CVS->isEXTTextureCompressionS3TCUsable())
     {
         getWidget<CheckBoxWidget>("texture_compression")->setState(UserConfigParams::m_texture_compression);
@@ -110,139 +119,237 @@ void CustomVideoSettingsDialog::beforeAddingWidgets()
         cb_tex_cmp->setActive(false);
     }
 
-    if (!CVS->supportsGlobalIllumination())
+    GUIEngine::SpinnerWidget* rds = getWidget<GUIEngine::SpinnerWidget>("render_driver");
+    assert( rds != NULL );
+
+    rds->m_properties[PROP_WRAP_AROUND] = "true";
+    rds->clearLabels();
+    rds->addLabel("OpenGL");
+    rds->addLabel("Vulkan");
+#ifndef WIN32
+    const int rd_count = 2;
+#else
+    const int rd_count = 3;
+    rds->addLabel("DirectX9");
+#endif
+    bool found = false;
+    for (int i = 0; i < rd_count; i++)
     {
-        shadows->setActive(false);
-        getWidget<CheckBoxWidget>("global_illumination")->setActive(false);
+        std::string rd = StringUtils::wideToUtf8(rds->getStringValueFromID(i).make_lower());
+        if (std::string(UserConfigParams::m_render_driver) == rd)
+        {
+            rds->setValue(i);
+            found = true;
+            break;
+        }
     }
-}
+    if (!found)
+    {
+        rds->addLabel(StringUtils::utf8ToWide(UserConfigParams::m_render_driver));
+        rds->setValue(rd_count);
+    }
+    rds->setActive(StateManager::get()->getGameState() != GUIEngine::INGAME_MENU);
+#endif
+} // beforeAddingWidgets
 
 // -----------------------------------------------------------------------------
 
 GUIEngine::EventPropagation CustomVideoSettingsDialog::processEvent(const std::string& eventSource)
 {
-    if (eventSource == "close")
+#ifndef SERVER_ONLY
+    if (eventSource == "render_driver")
     {
-        bool advanced_pipeline = getWidget<CheckBoxWidget>("dynamiclight")->getState();
-        UserConfigParams::m_dynamic_lights = advanced_pipeline;
+        // We will only update settings if the changed renderer is
+        // kept when the players chooses to apply the new config
+        // However, we immediately update the GUI to show which
+        // advanced settings are available or not with the chosen renderer
+        std::string rd = StringUtils::wideToUtf8(
+            getWidget<GUIEngine::SpinnerWidget>("render_driver")->getStringValue().make_lower());
 
-        UserConfigParams::m_dof =
-            advanced_pipeline && getWidget<CheckBoxWidget>("dof")->getState();
+        updateActivation(rd);
+    }
+    if (eventSource == "buttons")
+    {
+        const std::string& selection = getWidget<RibbonWidget>("buttons")->
+                                    getSelectionIDString(PLAYER_ID_GAME_MASTER);
 
-        UserConfigParams::m_motionblur      =
-            advanced_pipeline && getWidget<CheckBoxWidget>("motionblur")->getState();
-
-        if (advanced_pipeline && CVS->supportsShadows())
+        if (selection == "apply")
         {
-            UserConfigParams::m_shadows_resolution =
-                getWidget<SpinnerWidget>("shadows")->getValue() * 512;
+            bool advanced_pipeline = getWidget<CheckBoxWidget>("dynamiclight")->getState();
+            bool pbr_changed = false;
+            bool ibl_changed = false;
+            if (UserConfigParams::m_dynamic_lights != advanced_pipeline)
+            {
+                pbr_changed = true;
+                GE::getGEConfig()->m_pbr = advanced_pipeline;
+            }
+            UserConfigParams::m_dynamic_lights = advanced_pipeline;
+
+            UserConfigParams::m_dof =
+                advanced_pipeline && getWidget<CheckBoxWidget>("dof")->getState();
+
+            UserConfigParams::m_motionblur      =
+                advanced_pipeline && getWidget<CheckBoxWidget>("motionblur")->getState();
+
+            if (advanced_pipeline)
+            {
+                UserConfigParams::m_shadows_resolution =
+                    getWidget<SpinnerWidget>("shadows")->getValue() == 1 ?  512 :
+                    getWidget<SpinnerWidget>("shadows")->getValue() == 2 ? 1024 :
+                    getWidget<SpinnerWidget>("shadows")->getValue() >= 3 ? 2048 : 0;
+                UserConfigParams::m_pcss =
+                    getWidget<SpinnerWidget>("shadows")->getValue() == 4 ? true : false;
+            }
+            else
+            {
+                UserConfigParams::m_shadows_resolution = 0;
+            }
+
+            UserConfigParams::m_mlaa =
+                advanced_pipeline && getWidget<CheckBoxWidget>("mlaa")->getState();
+
+            UserConfigParams::m_ssao =
+                advanced_pipeline && getWidget<CheckBoxWidget>("ssao")->getState();
+            UserConfigParams::m_ssr =
+                advanced_pipeline && getWidget<CheckBoxWidget>("ssr")->getState();
+            UserConfigParams::m_light_shaft =
+                advanced_pipeline && getWidget<CheckBoxWidget>("lightshaft")->getState();
+
+            bool degraded_ibl = !advanced_pipeline || !getWidget<CheckBoxWidget>("ibl")->getState();
+            if (UserConfigParams::m_degraded_IBL != degraded_ibl)
+            {
+                ibl_changed = true;
+                GE::getGEConfig()->m_ibl = !degraded_ibl;
+                UserConfigParams::m_degraded_IBL = degraded_ibl;
+            }
+
+            UserConfigParams::m_glow =
+                advanced_pipeline && getWidget<CheckBoxWidget>("glow")->getState();
+
+            UserConfigParams::m_bloom =
+                advanced_pipeline && getWidget<CheckBoxWidget>("bloom")->getState();
+
+            UserConfigParams::m_light_scatter =
+                advanced_pipeline && getWidget<CheckBoxWidget>("lightscattering")->getState();
+
+            UserConfigParams::m_speed_streaks =
+                advanced_pipeline && getWidget<CheckBoxWidget>("speedstreaks")->getState();
+
+            bool force_reload_texture = getWidget<CheckBoxWidget>("texture_compression")->getState() !=
+                UserConfigParams::m_texture_compression;
+            UserConfigParams::m_texture_compression =
+                getWidget<CheckBoxWidget>("texture_compression")->getState();
+            GE::getGEConfig()->m_texture_compression = UserConfigParams::m_texture_compression;
+
+            UserConfigParams::m_particles_effects =
+                getWidget<SpinnerWidget>("particles_effects")->getValue();
+
+            UserConfigParams::m_animated_characters =
+                getWidget<CheckBoxWidget>("animated_characters")->getState();
+
+            UserConfigParams::m_geometry_level =
+                getWidget<SpinnerWidget>("geometry_detail")->getValue();;
+            int quality = getWidget<SpinnerWidget>("image_quality")->getValue();
+
+            std::string rd = StringUtils::wideToUtf8(
+                getWidget<GUIEngine::SpinnerWidget>("render_driver")->getStringValue().make_lower());
+
+            bool need_restart = false;
+            if (std::string(UserConfigParams::m_render_driver) != rd)
+            {
+                UserConfigParams::m_render_driver = rd;
+                need_restart = true;
+            }
+
+            user_config->saveConfig();
+
+            ModalDialog::dismiss();
+            OptionsScreenVideo::getInstance()->updateGfxSlider();
+            OptionsScreenVideo::getInstance()->updateBlurSlider();
+            GE::GEScreenSpaceReflectionType prev_gssrt = GE::getGEConfig()->m_screen_space_reflection_type;
+            OptionsScreenVideo::setSSR();
+            if (GE::getDriver()->getDriverType() == video::EDT_VULKAN)
+            {
+                bool need_recreate_swapchain = GE::getGEConfig()->m_screen_space_reflection_type != prev_gssrt;
+                if (need_recreate_swapchain || pbr_changed || ibl_changed)
+                    GE::getVKDriver()->updateDriver(need_recreate_swapchain, pbr_changed, ibl_changed);
+            }
+            // sameRestart will have the same effect
+            if (!(CVS->isGLSL() && pbr_changed))
+            {
+                GraphicalPresets::setImageQuality(quality);
+                OptionsScreenVideo::updateImageQuality(force_reload_texture);
+            }
+
+            if (need_restart)
+                irr_driver->fullRestart();
+
+            return GUIEngine::EVENT_BLOCK;
         }
-        else
+        else if (selection == "cancel")
         {
-            UserConfigParams::m_shadows_resolution = 0;
+            ModalDialog::dismiss();
+            return GUIEngine::EVENT_BLOCK;
         }
-
-        UserConfigParams::m_mlaa =
-            advanced_pipeline && getWidget<CheckBoxWidget>("mlaa")->getState();
-
-        UserConfigParams::m_ssao =
-            advanced_pipeline && getWidget<CheckBoxWidget>("ssao")->getState();
-
-        UserConfigParams::m_light_shaft =
-            advanced_pipeline && getWidget<CheckBoxWidget>("lightshaft")->getState();
-
-        UserConfigParams::m_degraded_IBL =
-            !getWidget<CheckBoxWidget>("ibl")->getState();
-
-        UserConfigParams::m_gi =
-            advanced_pipeline && CVS->supportsGlobalIllumination() &&
-            getWidget<CheckBoxWidget>("global_illumination")->getState();
-
-        UserConfigParams::m_glow =
-            advanced_pipeline && getWidget<CheckBoxWidget>("glow")->getState();
-
-        UserConfigParams::m_bloom =
-            advanced_pipeline && getWidget<CheckBoxWidget>("bloom")->getState();
-
-        UserConfigParams::m_texture_compression =
-            getWidget<CheckBoxWidget>("texture_compression")->getState();
-
-        UserConfigParams::m_graphical_effects =
-            getWidget<CheckBoxWidget>("anim_gfx")->getState();
-
-        UserConfigParams::m_weather_effects =
-            getWidget<CheckBoxWidget>("weather_gfx")->getState();
-
-        // Set bit 0 for enabled/disabled, and set bit 1 to indicate that this
-        // is now a user's choice and should not be overwritten by any default
-        UserConfigParams::m_high_definition_textures =
-            getWidget<CheckBoxWidget>("hd-textures")->getState() ? 0x03 : 0x02;
-
-        UserConfigParams::m_show_steering_animations =
-            getWidget<SpinnerWidget>("steering_animations")->getValue();
-
-        switch (getWidget<SpinnerWidget>("filtering")->getValue())
-        {
-            case 0:
-                UserConfigParams::m_anisotropic = 0;
-                UserConfigParams::m_trilinear   = false;
-                break;
-            case 1:
-                UserConfigParams::m_anisotropic = 0;
-                UserConfigParams::m_trilinear   = true;
-                break;
-            case 2:
-                UserConfigParams::m_anisotropic = 2;
-                UserConfigParams::m_trilinear   = true;
-                break;
-            case 3:
-                UserConfigParams::m_anisotropic = 4;
-                UserConfigParams::m_trilinear   = true;
-                break;
-            case 4:
-                UserConfigParams::m_anisotropic = 8;
-                UserConfigParams::m_trilinear   = true;
-                break;
-            case 5:
-                UserConfigParams::m_anisotropic = 16;
-                UserConfigParams::m_trilinear   = true;
-                break;
-        }
-
-        user_config->saveConfig();
-
-        ModalDialog::dismiss();
-        OptionsScreenVideo::getInstance()->updateGfxSlider();
-        return GUIEngine::EVENT_BLOCK;
     }
     else if (eventSource == "dynamiclight")
     {
-        updateActivation();
+        updateActivation("");
     }
-
+#endif
     return GUIEngine::EVENT_LET;
 }   // processEvent
 
 // -----------------------------------------------------------------------------
 
-void CustomVideoSettingsDialog::updateActivation()
+void CustomVideoSettingsDialog::updateActivation(const std::string& renderer)
 {
+#ifndef SERVER_ONLY
     bool light = getWidget<CheckBoxWidget>("dynamiclight")->getState();
+    bool real_light = light;
+    bool vk = GE::getDriver()->getDriverType() == video::EDT_VULKAN;
+    bool modern_gl = CVS->isGLSL();
+
+    // If showing enabled options for a specific renderer has
+    // been requested, prioritize that
+    if (renderer == "vulkan")
+    {
+        vk = true;
+        modern_gl = false;
+    }
+    else if (renderer != "") // OpenGL or DirectX
+    {
+        vk = false;
+
+        if (renderer == "opengl" && !UserConfigParams::m_force_legacy_device)
+            modern_gl = true;
+        else
+            modern_gl = false;
+    }
+
+    // Disable the options for advanced lighting if unavailable for this renderer
+    if (!vk && !modern_gl)
+    {
+        getWidget<CheckBoxWidget>("dynamiclight")->setActive(false);
+        light = false;
+    }
+
+    if (vk)
+    {
+        getWidget<CheckBoxWidget>("dynamiclight")->setActive(true);
+        light = false;
+    }
     getWidget<CheckBoxWidget>("motionblur")->setActive(light);
     getWidget<CheckBoxWidget>("dof")->setActive(light);
     getWidget<SpinnerWidget>("shadows")->setActive(light);
     getWidget<CheckBoxWidget>("mlaa")->setActive(light);
     getWidget<CheckBoxWidget>("ssao")->setActive(light);
+    getWidget<CheckBoxWidget>("ssr")->setActive(light || (vk && real_light));
     getWidget<CheckBoxWidget>("lightshaft")->setActive(light);
-    getWidget<CheckBoxWidget>("ibl")->setActive(light);
-    getWidget<CheckBoxWidget>("global_illumination")->setActive(light);
+    getWidget<CheckBoxWidget>("speedstreaks")->setActive(light);
+    getWidget<CheckBoxWidget>("ibl")->setActive(light || (vk && real_light));
     getWidget<CheckBoxWidget>("glow")->setActive(light);
     getWidget<CheckBoxWidget>("bloom")->setActive(light);
-
-    if (!CVS->supportsShadows() && !CVS->supportsGlobalIllumination())
-    {
-        getWidget<SpinnerWidget>("shadows")->setActive(false);
-        getWidget<CheckBoxWidget>("global_illumination")->setActive(false);
-    }
+    getWidget<CheckBoxWidget>("lightscattering")->setActive(light);
+#endif
 }   // updateActivation
-

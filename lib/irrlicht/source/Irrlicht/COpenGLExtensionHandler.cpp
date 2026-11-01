@@ -116,7 +116,15 @@ void COpenGLExtensionHandler::dump() const
 void COpenGLExtensionHandler::dumpFramebufferFormats() const
 {
 #ifdef _IRR_WINDOWS_API_
+#if defined(_IRR_COMPILE_WITH_SDL_DEVICE_)
+	typedef HDC (APIENTRY * wglGetCurrentDC_func)();
+	wglGetCurrentDC_func wglGetCurrentDC_ptr = NULL;
+	wglGetCurrentDC_ptr = (wglGetCurrentDC_func)SDL_GL_GetProcAddress("wglGetCurrentDC");
+	HDC hdc=wglGetCurrentDC_ptr();
+#else
 	HDC hdc=wglGetCurrentDC();
+#endif
+
 	core::stringc wglExtensions;
 #ifdef WGL_ARB_extensions_string
 	PFNWGLGETEXTENSIONSSTRINGARBPROC irrGetExtensionsString = (PFNWGLGETEXTENSIONSSTRINGARBPROC)wglGetProcAddress("wglGetExtensionsStringARB");
@@ -210,7 +218,7 @@ void COpenGLExtensionHandler::dumpFramebufferFormats() const
 #endif
 				,0,0,0,0
 			};
-			size_t nums = sizeof(atts)/sizeof(int);
+			u32 nums = sizeof(atts)/sizeof(int);
 			const bool depth_float_supported= (wglExtensions.find("WGL_EXT_depth_float") != -1);
 			if (!depth_float_supported)
 			{
@@ -327,7 +335,7 @@ void COpenGLExtensionHandler::dumpFramebufferFormats() const
 }
 
 
-void COpenGLExtensionHandler::initExtensions(bool stencilBuffer)
+void COpenGLExtensionHandler::initExtensions(bool stencilBuffer, bool useCoreContext)
 {
 	const f32 ogl_ver = core::fast_atof(reinterpret_cast<const c8*>(glGetString(GL_VERSION)));
 	Version = static_cast<u16>(core::floor32(ogl_ver)*100+core::round32(core::fract(ogl_ver)*10.0f));
@@ -336,10 +344,17 @@ void COpenGLExtensionHandler::initExtensions(bool stencilBuffer)
 	else
 		os::Printer::log("OpenGL driver version is not 1.2 or better.", ELL_WARNING);
 
+	if (!useCoreContext)
 	{
-		const char* t = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+		for (u32 i = 0; i < IRR_OpenGL_Feature_Count; i++)
+			FeatureAvailable[i] = false;
+			
+		const char* t = NULL;
 		size_t len = 0;
 		c8 *str = 0;
+		
+		t = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+		
 		if (t)
 		{
 			len = strlen(t);
@@ -375,11 +390,11 @@ void COpenGLExtensionHandler::initExtensions(bool stencilBuffer)
 	StencilBuffer=stencilBuffer;
 
 #ifdef _IRR_OPENGL_USE_EXTPOINTER_
-#ifdef _IRR_WINDOWS_API_
-	#define IRR_OGL_LOAD_EXTENSION(x) wglGetProcAddress(reinterpret_cast<const char*>(x))
-#elif defined(_IRR_COMPILE_WITH_SDL_DEVICE_) && !defined(_IRR_COMPILE_WITH_X11_DEVICE_)
+#if defined(_IRR_COMPILE_WITH_SDL_DEVICE_) && !defined(_IRR_COMPILE_WITH_X11_DEVICE_)
 	#define IRR_OGL_LOAD_EXTENSION(x) SDL_GL_GetProcAddress(reinterpret_cast<const char*>(x))
-#else
+#elif defined (_IRR_WINDOWS_API_)
+	#define IRR_OGL_LOAD_EXTENSION(x) wglGetProcAddress(reinterpret_cast<const char*>(x))
+
 	// Accessing the correct function is quite complex
 	// All libraries should support the ARB version, however
 	// since GLX 1.4 the non-ARB version is the official one

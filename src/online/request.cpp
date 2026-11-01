@@ -19,10 +19,6 @@
 #include "config/user_config.hpp"
 #include "online/request_manager.hpp"
 
-#ifdef WIN32
-#  include <winsock2.h>
-#endif
-
 #include <assert.h>
 
 namespace Online
@@ -30,15 +26,13 @@ namespace Online
     // ========================================================================
     /**
      *  Creates a request that can be handled by the RequestManager
-     *  \param manage_memory whether or not the RequestManager should take care of
-     *         deleting the object after all callbacks have been done
      *  \param priority by what priority should the RequestManager take care of
      *         this request
      *  \param type indicates whether the request has a special task for the
      *         RequestManager
      */
-    Request::Request(bool manage_memory, int priority, int type)
-        : m_type(type), m_manage_memory(manage_memory), m_priority(priority)
+    Request::Request(int priority, int type)
+        : m_type(type), m_priority(priority)
     {
         m_cancel.setAtomic(false);
         m_state.setAtomic(S_PREPARING);
@@ -50,7 +44,7 @@ namespace Online
      */
     void Request::queue()
     {
-        RequestManager::get()->addRequest(this);
+        RequestManager::get()->addRequest(shared_from_this());
     }   // queue
 
     // ------------------------------------------------------------------------
@@ -61,13 +55,17 @@ namespace Online
     {
         assert(isBusy());
         // Abort as early as possible if abort is requested
-        if (RequestManager::get()->getAbort() && isAbortable()) return;
+        if (RequestManager::isRunning() &&
+            RequestManager::get()->getAbort() && isAbortable()) return;
         prepareOperation();
-        if (RequestManager::get()->getAbort() && isAbortable()) return;
+        if (RequestManager::isRunning() &&
+            RequestManager::get()->getAbort() && isAbortable()) return;
         operation();
-        if (RequestManager::get()->getAbort() && isAbortable()) return;
+        if (RequestManager::isRunning() &&
+            RequestManager::get()->getAbort() && isAbortable()) return;
         setExecuted();
-        if (RequestManager::get()->getAbort() && isAbortable()) return;
+        if (RequestManager::isRunning() &&
+            RequestManager::get()->getAbort() && isAbortable()) return;
         afterOperation();
     }   // execute
 
@@ -81,7 +79,11 @@ namespace Online
         assert(isPreparing());
         setBusy();
         execute();
+        if (RequestManager::isRunning() &&
+            RequestManager::get()->getAbort() && isAbortable()) return;
         callback();
+        if (RequestManager::isRunning() &&
+            RequestManager::get()->getAbort() && isAbortable()) return;
         setDone();
     }   // executeNow
 

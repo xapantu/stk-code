@@ -27,6 +27,11 @@
 #include "utils/leak_check.hpp"
 #include "utils/ptr_vector.hpp"
 
+namespace irr
+{
+    namespace gui { class IGUIFont; }
+}
+
 namespace GUIEngine
 {
     /** \brief A simple label widget.
@@ -34,13 +39,34 @@ namespace GUIEngine
       */
     class LabelWidget : public Widget
     {
-        bool               m_bright;
-        bool               m_has_color;
+    public:
+        
+        enum LabelType
+        {
+            NORMAL,
+            BRIGHT,
+            TITLE,
+            SMALL_TITLE,
+            TINY_TITLE,
+            COUNT
+        };
+        
+    private:
+        
+        LabelType         m_type;
         irr::video::SColor m_color;
+        bool               m_has_color;
+        bool               m_expand_if_needed;
+        bool               m_word_wrap;
+
+        irr::gui::IGUIFont* getCurrentFont() const;
+        void updateExpandedText(const irr::core::stringw& text);
 
         /** Scroll speed in characters/seconds (0 if no scrolling). */
         float              m_scroll_speed;
-        
+
+        float              m_per_character_size;
+
         /** Current scroll offset. */
         float              m_scroll_offset;
 
@@ -52,11 +78,9 @@ namespace GUIEngine
         LEAK_CHECK()
         
         /** Constructs the label widget. Parameter:
-          * \param title  True if the special title font should be used.
-          * \param bright True if a bright color should be used
-          * \note \c title and \c bright are mutually exclusive
+          * \param type the text type of the label
           */
-        LabelWidget(bool title=false, bool bright=false);
+        LabelWidget(LabelType type = NORMAL);
         
         virtual ~LabelWidget() {}
         
@@ -86,13 +110,7 @@ namespace GUIEngine
           *                       too small to contain \c text. Note that this option may
           *                       only be passed after the widget has been add()ed.
           */
-        virtual void setText(const wchar_t *text, bool expandAsNeeded);
-        
-        /** Overloaded function which takes a stringw. */
-        virtual void setText(const irr::core::stringw &s, bool expandAsNeeded)
-        {
-            setText(s.c_str(), expandAsNeeded);
-        }
+        virtual void setText(const irr::core::stringw& text, bool expandAsNeeded);
 
         // --------------------------------------------------------------------
         
@@ -100,7 +118,8 @@ namespace GUIEngine
         void setScrollSpeed(float speed);
         
         // --------------------------------------------------------------------
-        
+        float getScrollSpeed() const { return m_scroll_speed; }
+        // --------------------------------------------------------------------
         /**
           * \brief Check if the current has been fully scrolled
           * \return true if the text has completely scrolled off
@@ -108,6 +127,7 @@ namespace GUIEngine
           */
         bool scrolledOff() const;
 
+        virtual void resize();
     };
 }
 

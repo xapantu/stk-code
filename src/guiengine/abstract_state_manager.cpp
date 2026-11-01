@@ -21,12 +21,14 @@
 #include "config/user_config.hpp"
 #include "guiengine/engine.hpp"
 #include "guiengine/modaldialog.hpp"
+#include "guiengine/screen_keyboard.hpp"
 #include "guiengine/screen.hpp"
 #include "input/device_manager.hpp"
+#include "utils/debug.hpp"
 
 #include <vector>
 #include <iostream>
-
+#include <IGUIEnvironment.h>
 
 using namespace GUIEngine;
 
@@ -35,7 +37,7 @@ static const char RACE_STATE_NAME[] = "race";
 
 AbstractStateManager::AbstractStateManager()
 {
-    m_game_mode = MENU;
+    m_game_mode.store(MENU);
 }   // AbstractStateManager
 
 #if 0
@@ -47,12 +49,22 @@ AbstractStateManager::AbstractStateManager()
 
 void AbstractStateManager::enterGameState()
 {
+    if (GUIEngine::isNoGraphics())
+    {
+        // No graphics STK won't push dialog
+        setGameState(GAME);
+        return;
+    }
+
      // you need to close any dialog before calling this
     assert(!ModalDialog::isADialogActive());
+    assert(!ScreenKeyboard::isActive());
 
     if (getCurrentScreen() != NULL) getCurrentScreen()->tearDown();
     m_menu_stack.clear();
-    m_menu_stack.push_back(RACE_STATE_NAME);
+    m_menu_stack.emplace_back(RACE_STATE_NAME, (Screen*)NULL);
+
+    Debug::closeDebugMenu();
     setGameState(GAME);
     GUIEngine::cleanForGame();
 }   // enterGameState
@@ -61,16 +73,16 @@ void AbstractStateManager::enterGameState()
 
 GameState AbstractStateManager::getGameState()
 {
-    return m_game_mode;
+    return m_game_mode.load();
 }   // getGameState
 
 // ----------------------------------------------------------------------------
 
 void AbstractStateManager::setGameState(GameState state)
 {
-    if (m_game_mode == state) return; // no change
+    if (m_game_mode.load() == state) return; // no change
 
-    m_game_mode = state;
+    m_game_mode.store(state);
 
     onGameStateChange(state);
 }   // setGameState
@@ -83,26 +95,27 @@ void AbstractStateManager::setGameState(GameState state)
 #pragma mark Push/pop menus
 #endif
 
-void AbstractStateManager::pushMenu(std::string name)
+void AbstractStateManager::pushMenu(Screen* screen)
 {
     // currently, only a single in-game menu is supported
-    assert(m_game_mode != INGAME_MENU);
+    assert(m_game_mode.load() != INGAME_MENU);
 
     // you need to close any dialog before calling this
     assert(!ModalDialog::isADialogActive());
+    assert(!ScreenKeyboard::isActive());
 
     if (UserConfigParams::logGUI())
     {
         Log::info("AbstractStateManager::pushMenu", "Switching to screen %s",
-            name.c_str());
+            screen->getName().c_str());
     }
 
     // Send tear-down event to previous menu
-    if (m_menu_stack.size() > 0 && m_game_mode != GAME)
+    if (m_menu_stack.size() > 0 && m_game_mode.load() != GAME)
         getCurrentScreen()->tearDown();
 
-    m_menu_stack.push_back(name);
-    if (m_game_mode == GAME)
+    m_menu_stack.emplace_back(screen->getName(), screen);
+    if (m_game_mode.load() == GAME)
     {
         setGameState(INGAME_MENU);
     }
@@ -110,7 +123,7 @@ void AbstractStateManager::pushMenu(std::string name)
     {
         setGameState(MENU);
     }
-    switchToScreen(name.c_str());
+    switchToScreen(screen);
 
     onTopMostScreenChanged();
 }   // pushMenu
@@ -122,6 +135,7 @@ void AbstractStateManager::pushScreen(Screen* screen)
 {
     // you need to close any dialog before calling this
     assert(!ModalDialog::isADialogActive());
+    assert(!ScreenKeyboard::isActive());
 
     if (UserConfigParams::logGUI())
     {
@@ -130,7 +144,7 @@ void AbstractStateManager::pushScreen(Screen* screen)
     }
 
     if (!screen->isLoaded()) screen->loadFromFile();
-    pushMenu(screen->getName());
+    pushMenu(screen);
     screen->init();
 
     onTopMostScreenChanged();
@@ -143,9 +157,10 @@ void AbstractStateManager::replaceTopMostScreen(Screen* screen, GUIEngine::GameS
     if (gameState == GUIEngine::CURRENT)
         gameState = getGameState();
 
-    //assert(m_game_mode != GAME);
+    //assert(m_game_mode.load() != GAME);
     // you need to close any dialog before calling this
     assert(!ModalDialog::isADialogActive());
+    assert(!ScreenKeyboard::isActive());
 
     if (!screen->isLoaded()) screen->loadFromFile();
     std::string name = screen->getName();
@@ -162,9 +177,9 @@ void AbstractStateManager::replaceTopMostScreen(Screen* screen, GUIEngine::GameS
     if (getCurrentScreen() != NULL)
         getCurrentScreen()->tearDown();
 
-    m_menu_stack[m_menu_stack.size()-1] = name;
+    m_menu_stack[m_menu_stack.size()-1] = std::make_pair(name, screen);
     setGameState(gameState);
-    switchToScreen(name.c_str());
+    switchToScreen(screen);
 
     // Send init event to new menu
     getCurrentScreen()->init();
@@ -176,9 +191,10 @@ void AbstractStateManager::replaceTopMostScreen(Screen* screen, GUIEngine::GameS
 
 void AbstractStateManager::reshowTopMostMenu()
 {
-    assert(m_game_mode != GAME);
+    assert(m_game_mode.load() != GAME);
     // you need to close any dialog before calling this
     assert(!ModalDialog::isADialogActive());
+    assert(!ScreenKeyboard::isActive());
 
     // Send tear-down event to previous menu
     if (m_menu_stack.size() > 0)
@@ -187,7 +203,7 @@ void AbstractStateManager::reshowTopMostMenu()
         if (currScreen != NULL) getCurrentScreen()->tearDown();
     }
 
-    switchToScreen( m_menu_stack[m_menu_stack.size()-1].c_str() );
+    switchToScreen(m_menu_stack[m_menu_stack.size()-1].second);
 
     // Send init event to new menu
     Screen* screen = getCurrentScreen();
@@ -201,14 +217,19 @@ void AbstractStateManager::reshowTopMostMenu()
 
 void AbstractStateManager::popMenu()
 {
-    assert(m_game_mode != GAME);
+    assert(m_game_mode.load() != GAME);
+
+    if (m_menu_stack.empty())
+        return;
 
     // Send tear-down event to menu
     getCurrentScreen()->tearDown();
     m_menu_stack.pop_back();
 
-    if (m_menu_stack.size() == 0)
+    if (m_menu_stack.empty())
     {
+        getGUIEnv()->clear();
+        getCurrentScreen()->elementsWereDeleted();
         onStackEmptied();
         return;
     }
@@ -216,10 +237,10 @@ void AbstractStateManager::popMenu()
     if (UserConfigParams::logGUI())
     {
         Log::info("AbstractStateManager::popMenu", "Switching to screen %s",
-            m_menu_stack[m_menu_stack.size()-1].c_str());
+            m_menu_stack[m_menu_stack.size()-1].first.c_str());
     }
 
-    if (m_menu_stack[m_menu_stack.size()-1] == RACE_STATE_NAME)
+    if (m_menu_stack[m_menu_stack.size()-1].first == RACE_STATE_NAME)
     {
         setGameState(GAME);
         GUIEngine::cleanForGame();
@@ -227,7 +248,7 @@ void AbstractStateManager::popMenu()
     else
     {
         setGameState(MENU);
-        switchToScreen(m_menu_stack[m_menu_stack.size()-1].c_str());
+        switchToScreen(m_menu_stack[m_menu_stack.size()-1].second);
 
         Screen* screen = getCurrentScreen();
         if (!screen->isLoaded()) screen->loadFromFile();
@@ -243,6 +264,7 @@ void AbstractStateManager::resetAndGoToScreen(Screen* screen)
 {
     // you need to close any dialog before calling this
     assert(!ModalDialog::isADialogActive());
+    assert(!ScreenKeyboard::isActive());
 
     std::string name = screen->getName();
 
@@ -250,14 +272,14 @@ void AbstractStateManager::resetAndGoToScreen(Screen* screen)
         Log::info("AbstractStateManager::resetAndGoToScreen", "Switching to screen %s",
             name.c_str());
 
-    if (m_game_mode != GAME) getCurrentScreen()->tearDown();
+    if (m_game_mode.load() != GAME) getCurrentScreen()->tearDown();
     m_menu_stack.clear();
 
     if (!screen->isLoaded()) screen->loadFromFile();
-    m_menu_stack.push_back(name);
+    m_menu_stack.emplace_back(name, screen);
     setGameState(MENU);
 
-    switchToScreen(name.c_str());
+    switchToScreen(screen);
     getCurrentScreen()->init();
 
     onTopMostScreenChanged();
@@ -271,20 +293,21 @@ void AbstractStateManager::resetAndSetStack(Screen* screens[])
     assert(screens[0] != NULL);
     // you need to close any dialog before calling this
     assert(!ModalDialog::isADialogActive());
+    assert(!ScreenKeyboard::isActive());
 
-    if (m_game_mode != GAME) getCurrentScreen()->tearDown();
+    if (m_game_mode.load() != GAME && getCurrentScreen())
+        getCurrentScreen()->tearDown();
     m_menu_stack.clear();
 
     for (int n=0; screens[n] != NULL; n++)
     {
-        m_menu_stack.push_back(screens[n]->getName());
+        m_menu_stack.emplace_back(screens[n]->getName(), screens[n]);
     }
 
     setGameState(MENU);
 
-    switchToScreen(m_menu_stack[m_menu_stack.size()-1].c_str());
+    switchToScreen(m_menu_stack[m_menu_stack.size()-1].second);
     getCurrentScreen()->init();
 
     onTopMostScreenChanged();
 }   // resetAndSetStack
-

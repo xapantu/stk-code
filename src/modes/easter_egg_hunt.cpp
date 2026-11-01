@@ -18,8 +18,13 @@
 #include "modes/easter_egg_hunt.hpp"
 
 #include "io/file_manager.hpp"
+#include "items/item.hpp"
 #include "karts/abstract_kart.hpp"
+#include "karts/ghost_kart.hpp"
+#include "replay/replay_play.hpp"
 #include "tracks/track.hpp"
+#include "utils/string_utils.hpp"
+#include "utils/translation.hpp"
 
 //-----------------------------------------------------------------------------
 /** Constructor. Sets up the clock mode etc.
@@ -29,6 +34,8 @@ EasterEggHunt::EasterEggHunt() : LinearWorld()
     WorldStatus::setClockMode(CLOCK_CHRONO);
     m_use_highscores = true;
     m_eggs_found     = 0;
+    m_only_ghosts    = false;
+    m_finish_time    = 0;
 }   // EasterEggHunt
 
 //-----------------------------------------------------------------------------
@@ -39,12 +46,18 @@ void EasterEggHunt::init()
     LinearWorld::init();
     m_display_rank = false;
 
+    unsigned int gk = 0;
+    if (RaceManager::get()->hasGhostKarts())
+        gk = ReplayPlay::get()->getNumGhostKart();
     // check for possible problems if AI karts were incorrectly added
-    if(getNumKarts() > race_manager->getNumPlayers())
+    if((getNumKarts() - gk) > RaceManager::get()->getNumPlayers())
     {
         Log::error("EasterEggHunt]", "No AI exists for this game mode");
         exit(1);
     }
+
+    if (getNumKarts() == gk)
+        m_only_ghosts = true;
 
     m_eggs_collected.resize(m_karts.size(), 0);
 
@@ -64,7 +77,7 @@ EasterEggHunt::~EasterEggHunt()
 */
 void EasterEggHunt::readData(const std::string &filename)
 {
-    XMLNode *easter = file_manager->createXMLTree(filename);
+    auto easter = std::unique_ptr<XMLNode>(file_manager->createXMLTree(filename));
     if(!easter)
         return;
 
@@ -72,47 +85,31 @@ void EasterEggHunt::readData(const std::string &filename)
     {
         Log::error("[EasterEggHunt]", "Can't load easter egg file '%s' - no EasterEggHunt element.",
                 filename.c_str());
-        delete easter;
         return;
     }
 
-    // Search for the closest difficulty set of egg.
+    // Search for the most relevant set of egg
     const XMLNode *data = NULL;
-    RaceManager::Difficulty difficulty     = race_manager->getDifficulty();
+    RaceManager::Difficulty difficulty     = RaceManager::get()->getDifficulty();
     RaceManager::Difficulty act_difficulty = RaceManager::DIFFICULTY_COUNT;
-    for(int i=difficulty; i<=RaceManager::DIFFICULTY_LAST; i++)
+
+    for(int i=RaceManager::DIFFICULTY_FIRST; i<=RaceManager::DIFFICULTY_LAST; i++)
     {
-        std::string diff_name=
-            race_manager->getDifficultyAsString((RaceManager::Difficulty)i);
+        std::string diff_name = RaceManager::get()->getDifficultyAsString((RaceManager::Difficulty)i);
         const XMLNode * cur_data = easter->getNode(diff_name);
         if (cur_data)
         {
             data = cur_data;
             act_difficulty = (RaceManager::Difficulty)i;
-            break;
+            // Stop at the easiest difficulty which is equal or harder than the desired one.
+            // If none is equal or harder, this will default to the hardest defined set.
+            if (act_difficulty >= difficulty)
+                break;
         }
     }
-    // If there is no data for an equal or harder placement,
-    // check for the most difficult placement that is easier:
-    if(!data)
-    {
-        for(int i=difficulty-1; i>=RaceManager::DIFFICULTY_FIRST; i--)
-        {
-            std::string diff_name=
-               race_manager->getDifficultyAsString((RaceManager::Difficulty)i);
-            const XMLNode * cur_data = easter->getNode(diff_name);
-            if (cur_data)
-            {
-                data = cur_data;
-                act_difficulty = (RaceManager::Difficulty)i;
-                break;
-            }
-        }   // for i
-    }   // if !data
 
     if(!data)
     {
-        delete easter;
         return;
     }
     m_number_of_eggs = 0;
@@ -123,14 +120,12 @@ void EasterEggHunt::readData(const std::string &filename)
         {
             Log::warn("[EasterEggHunt]", "Unknown node '%s' in easter egg level '%s' - ignored.",
                    egg->getName().c_str(),
-                   race_manager->getDifficultyAsString(act_difficulty).c_str());
+                   RaceManager::get()->getDifficultyAsString(act_difficulty).c_str());
             continue;
         }
-        World::getTrack()->itemCommand(egg);
+        Track::getCurrentTrack()->itemCommand(egg);
         m_number_of_eggs++;
     }   // for i <num_nodes
-
-    delete easter;
 
     WorldStatus::setClockMode(CLOCK_CHRONO);
 
@@ -148,20 +143,32 @@ const std::string& EasterEggHunt::getIdent() const
 /** Called when a kart has collected an egg.
  *  \param kart The kart that collected an egg.
  */
-void EasterEggHunt::collectedEasterEgg(const AbstractKart *kart)
+void EasterEggHunt::collectedItem(const AbstractKart *kart,
+                                  const ItemState *item    )
 {
+    if(item->getType() != ItemState::ITEM_EASTER_EGG) return;
+
     m_eggs_collected[kart->getWorldKartId()]++;
     m_eggs_found++;
+}   // collectedItem
+
+//-----------------------------------------------------------------------------
+/** Called when a ghost kart has collected an egg.
+ *  \param world_id The world id of the ghost kart that collected an egg.
+ */
+void EasterEggHunt::collectedEasterEggGhost(int world_id)
+{
+    m_eggs_collected[world_id]++;
 }   // collectedEasterEgg
 
 //-----------------------------------------------------------------------------
 /** Update the world and the track.
- *  \param dt Time step size.
+ *  \param ticks Physics time step size - should be 1.
  */
-void EasterEggHunt::update(float dt)
+void EasterEggHunt::update(int ticks)
 {
-    LinearWorld::update(dt);
-    LinearWorld::updateTrack(dt);
+    LinearWorld::update(ticks);
+    LinearWorld::updateTrack(ticks);
 }   // update
 
 //-----------------------------------------------------------------------------
@@ -169,23 +176,36 @@ void EasterEggHunt::update(float dt)
  */
 bool EasterEggHunt::isRaceOver()
 {
-    if(m_eggs_found == m_number_of_eggs)
+    if(!m_only_ghosts && m_eggs_found == m_number_of_eggs)
+    {
+        if (m_finish_time == 0)
+            m_finish_time = getTime();
         return true;
+    }
+    else if (m_only_ghosts)
+    {
+        for (unsigned int i=0 ; i<m_eggs_collected.size();i++)
+        {
+            if (m_eggs_collected[i] == m_number_of_eggs)
+                return true;
+        }
+    }
     if(m_time<0)
         return true;
     return false;
 }   // isRaceOver
 
 //-----------------------------------------------------------------------------
-/** Called then a battle is restarted.
+/** Called when an egg hunt is restarted.
  */
-void EasterEggHunt::reset()
+void EasterEggHunt::reset(bool restart)
 {
-    LinearWorld::reset();
+    LinearWorld::reset(restart);
 
     for(unsigned int i=0; i<m_eggs_collected.size(); i++)
         m_eggs_collected[i] = 0;
     m_eggs_found = 0;
+    m_finish_time = 0;
 }   // reset
 
 //-----------------------------------------------------------------------------
@@ -208,6 +228,7 @@ void EasterEggHunt::getKartsDisplayInfo(
 /** Override the base class method to change behavior. We don't want wrong
  *  direction messages in the easter egg mode since there is no direction there.
  *  \param i Kart id.
+ *  \param dt Time step size.
  */
 void EasterEggHunt::checkForWrongDirection(unsigned int i, float dt)
 {
@@ -222,9 +243,16 @@ void EasterEggHunt::terminateRace()
 }
 //-----------------------------------------------------------------------------
 /** In Easter Egg mode the finish time is just the time the race is over,
- *  since there are no AI karts.
+ *  since there are no AI karts and no other players, except for ghosts.
  */
 float EasterEggHunt::estimateFinishTimeForKart(AbstractKart* kart)
 {
-    return getTime();
+    // For ghost karts, use the replay data
+    if (kart->isGhostKart())
+    {
+        GhostKart* gk = dynamic_cast<GhostKart*>(kart);
+        return gk->getGhostFinishTime();
+    }
+
+    return m_finish_time;
 }   // estimateFinishTimeForKart

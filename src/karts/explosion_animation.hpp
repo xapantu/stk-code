@@ -37,13 +37,9 @@
 class ExplosionAnimation: public AbstractKartAnimation
 {
 protected:
-    /** The coordinates where the kart was hit originally. */
-    Vec3 m_xyz;
-
-    /** The original Y coordinate. The kart needs to be restored accurately
-     *  otherwise due to floating point errors, time step size variations,
-     *  a kart can be restarted under the track. */
-    float m_orig_y;
+friend class KartRewinder;
+    /** The normal of kart when it started to explode. */
+    Vec3 m_normal;
 
     /** The kart's current rotation. */
     Vec3 m_curr_rotation;
@@ -55,20 +51,48 @@ protected:
     /** The velocity with which the kart is moved. */
     float m_velocity;
 
-    /** Duration for this explosion. This can potentially be set
-     *  with different values for different karts, or depending
-     *  on difficulty (so that on easy you can drive again earlier. */
-    float m_duration;
+    /** If not -1, when > world count up ticks it will use m_reset_trans below
+     *  for animation. */
+    int m_reset_ticks;
 
-    ExplosionAnimation(AbstractKart *kart);
-    ExplosionAnimation(AbstractKart *kart, const Vec3 &pos,
-                       bool direct_hit);
+    /** Used for reset kart back to flag base in CTF. */
+    btTransform m_reset_trans;
+
+    /* Compressed values for server to send to avoid compressing everytime. */
+    int m_reset_trans_compressed[4];
+
+    bool m_direct_hit;
+
+    // ------------------------------------------------------------------------
+    void restoreData(BareNetworkString* b);
+    // ------------------------------------------------------------------------
+    void init(bool direct_hit, const Vec3& normal,
+              const btTransform& reset_trans);
+    // ------------------------------------------------------------------------
+    ExplosionAnimation(AbstractKart* kart, BareNetworkString* buffer);
+    // ------------------------------------------------------------------------
+    ExplosionAnimation(AbstractKart* kart, bool direct_hit);
 public:
-    static ExplosionAnimation *create(AbstractKart *kart, const Vec3 &pos,
+    // ------------------------------------------------------------------------
+    static ExplosionAnimation *create(AbstractKart* kart, const Vec3 &pos,
                                       bool direct_hit);
+    // ------------------------------------------------------------------------
     static ExplosionAnimation *create(AbstractKart *kart);
-
+    // ------------------------------------------------------------------------
     virtual ~ExplosionAnimation();
-    virtual void update(float dt);
+    // ------------------------------------------------------------------------
+    virtual void update(int ticks);
+    // ------------------------------------------------------------------------
+    virtual void updateGraphics(float dt);
+    // ------------------------------------------------------------------------
+    virtual KartAnimationType getAnimationType() const
+                                                      { return KAT_EXPLOSION; }
+    // ------------------------------------------------------------------------
+    virtual void saveState(BareNetworkString* buffer);
+    // ------------------------------------------------------------------------
+    virtual void restoreState(BareNetworkString* buffer);
+    // ------------------------------------------------------------------------
+    bool hasResetAlready() const;
+
 };   // ExplosionAnimation
 #endif

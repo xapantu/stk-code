@@ -22,20 +22,72 @@
 #include "guiengine/scalable_font.hpp"
 #include "guiengine/widgets/spinner_widget.hpp"
 #include "io/file_manager.hpp"
+#include "states_screens/state_manager.hpp"
 #include "utils/string_utils.hpp"
-#include "utils/translation.hpp"
+#include "utils/log.hpp"
 
 #include <IGUIElement.h>
 #include <IGUIEnvironment.h>
 #include <IGUIButton.h>
-#include <IGUIStaticText.h>
 #include <IGUIImage.h>
+
+#include "../../../lib/irrlicht/source/Irrlicht/CGUIButton.h"
+#include <IGUIStaticText.h>
+#include <ITexture.h>
+
 using namespace GUIEngine;
 using namespace irr::core;
 using namespace irr::gui;
 using namespace irr::video;
 
 // -----------------------------------------------------------------------------
+
+class SpinnerIrrElement : public CGUIButton
+{
+private:
+    bool m_pressed_moving;
+
+    SpinnerWidget* m_spinner;
+public:
+    SpinnerIrrElement(const core::rect<s32>& rectangle, IGUIElement* parent,
+                      s32 id, SpinnerWidget* spinner)
+    : CGUIButton(GUIEngine::getGUIEnv(), parent ?
+                 parent : dynamic_cast<IGUIElement*>(GUIEngine::getGUIEnv()),
+                 id, rectangle)
+    {
+        m_pressed_moving = false;
+        m_spinner = spinner;
+        setText(L"");
+        // Parent or GUI environment grabbed it
+        drop();
+    }
+    virtual bool OnEvent(const SEvent& event)
+    {
+        bool ret = CGUIButton::OnEvent(event);
+        if (ret && event.EventType == EET_MOUSE_INPUT_EVENT)
+        {
+            if (!m_spinner->isActivated())
+                return ret;
+            if (event.MouseInput.Event == EMIE_LMOUSE_PRESSED_DOWN)
+                m_pressed_moving = true;
+            else if (event.MouseInput.Event == EMIE_LMOUSE_LEFT_UP)
+            {
+                m_pressed_moving = false;
+                // clearSelected so SpinnerWidget::activateSelectedButton
+                // is not called in transmitEvent
+                m_spinner->clearSelected();
+            }
+            if (m_pressed_moving &&
+                (event.MouseInput.Event == EMIE_LMOUSE_PRESSED_DOWN ||
+                event.MouseInput.Event == EMIE_MOUSE_MOVED))
+            {
+                m_spinner->onPressed(event.MouseInput.X, event.MouseInput.Y);
+                m_spinner->doValueUpdatedCallback();
+            }
+        }
+        return ret;
+    }
+};
 
 SpinnerWidget::SpinnerWidget(const bool gauge) : Widget(WTYPE_SPINNER)
 {
@@ -45,10 +97,61 @@ SpinnerWidget::SpinnerWidget(const bool gauge) : Widget(WTYPE_SPINNER)
     m_check_inside_me = true; //FIXME: not sure this is necessary
     m_supports_multiplayer = true;
     m_value = -1;
+    m_badge_x_shift = 0;
     m_use_background_color=false;
-    m_spinner_widget_player_id=-1;
+    m_spinner_widget_player_id=PLAYER_ID_GAME_MASTER;
     m_min = 0;
     m_max = 999;
+    m_step = 1.0;
+    m_left_selected = false;
+    m_right_selected = false;
+    m_incorrect       = false;
+    m_red_mark_widget = NULL;
+    m_left_arrow = rect<s32>(0, 0, m_h, m_h);
+}
+
+// ------------------------------------------------------------------------
+/** Add a red mark on the spinner to mean "invalid choice" */
+void SpinnerWidget::markAsIncorrect()
+{
+    if (m_incorrect) return; // already flagged as incorrect
+
+    m_incorrect = true;
+
+    irr::video::ITexture* texture = irr_driver->getTexture(FileManager::GUI_ICON,
+                                                           "red_mark.png"   );
+    const int mark_size = m_h * 4 / 5;
+    const int mark_x = m_w - m_h * 19 / 10;
+    const int mark_y = m_h / 10;
+    core::recti red_mark_area(mark_x, mark_y, mark_x + mark_size,
+                              mark_y + mark_size);
+    m_red_mark_widget = GUIEngine::getGUIEnv()->addImage( red_mark_area,
+                        /* parent */ m_element );
+    m_red_mark_widget->setImage(texture);
+    m_red_mark_widget->setScaleImage(true);
+    m_red_mark_widget->setTabStop(false);
+    m_red_mark_widget->setUseAlphaChannel(true);
+} // markAsIncorrect
+
+// ------------------------------------------------------------------------
+/** Remove any red mark set with 'markAsIncorrect' */
+void SpinnerWidget::markAsCorrect()
+{
+    if (m_incorrect)
+    {
+        m_red_mark_widget->remove();
+        m_red_mark_widget = NULL;
+        m_incorrect = false;
+    }
+} // markAsCorrect
+
+// -----------------------------------------------------------------------------
+void SpinnerWidget::setRange(float min, float max, float step)
+{
+    clearLabels();
+    setStep(step);
+    setMin(min/step);
+    setMax(max/step);
 }
 
 // -----------------------------------------------------------------------------
@@ -60,6 +163,7 @@ void SpinnerWidget::add()
     std::string max_s = m_properties[PROP_MAX_VALUE];
 
     m_wrap_around = (m_properties[PROP_WRAP_AROUND] == "true");
+    m_color_slider = (m_properties[PROP_COLOR_SLIDER] == "true");
 
     if (min_s.size() > 0)
     {
@@ -105,22 +209,20 @@ void SpinnerWidget::add()
         widgetID = getNewID();
     }
 
-    rect<s32> widget_size = rect<s32>(m_x, m_y, m_x + m_w, m_y + m_h);
-    IGUIButton * btn = GUIEngine::getGUIEnv()->addButton(widget_size, m_parent, widgetID, L"");
+    // To be resized later
+    rect<s32> widget_size = rect<s32>(0, 0, 1, 1);
+    IGUIButton * btn = new SpinnerIrrElement(widget_size, m_parent, widgetID, this);
     m_element = btn;
 
     m_element->setTabOrder( m_element->getID() );
 
     // left arrow
-    rect<s32> subsize_left_arrow = rect<s32>(0 ,0, m_h, m_h);
-    IGUIButton * left_arrow = GUIEngine::getGUIEnv()->addButton(subsize_left_arrow, btn, getNewNoFocusID(), L" ");
+    IGUIButton * left_arrow = GUIEngine::getGUIEnv()->addButton(widget_size, btn, getNewNoFocusID(), L" ");
     m_children[0].m_element = left_arrow;
     left_arrow->setTabStop(false);
     m_children[0].m_event_handler = this;
     m_children[0].m_properties[PROP_ID] = "left";
     m_children[0].m_id = m_children[0].m_element->getID();
-
-    m_badge_x_shift = subsize_left_arrow.getWidth();
 
     // label
     if (m_graphical)
@@ -128,11 +230,7 @@ void SpinnerWidget::add()
         ITexture* texture = getTexture();
         assert(texture != NULL);
 
-        const int texture_width = texture->getSize().Width;
-        const int free_h_space = m_w - m_h*2 - texture_width; // to center image
-
-        rect<s32> subsize_label = rect<s32>(m_h + free_h_space/2, 0, m_w - m_h+ free_h_space/2, m_h);
-        IGUIImage * subbtn = GUIEngine::getGUIEnv()->addImage(subsize_label, btn, getNewNoFocusID());
+        IGUIImage * subbtn = GUIEngine::getGUIEnv()->addImage(widget_size, btn, getNewNoFocusID());
         m_children[1].m_element = subbtn;
         m_children[1].m_id = subbtn->getID();
         m_children[1].m_event_handler = this;
@@ -144,9 +242,8 @@ void SpinnerWidget::add()
     }
     else
     {
-        rect<s32> subsize_label = rect<s32>(m_h, 0, m_w - m_h, m_h);
         stringw text = stringw(m_value);
-        IGUIStaticText* label = GUIEngine::getGUIEnv()->addStaticText(text.c_str(), subsize_label,
+        IGUIStaticText* label = GUIEngine::getGUIEnv()->addStaticText(text.c_str(), widget_size,
                                                                       false /* border */, true /* word wrap */,
                                                                       btn, getNewNoFocusID());
         m_children[1].m_element = label;
@@ -156,24 +253,16 @@ void SpinnerWidget::add()
         label->setTextAlignment(EGUIA_CENTER, EGUIA_CENTER);
         label->setTabStop(false);
         label->setNotClipped(true);
-        label->setRightToLeft(translations->isRTLText(text));
-
 
         if (m_labels.size() > 0)
         {
             label->setText(m_labels[m_value].c_str() );
         }
-
-        if (widget_size.getHeight() < GUIEngine::getFontHeight())
-        {
-            label->setOverrideFont(GUIEngine::getSmallFont());
-        }
     }
 
 
     // right arrow
-    rect<s32> subsize_right_arrow = rect<s32>(m_w - m_h, 0, m_w, m_h);
-    IGUIButton * right_arrow = GUIEngine::getGUIEnv()->addButton(subsize_right_arrow, btn, getNewNoFocusID(), L"  ");
+    IGUIButton * right_arrow = GUIEngine::getGUIEnv()->addButton(widget_size, btn, getNewNoFocusID(), L"  ");
     right_arrow->setTabStop(false);
     m_children[2].m_element = right_arrow;
     m_children[2].m_event_handler = this;
@@ -181,8 +270,7 @@ void SpinnerWidget::add()
     m_children[2].m_id = m_children[2].m_element->getID();
 
     // refresh display
-
-
+    resize();
     setValue(m_value);
 }
 // -----------------------------------------------------------------------------
@@ -198,12 +286,14 @@ ITexture* SpinnerWidget::getTexture()
 
 // -----------------------------------------------------------------------------
 
-void SpinnerWidget::move(const int x, const int y, const int w, const int h)
+void SpinnerWidget::resize()
 {
-    Widget::move(x, y, w, h);
+    Widget::resize();
 
-    rect<s32> subsize_left_arrow = rect<s32>(0 ,0, h, h);
+    rect<s32> subsize_left_arrow = rect<s32>(0 ,0, m_h, m_h);
+    m_left_arrow = subsize_left_arrow;
     m_children[0].m_element->setRelativePosition(subsize_left_arrow);
+    m_badge_x_shift = subsize_left_arrow.getWidth();
 
     if (m_graphical)
     {
@@ -211,64 +301,106 @@ void SpinnerWidget::move(const int x, const int y, const int w, const int h)
         assert(texture != NULL);
 
         const int texture_width = texture->getSize().Width;
-        const int free_h_space = w-h*2-texture_width; // to center image
+        const int free_h_space = m_w-m_h*2-texture_width; // to center image
 
-        rect<s32> subsize_label = rect<s32>(h+free_h_space/2, 0, w-h+free_h_space/2, h);
+        rect<s32> subsize_label = rect<s32>(m_h+free_h_space/2, 0, m_w-m_h+free_h_space/2, m_h);
         m_children[1].m_element->setRelativePosition(subsize_label);
     }
     else
     {
-        rect<s32> subsize_label = rect<s32>(h, 0, w-h, h);
-        m_children[1].m_element->setRelativePosition(subsize_label);
+        resizeLabel();
     }
 
-    rect<s32> subsize_right_arrow = rect<s32>(w-h, 0, w, h);
+    rect<s32> subsize_right_arrow = rect<s32>(m_w-m_h, 0, m_w, m_h);
     m_children[2].m_element->setRelativePosition(subsize_right_arrow);
-}
+} // resize
+
+// -----------------------------------------------------------------------------
+
+/** Pick the appropriate font size to display the current spinner label */
+void SpinnerWidget::resizeLabel()
+{
+    if (m_graphical) // Don't proceed further if this spinner doesn't use labels
+        return;
+
+    rect<s32> subsize_label = rect<s32>(m_h, 0, m_w - m_h, m_h);
+    IGUIStaticText* label = static_cast<IGUIStaticText*>(m_children[1].m_element);
+    label->setRelativePosition(subsize_label);
+    if ( (m_h < GUIEngine::getFontHeight()) ||
+         ((int)GUIEngine::getFont()->getDimension(label->getText()).Width > (m_w - 2 * m_h)) )
+    {
+        label->setOverrideFont(GUIEngine::getSmallFont());
+    }
+    else
+    {
+        label->setOverrideFont(NULL);
+    }
+} // resizeLabel
 
 // -----------------------------------------------------------------------------
 
 EventPropagation SpinnerWidget::rightPressed(const int playerID)
 {
+    //Log::info("SpinnerWidget", "Right pressed");
+
     // if widget is deactivated, do nothing
     if (m_deactivated) return EVENT_BLOCK;
 
-    //Log::info("SpinnerWidget", "Right pressed");
-    if (m_value+1 <= m_max)
-    {
-        setValue(m_value+1);
-    }
-    else if (m_wrap_around)
-    {
-        setValue(m_min);
-    }
+    // if right arrow is selected, let event handler move to next widget
+    if (m_right_selected)
+        return EVENT_BLOCK;
+    else
+        setSelectedButton(/* right*/ true);
 
-    //GUIEngine::transmitEvent( this, m_properties[PROP_ID], playerID );
-
-    return EVENT_LET;
-}
+    return EVENT_BLOCK_BUT_HANDLED;
+} // rightPressed
 
 // -----------------------------------------------------------------------------
 
 EventPropagation SpinnerWidget::leftPressed(const int playerID)
 {
+    //Log::info("SpinnerWidget", "Left pressed");
+
     // if widget is deactivated, do nothing
     if (m_deactivated) return EVENT_BLOCK;
 
-    //Log::info("SpinnerWidget", "Left pressed");
-    if (m_value-1 >= m_min)
+    // if left arrow is selected, let event handler move to next widget
+    if (m_left_selected)
+        return EVENT_BLOCK;
+    else
+        setSelectedButton(/* right*/ false);
+
+    return EVENT_BLOCK_BUT_HANDLED;
+} // leftPressed
+
+void SpinnerWidget::activateSelectedButton()
+{
+    if (m_right_selected)
     {
-        setValue(m_value-1);
+        if (m_value+1 <= m_max)
+        {
+            setValue(m_value+1);
+        }
+        else if (m_wrap_around)
+        {
+            setValue(m_min);
+        }
     }
-    else if (m_wrap_around)
+    else if (m_left_selected)
     {
-        setValue(m_max);
+        if (m_value-1 >= m_min)
+        {
+            setValue(m_value-1);
+        }
+        else if (m_wrap_around)
+        {
+            setValue(m_max);
+        }
     }
 
-    //GUIEngine::transmitEvent( this, m_properties[PROP_ID], playerID );
-
-    return EVENT_LET;
-}
+    // Update the label font size if needed
+    resizeLabel();
+} // activateSelectedButton
 
 // -----------------------------------------------------------------------------
 
@@ -283,11 +415,15 @@ EventPropagation SpinnerWidget::transmitEvent(Widget* w,
 
     if (originator == "left")
     {
-        leftPressed(playerID);
+        m_left_selected = true;
+        m_right_selected = false;
+        activateSelectedButton();
     }
     else if (originator == "right")
     {
-        rightPressed(playerID);
+        m_left_selected = false;
+        m_right_selected = true;
+        activateSelectedButton();
     }
     else if (originator == "spinnerbody" || originator == m_properties[PROP_ID])
     {
@@ -318,7 +454,7 @@ void SpinnerWidget::addLabel(stringw label)
 {
     m_labels.push_back(label);
     m_min = 0;
-    m_max = m_labels.size()-1;
+    m_max = (int)m_labels.size()-1;
 
     if (m_element != NULL) setValue(0);
 }
@@ -328,7 +464,7 @@ void SpinnerWidget::addLabel(stringw label)
 void SpinnerWidget::setValue(const int new_value)
 {
     m_value = new_value;
-    m_customText = "";
+    m_custom_text = "";
 
     if (m_graphical)
     {
@@ -336,12 +472,13 @@ void SpinnerWidget::setValue(const int new_value)
         std::string imagefile = file_manager->searchTexture(s);
         ((IGUIImage*)(m_children[1].m_element))->setImage(irr_driver->getTexture(imagefile));
     }
-    else if (m_labels.size() > 0 && m_children.size() > 0 && !m_deactivated)
+    else if (m_labels.size() > 0 && m_children.size() > 0)
     {
         assert(new_value >= 0);
         assert(new_value < (int)m_labels.size());
 
         m_children[1].m_element->setText(m_labels[new_value].c_str());
+        resizeLabel();
     }
     else if (m_text.size() > 0 && m_children.size() > 0)
     {
@@ -350,7 +487,17 @@ void SpinnerWidget::setValue(const int new_value)
     }
     else if (m_children.size() > 0)
     {
-        m_children[1].m_element->setText( stringw(m_value).c_str() );
+        if (m_step == 1.0)
+        {
+            m_children[1].m_element->setText( stringw(m_value).c_str() );
+        }
+        else
+        {
+            std::wstringstream ws;
+            ws << (m_value*m_step);
+            std::wstring text = ws.str();
+            m_children[1].m_element->setText( text.c_str() );
+        }
     }
 }
 
@@ -367,11 +514,7 @@ stringw SpinnerWidget::getStringValue() const
         stringw text = StringUtils::insertValues(m_text.c_str(), m_value);
         return text;
     }
-    else
-    {
-        assert(false);
-    }
-    /** To avoid compiler warnings about missing return statements. */
+    // This can happen if the spinner has not been initialized yet.
     return "";
 }
 
@@ -385,6 +528,7 @@ void SpinnerWidget::setValue(irr::core::stringw new_value)
         if (m_labels[n] == new_value)
         {
             setValue(n);
+            resizeLabel();
             return;
         }
     }
@@ -402,30 +546,21 @@ void SpinnerWidget::setActive(bool active)
     if (active)
     {
         setText(L"");
-        if (m_customText.empty())
+        if (m_custom_text.empty())
         {
             setValue(getValue()); // Update the display
         }
         else
         {
-            setCustomText(m_customText);
+            setCustomText(m_custom_text);
         }
-    }
-    else
-    {
-        // Save it temporary because setValue(which is uses for update in
-        // this case) overwrites it
-        core::stringw customText = m_customText;
-        setText(L"-");
-        setValue(getValue()); // Update the display
-        m_customText = customText;
     }
 }   // setActive
 
 // -----------------------------------------------------------------------------
 void SpinnerWidget::setCustomText(const core::stringw& text)
 {
-    m_customText = text;
+    m_custom_text = text;
     if (m_children.size() > 0)
     {
         m_children[1].m_element->setText(text.c_str());
@@ -434,19 +569,17 @@ void SpinnerWidget::setCustomText(const core::stringw& text)
 
 // -----------------------------------------------------------------------------
 
-void SpinnerWidget::onClick()
+void SpinnerWidget::onPressed(int x, int y)
 {
-    if (m_children[1].m_deactivated || 
-        m_children[1].m_properties[PROP_ID] != "spinnerbody"  || 
-        !isGauge()) 
-    { 
-        return; 
+    if (m_children[1].m_deactivated ||
+        m_children[1].m_properties[PROP_ID] != "spinnerbody"  ||
+        !isGauge())
+    {
+        return;
     }
 
-    const core::position2di mouse_position
-        = irr_driver->getDevice()->getCursorControl()->getPosition();
-
-    core::recti body_rect 
+    core::position2di mouse_position(x, y);
+    core::recti body_rect
         = m_children[1].getIrrlichtElement()->getAbsolutePosition();
 
     if (body_rect.isPointInside(mouse_position))

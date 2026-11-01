@@ -25,16 +25,16 @@
 #include "utils/synchronised.hpp"
 #include "utils/vec3.hpp"
 
+#include <condition_variable>
 #include <map>
 #include <string>
+#include <thread>
+
 #include <vector>
 
-#if HAVE_OGGVORBIS
-#  ifdef __APPLE__
-#    include <OpenAL/al.h>
-#  else
-#    include <AL/al.h>
-#  endif
+#ifdef ENABLE_SOUND
+#  include <AL/al.h>
+#  include <AL/alc.h>
 #else
   typedef unsigned int ALuint;
 #endif
@@ -95,7 +95,7 @@ public:
       *  Entries for custom SFX sounds.  These are unique for each kart.
       * eg. kart->playCustomSFX(SFX_MANAGER::CUSTOM_HORN)
       */
-    enum CustomSFX
+    enum CustomSFX : int
     {
         CUSTOM_HORN,    //!< Replaces default horn
         CUSTOM_CRASH,   //!< Played when colliding with another kart
@@ -112,7 +112,7 @@ public:
 
 private:
 
-    /** Data structure for the queue, which stores a sfx and the command to 
+    /** Data structure for the queue, which stores a sfx and the command to
      *  execute for it. */
     class SFXCommand : public NoCopy
     {
@@ -121,6 +121,9 @@ private:
     public:
         /** The sound effect for which the command should be executed. */
         SFXBase *m_sfx;
+
+        /** The sound buffer to play (null = no change) */
+        SFXBuffer *m_buffer = NULL;
 
         /** Stores music information for music commands. */
         MusicInformation *m_music_information;
@@ -212,19 +215,21 @@ private:
     /** Master gain value, taken from the user config value. */
     float                     m_master_gain;
 
+#ifndef __SWITCH__
     /** Thread id of the thread running in this object. */
-    Synchronised<pthread_t *> m_thread_id;
+    std::thread               m_thread;
+#endif
 
-    double                    m_last_update_time;
+    uint64_t                  m_last_update_time;
 
     /** A conditional variable to wake up the main loop. */
-    pthread_cond_t            m_cond_request;
+    std::condition_variable   m_condition_variable;
 
     void                      loadSfx();
                              SFXManager();
     virtual                 ~SFXManager();
 
-    static void* mainLoop(void *obj);
+    static void mainLoop(void *obj);
     void deleteSFX(SFXBase *sfx);
     void queueCommand(SFXCommand *command);
     void reallyPositionListenerNow();
@@ -232,17 +237,18 @@ private:
 public:
     static void create();
     static void destroy();
-    void queue(SFXCommands command,  SFXBase *sfx=NULL);
-    void queue(SFXCommands command,  SFXBase *sfx, float f);
-    void queue(SFXCommands command,  SFXBase *sfx, const Vec3 &p);
-    void queue(SFXCommands command,  SFXBase *sfx, float f, const Vec3 &p);
-    void queue(SFXCommands command,  MusicInformation *mi);
-    void queue(SFXCommands command,  MusicInformation *mi, float f);
+    void queue(SFXCommands command, SFXBase *sfx=NULL);
+    void queue(SFXCommands command, SFXBase *sfx, float f);
+    void queue(SFXCommands command, SFXBase *sfx, const Vec3 &p);
+    void queue(SFXCommands command, SFXBase *sfx, float f, const Vec3 &p);
+    void queue(SFXCommands command, MusicInformation *mi);
+    void queue(SFXCommands command, MusicInformation *mi, float f);
+    void queue(SFXCommands command, SFXBase *sfx, const Vec3 &p, SFXBuffer* buffer);
+
     // ------------------------------------------------------------------------
     /** Static function to get the singleton sfx manager. */
     static SFXManager *get()
     {
-        assert(m_sfx_manager);
         return m_sfx_manager;
     }   // get
 
@@ -256,7 +262,7 @@ public:
                                           const std::string &filename,
                                           bool               positional,
                                           float              rolloff,
-                                          float              max_width,
+                                          float              max_dist,
                                           float              gain,
                                           const bool         load = true);
 
@@ -294,8 +300,11 @@ public:
 
     // ------------------------------------------------------------------------
     /** Returns the current position of the listener. */
-    Vec3 getListenerPos() const { return m_listener_position.getData(); }
+    Vec3 getListenerPos() const { return m_listener_position.getAtomic(); }
 
+    // ------------------------------------------------------------------------
+
+    SFXBuffer* getBuffer(const std::string &name);
 };
 
 #endif // HEADER_SFX_MANAGER_HPP

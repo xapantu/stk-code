@@ -23,11 +23,15 @@
 #include "config/user_config.hpp"
 #include "guiengine/message_queue.hpp"
 #include "guiengine/screen.hpp"
+#include "io/xml_node.hpp"
+#include "network/network_config.hpp"
 #include "online/online_profile.hpp"
 #include "online/profile_manager.hpp"
+#include "online/request_manager.hpp"
+#include "online/xml_request.hpp"
 #include "states_screens/main_menu_screen.hpp"
-#include "states_screens/online_profile_friends.hpp"
-#include "states_screens/user_screen.hpp"
+#include "states_screens/online/online_profile_friends.hpp"
+#include "states_screens/options/user_screen.hpp"
 #include "states_screens/dialogs/change_password_dialog.hpp"
 #include "states_screens/dialogs/user_info_dialog.hpp"
 #include "utils/log.hpp"
@@ -43,13 +47,33 @@ using namespace Online;
 
 namespace Online
 {
+    namespace PrivateRequest
+    {
+        // ----------------------------------------------------------------
+        class SignInRequest : public XMLRequest
+        {
+            virtual void callback();
+            irr::core::stringw getLocalizedInfo() const;
+        public:
+            SignInRequest()
+                : XMLRequest(/*priority*/10) {}
+        };   // SignInRequest
+
+        // ----------------------------------------------------------------
+        class PollRequest : public XMLRequest
+        {
+            virtual void callback();
+        public:
+            PollRequest();
+        };   // PollRequest
+    }
     // ------------------------------------------------------------------------
     /** Adds the login credential to a http request. It sets the name of
      *  the script to invokce, token, and user id.
      *  \param request The http request.
      *  \param action the action performed
      */
-    void OnlinePlayerProfile::setUserDetails(HTTPRequest *request,
+    void OnlinePlayerProfile::setUserDetails(std::shared_ptr<HTTPRequest> request,
                                              const std::string &action,
                                              const std::string &url_path) const
     {
@@ -84,17 +108,15 @@ namespace Online
         m_online_state = OS_SIGNED_OUT;
         m_token        = "";
         m_profile      = NULL;
-
     }   // OnlinePlayerProfile
 
     // ------------------------------------------------------------------------
     /** Request a login using the saved credentials of the user. */
     void OnlinePlayerProfile::requestSavedSession()
     {
-        SignInRequest *request = NULL;
         if (m_online_state == OS_SIGNED_OUT && hasSavedSession())
         {
-            request = new SignInRequest(true);
+            auto request = std::make_shared<PrivateRequest::SignInRequest>();
             setUserDetails(request, "saved-session");
 
             // The userid must be taken from the saved data,
@@ -111,15 +133,15 @@ namespace Online
      *  \param username Name of user.
      *  \param password Password.
      */
-    OnlinePlayerProfile::SignInRequest*
-        OnlinePlayerProfile::requestSignIn(const core::stringw &username,
+    void OnlinePlayerProfile::requestSignIn(const core::stringw &username,
                                            const core::stringw &password)
     {
-        // If the player changes the online account, there can be a
-        // logout stil happening.
-        assert(m_online_state == OS_SIGNED_OUT ||
-               m_online_state == OS_SIGNING_OUT);
-        SignInRequest * request = new SignInRequest(false);
+        // Avoid multiple sign in requests from happening at once,
+        // this can occur for example when using the enter key to request a sign-in.
+        if (m_online_state != OS_SIGNED_OUT && m_online_state != OS_SIGNING_OUT)
+            return;
+
+        auto request = std::make_shared<PrivateRequest::SignInRequest>();
 
         // We can't use setUserDetail here, since there is no token yet
         request->setApiURL(API::USER_PATH, "connect");
@@ -130,14 +152,12 @@ namespace Online
                                                  : "false");
         request->queue();
         m_online_state = OS_SIGNING_IN;
-
-        return request;
     }   // requestSignIn
 
     // ------------------------------------------------------------------------
     /** Called when the signin request is finished.
      */
-    void OnlinePlayerProfile::SignInRequest::callback()
+    void PrivateRequest::SignInRequest::callback()
     {
         PlayerManager::getCurrentPlayer()->signIn(isSuccess(), getXMLData());
         GUIEngine::Screen *screen = GUIEngine::getCurrentScreen();
@@ -152,8 +172,7 @@ namespace Online
                 PlayerProfile *player = PlayerManager::get()->getPlayer(i);
                 if(player != current &&
                     player->hasSavedSession() &&
-                    player->getLastOnlineName(true/*ignoreRTL*/) ==
-                    current->getLastOnlineName(true/*ignoreRTL*/))
+                    player->getLastOnlineName() == current->getLastOnlineName())
                 {
                     player->clearSession();
                 }
@@ -161,13 +180,14 @@ namespace Online
         }
 
         // Test if failure while showing user login screen
+#ifndef SERVER_ONLY // No GUI files in server builds
         BaseUserScreen *login = dynamic_cast<BaseUserScreen*>(screen);
         if (login)
         {
             if(isSuccess())
                 login->loginSuccessful();
             else
-                login->loginError(getInfo());
+                login->loginError(getLocalizedInfo(), !hadDownloadError());
         }   // if dialog
 
         // Check if failure happened during automatic (saved) signin.
@@ -180,19 +200,52 @@ namespace Online
                 // to inform user that login failed.
                 // Same thing if a dialog is active, can't navigate to other
                 // screen when a dialog is active
-                MessageQueue::add(MessageQueue::MT_ERROR, getInfo());
+                MessageQueue::add(MessageQueue::MT_ERROR, getLocalizedInfo());
                 return;
             }
 
             // User still at main menu screen, push user screen. Note that
-            // this function is called from the main thread, so we can 
+            // this function is called from the main thread, so we can
             // push screens without synchronisations.
             UserScreen::getInstance()->push();
-            UserScreen::getInstance()->loginError(getInfo());
+            UserScreen::getInstance()->loginError(getLocalizedInfo(),
+                !hadDownloadError());
         }
-
-
+#endif
     }   // SignInRequest::callback
+
+    // ------------------------------------------------------------------------
+    /** \return the info string, translated if possible.
+     */
+    irr::core::stringw PrivateRequest::SignInRequest::getLocalizedInfo() const
+    {
+        irr::core::stringw info = getInfo();
+        irr::core::stringw password_length = "The password must be between 8 and 60 characters long";
+        irr::core::stringw username_char =
+            "Your username can only contain alphanumeric characters, periods, dashes and underscores";
+        irr::core::stringw username_present = "Username required";
+        irr::core::stringw username_length = "The username must be between 3 and 30 characters long";
+        irr::core::stringw invalid_credentials = "Username or password is invalid";
+        irr::core::stringw session_expired = "Session not valid. Please sign in.";
+
+        // We localize the string from the server if possible ; a 0 from wcscmp indicates a string match
+        // TODO: it would be better to simply have the server send error codes,
+        //       however this solution doesn't require a server-side change or more importantly
+        //       doesn't prevent previous STK versions from interpreting the server message.
+        if (wcscmp(info.c_str(), password_length.c_str()) == 0)
+            info = _("The password must be between %i and %i characters long!", 8, 60);
+        else if (wcscmp(info.c_str(), username_char.c_str()) == 0)
+            info = _("The online username can only contain alphanumeric characters, periods, dashes and underscores!");
+        else if (wcscmp(info.c_str(), username_present.c_str()) == 0 ||
+                 wcscmp(info.c_str(), username_length.c_str()) == 0)
+            info = _("The online username must be between %i and %i characters long!", 3, 30);
+        else if (wcscmp(info.c_str(), invalid_credentials.c_str()) == 0)
+            info = _("The username or the password is invalid!");
+        else if (wcscmp(info.c_str(), session_expired.c_str()) == 0)
+            info = _("Your user session is invalid, please sign in.");
+
+        return info;
+    }   // getLocalizedInfo
 
     // ------------------------------------------------------------------------
     /** Checks the server respond after a login attempt. If the login
@@ -209,9 +262,21 @@ namespace Online
             core::stringw username("");
             uint32_t userid(0);
 
+#ifdef DEBUG
             int token_fetched       = input->get("token", &m_token);
             int username_fetched    = input->get("username", &username);
             int userid_fetched      = input->get("userid", &userid);
+            assert(token_fetched && username_fetched && userid_fetched);
+#else
+            input->get("token", &m_token);
+            input->get("username", &username);
+            input->get("userid", &userid);
+#endif
+            if (NetworkConfig::get()->getServerIdFile().empty())
+            {
+                NetworkConfig::get()->setCurrentUserId(userid);
+                NetworkConfig::get()->setCurrentUserToken(m_token);
+            }
             setLastOnlineName(username);
 
             OnlineProfile* profile = new OnlineProfile(userid, username, true);
@@ -219,10 +284,10 @@ namespace Online
             // existing profile, and then delete profile. Only the returned
             // pointer is save to use.
             m_profile = ProfileManager::get()->addPersistent(profile);
-            assert(token_fetched && username_fetched && userid_fetched);
             m_online_state = OS_SIGNED_IN;
             if(rememberPassword())
             {
+                setWasOnlineLastTime(true);
                 saveSession(getOnlineId(), getToken());
             }
 
@@ -269,18 +334,17 @@ namespace Online
              *  happens before a following logout.
              */
             SignOutRequest(PlayerProfile *player)
-                        : XMLRequest(true,/*priority*/RequestManager::HTTP_MAX_PRIORITY)
+                        : XMLRequest(/*priority*/RequestManager::HTTP_MAX_PRIORITY)
             {
                 m_player = player;
-                m_player->setUserDetails(this,
-                    m_player->rememberPassword() ? "client-quit"
-                                                 : "disconnect");
                 setAbortable(false);
             }   // SignOutRequest
         };   // SignOutRequest
         // ----------------------------------------------------------------
 
-        HTTPRequest *request = new SignOutRequest(this);
+        auto request = std::make_shared<SignOutRequest>(this);
+        setUserDetails(request,
+            rememberPassword() ? "client-quit" : "disconnect");
         request->queue();
         m_online_state = OS_SIGNING_OUT;
     }   // requestSignOut
@@ -293,8 +357,10 @@ namespace Online
     void OnlinePlayerProfile::signOut(bool success, const XMLNode *input,
                                       const irr::core::stringw &info)
     {
+#ifndef SERVER_ONLY // No GUI files in server builds
         GUIEngine::Screen *screen = GUIEngine::getCurrentScreen();
         BaseUserScreen *user_screen = dynamic_cast<BaseUserScreen*>(screen);
+#endif
 
         // We can't do much of error handling here, no screen waits for
         // a logout to finish, so we can only log the message to screen,
@@ -305,6 +371,7 @@ namespace Online
                       "There were some connection issues while logging out. "
                       "Report a bug if this caused issues.");
             Log::warn("OnlinePlayerProfile::signOut", core::stringc(info.c_str()).c_str());
+#ifndef SERVER_ONLY // No GUI files in server builds
             if (user_screen)
                 user_screen->logoutError(info);
         }
@@ -312,6 +379,7 @@ namespace Online
         {
             if (user_screen)
                 user_screen->logoutSuccessful();
+#endif
         }
 
         ProfileManager::get()->clearPersistent();
@@ -331,16 +399,22 @@ namespace Online
     {
         assert(m_online_state == OS_SIGNED_IN);
 
-        OnlinePlayerProfile::PollRequest *request = new OnlinePlayerProfile::PollRequest();
+        auto request = std::make_shared<PrivateRequest::PollRequest>();
         setUserDetails(request, "poll");
         request->queue();
     }   // requestPoll()
 
     // ------------------------------------------------------------------------
+    PrivateRequest::PollRequest::PollRequest()
+                       : XMLRequest()
+    {
+    }   // PollRequest
+
+    // ------------------------------------------------------------------------
     /** Callback for the poll request. Parses the information and spawns
      *  notifications accordingly.
      */
-    void OnlinePlayerProfile::PollRequest::callback()
+    void PrivateRequest::PollRequest::callback()
     {
         // connection error
         if (!isSuccess())
@@ -390,7 +464,7 @@ namespace Online
                      OnlineProfile::RelationInfo * relation_info =
                                                 profile->getRelationInfo();
 
-                     if (relation_info->isOnline())
+                     if (relation_info && relation_info->isOnline())
                      {
                          if (!now_online) // the friend went offline
                          {
@@ -398,7 +472,7 @@ namespace Online
                              went_offline = true;
                          }
                      }
-                     else
+                     else if (relation_info)
                      {
                          if (now_online) // friend came online
                          {
@@ -414,27 +488,29 @@ namespace Online
 
                 if (to_notify.size() > 0)
                 {
+                    int num_friends = to_notify.size();
                     core::stringw message("");
-                    if(to_notify.size() == 1)
+                    if(num_friends == 1)
                     {
                         message = _("%s is now online.", to_notify[0]);
                     }
-                    else if(to_notify.size() == 2)
+                    else if(num_friends == 2)
                     {
                         message = _("%s and %s are now online.",
                                     to_notify[0], to_notify[1]    );
                     }
-                    else if(to_notify.size() == 3)
+                    else if(num_friends == 3)
                     {
                         message = _("%s, %s and %s are now online.",
                                  to_notify[0], to_notify[1], to_notify[2]);
                     }
-                    else if(to_notify.size() > 3)
+                    else if(num_friends > 3)
                     {
                         //I18N: Only used for count > 3
-                        message = _P("%d friend is now online.",
-                                     "%d friends are now online.",
-                                     (int)to_notify.size());
+                        message = _P("%i friend is now online.",
+                                     "%i friends are now online.",
+                                     /* to pick the plural form */ num_friends,
+                                     /* to insert in the final string */ num_friends);
                     }
                     MessageQueue::add(MessageQueue::MT_FRIEND, message);
                 }
@@ -443,6 +519,49 @@ namespace Online
                     OnlineProfileFriends::getInstance()->refreshFriendsList();
                 }
             }
+
+            std::map<uint32_t, core::stringw> friend_server_map;
+            for (unsigned int i = 0; i < getXMLData()->getNumNodes(); i++)
+            {
+                const XMLNode * node = getXMLData()->getNode(i);
+                if (node->getName() == "friend-in-server")
+                {
+                    uint32_t id = 0;
+                    std::string server_name;
+                    node->get("id", &id);
+                    node->get("name", &server_name);
+                    friend_server_map[id] =
+                        StringUtils::xmlDecode(server_name);
+                }
+            }
+            std::vector<std::pair<core::stringw, core::stringw> >
+                friend_server_notify;
+            std::map<uint32_t, core::stringw>& cur_friend_server_map =
+                PlayerManager::getCurrentPlayer()->getProfile()
+                ->getFriendServerMap();
+            for (auto& p : friend_server_map)
+            {
+                if (friend_server_notify.size() > 3)
+                    break;
+                uint32_t uid = p.first;
+                const core::stringw& server_name = p.second;
+                if ((cur_friend_server_map.find(uid) ==
+                    cur_friend_server_map.end() ||
+                    cur_friend_server_map.at(uid) != server_name) &&
+                    ProfileManager::get()->getProfileByID(uid) != NULL)
+                {
+                    friend_server_notify.emplace_back(ProfileManager::get()
+                        ->getProfileByID(uid)->getUserName(), server_name);
+                }
+            }
+            for (auto& p : friend_server_notify)
+            {
+                // I18N: Tell your friend if he is on any server in game
+                core::stringw message = _("%s is now on server \"%s\".",
+                    p.first, p.second);
+                MessageQueue::add(MessageQueue::MT_FRIEND, message);
+            }
+            std::swap(cur_friend_server_map, friend_server_map);
         }
         else
         {
@@ -471,7 +590,8 @@ namespace Online
             {
                 message = _P("You have %d new friend request!",
                              "You have %d new friend requests!",
-                             friend_request_count);
+                            /* to pick the plural form */ friend_request_count,
+                            /* to insert in the final string */ friend_request_count);
             }
             else
             {
@@ -480,6 +600,8 @@ namespace Online
 
             MessageQueue::add(MessageQueue::MT_FRIEND, message);
             OnlineProfileFriends::getInstance()->refreshFriendsList();
+            PlayerManager::getCurrentPlayer()->getProfile()
+                ->unsetHasFetchedFriends();
         }
     }   // PollRequest::callback
 

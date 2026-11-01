@@ -35,7 +35,16 @@ namespace GUIEngine
     enum EventPropagation
     {
         EVENT_BLOCK,
+        EVENT_BLOCK_BUT_HANDLED,
         EVENT_LET
+    };
+
+    enum NavigationDirection
+    {
+        NAV_LEFT,
+        NAV_RIGHT,
+        NAV_UP,
+        NAV_DOWN
     };
 
     class Widget;
@@ -61,8 +70,8 @@ namespace GUIEngine
         bool m_accept_events;
         
         EventPropagation onGUIEvent(const irr::SEvent& event);
-        EventPropagation onWidgetActivated(Widget* w, const int playerID);
-        void navigate(const int playerID, Input::InputType type, const bool pressedDown, const bool reverse);
+        EventPropagation onWidgetActivated(Widget* w, const int playerID, Input::InputType type);
+        void navigate(const NavigationDirection nav, Widget* starting_widget, const int playerID);
 
         /** \brief          send an event to the GUI module user's event callback
           * \param widget   the widget that triggerred this event
@@ -95,6 +104,8 @@ namespace GUIEngine
         void processGUIAction(const PlayerAction action, int deviceID, const unsigned int value,
                               Input::InputType type, const int playerID);
 
+        void sendNavigationEvent(const NavigationDirection nav, const int playerID);
+
         /** Get the mouse position */
         const irr::core::vector2di& getMousePos() const { return m_mouse_pos; }
 
@@ -102,7 +113,9 @@ namespace GUIEngine
         static EventHandler* get();
         static void deallocate();
         
-        void startAcceptingEvents() { m_accept_events = true; }
+        void setAcceptEvents(bool value) { m_accept_events = value; }
+        int findIDClosestWidget(const NavigationDirection nav, const int playerID,
+                                Widget* w, bool ignore_disabled, int recursion_counter=0);
     };
 
 }

@@ -31,7 +31,7 @@ HitSFX::HitSFX(const Vec3& coord, const char* explosion_sound)
     // in multiplayer mode, sounds are NOT positional (because we have
     // multiple listeners) so the sounds of all AIs are constantly heard.
     // Therefore reduce volume of sounds.
-    float vol = race_manager->getNumLocalPlayers() > 1 ? 0.5f : 1.0f;
+    float vol = RaceManager::get()->getNumLocalPlayers() > 1 ? 0.5f : 1.0f;
     m_sfx->setVolume(vol);
     m_sfx->play(coord);
 }   // HitSFX
@@ -51,7 +51,7 @@ HitSFX::~HitSFX()
  */
 void HitSFX::setLocalPlayerKartHit()
 {
-    if(race_manager->getNumLocalPlayers())
+    if(RaceManager::get()->getNumLocalPlayers())
         m_sfx->setVolume(1.0f);
 }   // setLocalPlayerKartHit
 
@@ -61,7 +61,7 @@ void HitSFX::setLocalPlayerKartHit()
  *  \param dt Time step size.
  *  \return true If the explosion is finished.
  */
-bool HitSFX::updateAndDelete(float dt)
+bool HitSFX::updateAndDelete(int ticks)
 {
     SFXBase::SFXStatus status = m_sfx->getStatus();
     return status!= SFXBase::SFX_PLAYING;

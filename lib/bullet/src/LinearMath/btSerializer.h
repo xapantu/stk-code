@@ -213,7 +213,7 @@ protected:
 
 			int *intPtr=0;
 			short *shtPtr=0;
-#ifdef __MINGW64__
+#if defined(__MINGW64__) || defined(_WIN64) 
 			char *cp = 0;int dataLen =0;intptr_t nr=0;
 #else
 			char *cp = 0;int dataLen =0;long nr=0;
@@ -251,7 +251,7 @@ protected:
 				cp++;
 			}
 			{
-#ifdef __MINGW64__
+#if defined(__MINGW64__) || defined(_WIN64)
 				nr= (intptr_t)cp;
 #else
 				nr= (long)cp;
@@ -290,7 +290,7 @@ protected:
 			}
 
 		{
-#ifdef __MINGW64__
+#if defined(__MINGW64__) || defined(_WIN64)
 				nr= (intptr_t)cp;
 #else
 				nr= (long)cp;
@@ -486,7 +486,7 @@ public:
 			writeDNA();
 
 			//if we didn't pre-allocate a buffer, we need to create a contiguous buffer now
-			int mysize = 0;
+			//int mysize = 0;
 			if (!m_totalSize)
 			{
 				if (m_buffer)
@@ -498,14 +498,14 @@ public:
 				unsigned char* currentPtr = m_buffer;
 				writeHeader(m_buffer);
 				currentPtr += BT_HEADER_LENGTH;
-				mysize+=BT_HEADER_LENGTH;
+				//mysize+=BT_HEADER_LENGTH;
 				for (int i=0;i<	m_chunkPtrs.size();i++)
 				{
 					int curLength = sizeof(btChunk)+m_chunkPtrs[i]->m_length;
 					memcpy(currentPtr,m_chunkPtrs[i], curLength);
 					btAlignedFree(m_chunkPtrs[i]);
 					currentPtr+=curLength;
-					mysize+=curLength;
+					//mysize+=curLength;
 				}
 			}
 

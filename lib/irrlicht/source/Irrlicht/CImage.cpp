@@ -457,6 +457,15 @@ inline SColor CImage::getPixelBox( s32 x, s32 y, s32 fx, s32 fy, s32 bias ) cons
 	return c;
 }
 
+void CImage::setDeleteMemory(bool val)
+{
+	DeleteMemory = val;
+}
+
+void CImage::setMemory(u8* memory)
+{
+	Data = memory;
+}
 
 } // end namespace video
 } // end namespace irr

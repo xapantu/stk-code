@@ -10,7 +10,6 @@
 #include "IGUIFont.h"
 #include "IVideoDriver.h"
 #include "rect.h"
-#include "utfwrapping.h"
 
 namespace irr
 {
@@ -18,16 +17,16 @@ namespace gui
 {
 
 //! constructor
-CGUIStaticText::CGUIStaticText(const wchar_t* text, bool border,
+CGUIStaticText::CGUIStaticText(const core::stringw& text, bool border,
 			IGUIEnvironment* environment, IGUIElement* parent,
 			s32 id, const core::rect<s32>& rectangle,
 			bool background)
 : IGUIStaticText(environment, parent, id, rectangle),
 	HAlign(EGUIA_UPPERLEFT), VAlign(EGUIA_UPPERLEFT),
 	Border(border), OverrideColorEnabled(false), OverrideBGColorEnabled(false), WordWrap(false), Background(background),
-	RestrainTextInside(true), RightToLeft(false),
+	RestrainTextInside(true),
 	OverrideColor(video::SColor(101,255,255,255)), BGColor(video::SColor(101,210,210,210)),
-	OverrideFont(0), LastBreakFont(0)
+	OverrideFont(0), LastBreakFont(0), m_use_glyph_layouts_only(false)
 {
 	#ifdef _DEBUG
 	setDebugName("CGUIStaticText");
@@ -80,63 +79,24 @@ void CGUIStaticText::draw()
 		frameRect.UpperLeftCorner.X += skin->getSize(EGDS_TEXT_DISTANCE_X);
 	}
 
-	// draw the text
-	if (Text.size())
+	// draw the text layout
+	if (!m_glyph_layouts.empty())
 	{
 		IGUIFont* font = getActiveFont();
 
 		if (font)
 		{
-			if (!WordWrap)
-			{
-				if (VAlign == EGUIA_LOWERRIGHT)
-				{
-					frameRect.UpperLeftCorner.Y = frameRect.LowerRightCorner.Y -
-						font->getDimension(L"A").Height - font->getKerningHeight();
-				}
-				if (HAlign == EGUIA_LOWERRIGHT)
-				{
-					frameRect.UpperLeftCorner.X = frameRect.LowerRightCorner.X -
-						font->getDimension(Text.c_str()).Width;
-				}
+			if (font != LastBreakFont)
+				breakText();
 
-				font->draw(Text.c_str(), frameRect,
-					OverrideColorEnabled ? OverrideColor : skin->getColor(isEnabled() ? EGDC_BUTTON_TEXT : EGDC_GRAY_TEXT),
-					HAlign == EGUIA_CENTER, VAlign == EGUIA_CENTER, (RestrainTextInside ? &AbsoluteClippingRect : NULL));
-			}
-			else
-			{
-				if (font != LastBreakFont)
-					breakText();
+			core::rect<s32> r = frameRect;
+			bool hcenter;
+			const core::rect<s32>* clip;
+			getDrawPosition(&r, &hcenter, &clip);
 
-				core::rect<s32> r = frameRect;
-				s32 height = font->getDimension(L"A").Height + font->getKerningHeight();
-				s32 totalHeight = height * BrokenText.size();
-				if (VAlign == EGUIA_CENTER)
-				{
-					r.UpperLeftCorner.Y = r.getCenter().Y - (totalHeight / 2);
-				}
-				else if (VAlign == EGUIA_LOWERRIGHT)
-				{
-					r.UpperLeftCorner.Y = r.LowerRightCorner.Y - totalHeight;
-				}
-
-				for (u32 i=0; i<BrokenText.size(); ++i)
-				{
-					if (HAlign == EGUIA_LOWERRIGHT)
-					{
-						r.UpperLeftCorner.X = frameRect.LowerRightCorner.X -
-							font->getDimension(BrokenText[i].c_str()).Width;
-					}
-
-					font->draw(BrokenText[i].c_str(), r,
-						OverrideColorEnabled ? OverrideColor : skin->getColor(isEnabled() ? EGDC_BUTTON_TEXT : EGDC_GRAY_TEXT),
-						HAlign == EGUIA_CENTER, false, (RestrainTextInside ? &AbsoluteClippingRect : NULL));
-
-					r.LowerRightCorner.Y += height;
-					r.UpperLeftCorner.Y += height;
-				}
-			}
+			font->draw(m_glyph_layouts, r,
+				OverrideColorEnabled ? OverrideColor : skin->getColor(isEnabled() ? EGDC_BUTTON_TEXT : EGDC_GRAY_TEXT),
+				hcenter, false, clip);
 		}
 	}
 
@@ -288,29 +248,10 @@ bool CGUIStaticText::isWordWrapEnabled() const
 }
 
 
-void CGUIStaticText::setRightToLeft(bool rtl)
-{
-	if (RightToLeft != rtl)
-	{
-		RightToLeft = rtl;
-		breakText();
-	}
-}
-
-
-bool CGUIStaticText::isRightToLeft() const
-{
-	return RightToLeft;
-}
-
-
 //! Breaks the single text line.
 void CGUIStaticText::breakText()
 {
-	if (!WordWrap)
-		return;
-
-	BrokenText.clear();
+	m_glyph_layouts.clear();
 
 	IGUISkin* skin = Environment->getSkin();
 	IGUIFont* font = getActiveFont();
@@ -319,200 +260,21 @@ void CGUIStaticText::breakText()
 
 	LastBreakFont = font;
 
-	core::stringw line;
-	core::stringw word;
-	core::stringw whitespace;
-	s32 size = Text.size();
-	s32 length = 0;
-	s32 elWidth = RelativeRect.getWidth();
+	f32 elWidth = (f32)RelativeRect.getWidth();
 	if (Border)
 		elWidth -= 2*skin->getSize(EGDS_TEXT_DISTANCE_X);
-	wchar_t c;
-
-	// We have to deal with right-to-left and left-to-right differently
-	// However, most parts of the following code is the same, it's just
-	// some order and boundaries which change.
-	if (!RightToLeft)
-	{
-		// regular (left-to-right)
-		for (s32 i=0; i<size; ++i)
-		{
-			c = Text[i];
-			bool lineBreak = false;
-
-			if (c == L'\r') // Mac or Windows breaks
-			{
-				lineBreak = true;
-				if (Text[i+1] == L'\n') // Windows breaks
-				{
-					Text.erase(i+1);
-					--size;
-				}
-				c = '\0';
-			}
-			else if (c == L'\n') // Unix breaks
-			{
-				lineBreak = true;
-				c = '\0';
-			}
-			word += c;
-
-			if (word.size())
-			{
-				const s32 wordlgth = font->getDimension(word.c_str()).Width;
-
-				if (length && (length + wordlgth > elWidth))
-				{	// too long to fit inside
-					// break to next line
-					unsigned int where = 1;
-					while (where != line.size()) //Find the first breakable position
-					{
-						if (UtfNoEnding(Text[i - where])   ||   //Prevent unsuitable character from displaying
-							UtfNoStarting(Text[i - where])  ||   //at the position of starting or ending of a line
-							UtfNoStarting(Text[i + 1 - where])) //Handle case which more than one non-newline-starting characters are together
-						{
-							where++;
-							continue;
-						}
-						if (breakable(Text[i - where]))
-							break;
-						else
-							where++;
-					}
-					if (where != line.size())
-					{
-						core::stringw first  = line.subString(0, line.size() + 1 - where);
-						core::stringw second = line.subString(line.size() + 1 - where , where - 1);
-						if (first.lastChar() == wchar_t(0x00AD))
-							BrokenText.push_back(first + L"-"); //Print the Unicode Soft HYphen (SHY / 00AD) character
-						else
-							BrokenText.push_back(first);
-						const s32 secondLength = font->getDimension(second.c_str()).Width;
-
-						length = secondLength + wordlgth;
-						line = second + word;
-					}
-					else if (breakable(c) || UtfNoEnding(c) || UtfNoStarting(c)) //Unusual case
-					{
-						BrokenText.push_back(line);	//Force breaking to next line too if last word is breakable,
-						line = word;						//it happens when someone writes too many non-newline-starting
-						length = wordlgth;				//chars in the first line, so we ignore the rules.
-					}
-					// No suitable place to break words, so there's nothing more we can do
-					// break to next line
-					else
-					{
-						line += word;
-						length += wordlgth;
-					}
-				}
-				else
-				{
-					line += word;
-					length += wordlgth;
-				}
-
-				word = L"";
-
-			}
-			// compute line break
-			if (lineBreak)
-			{
-				line += word;
-				BrokenText.push_back(line);
-				line = L"";
-				word = L"";
-				length = 0;
-			}
-		}
-
-		line += word;
-		BrokenText.push_back(line);
-	}
-	else
-	{
-		// right-to-left
-		for (s32 i=size; i>=0; --i)
-		{
-			c = Text[i];
-			bool lineBreak = false;
-
-			if (c == L'\r') // Mac or Windows breaks
-			{
-				lineBreak = true;
-				if ((i>0) && Text[i-1] == L'\n') // Windows breaks
-				{
-					Text.erase(i-1);
-					--size;
-				}
-				c = '\0';
-			}
-			else if (c == L'\n') // Unix breaks
-			{
-				lineBreak = true;
-				c = '\0';
-			}
-
-			if (c==L' ' || c==0 || i==0)
-			{
-				if (word.size())
-				{
-					// here comes the next whitespace, look if
-					// we must break the last word to the next line.
-					const s32 whitelgth = font->getDimension(whitespace.c_str()).Width;
-					const s32 wordlgth = font->getDimension(word.c_str()).Width;
-
-					if (length && (length + wordlgth + whitelgth > elWidth))
-					{
-						// break to next line
-						BrokenText.push_back(line);
-						length = wordlgth;
-						line = word;
-					}
-					else
-					{
-						// add word to line
-						line = whitespace + line;
-						line = word + line;
-						length += whitelgth + wordlgth;
-					}
-
-					word = L"";
-					whitespace = L"";
-				}
-
-				if (c != 0)
-					whitespace = core::stringw(&c, 1) + whitespace;
-
-				// compute line break
-				if (lineBreak)
-				{
-					line = whitespace + line;
-					line = word + line;
-					BrokenText.push_back(line);
-					line = L"";
-					word = L"";
-					whitespace = L"";
-					length = 0;
-				}
-			}
-			else
-			{
-				// yippee this is a word..
-				word = core::stringw(&c, 1) + word;
-			}
-		}
-
-		line = whitespace + line;
-		line = word + line;
-		BrokenText.push_back(line);
-	}
+	if (!m_use_glyph_layouts_only)
+		font->initGlyphLayouts(Text, m_glyph_layouts);
+	if (WordWrap)
+		breakGlyphLayouts(m_glyph_layouts, elWidth, font->getInverseShaping(), font->getScale());
 }
 
 
 //! Sets the new caption of this element.
-void CGUIStaticText::setText(const wchar_t* text)
+void CGUIStaticText::setText(const core::stringw& text)
 {
+	if (text == Text)
+		return;
 	IGUIElement::setText(text);
 	breakText();
 }
@@ -521,7 +283,10 @@ void CGUIStaticText::setText(const wchar_t* text)
 void CGUIStaticText::updateAbsolutePosition()
 {
 	IGUIElement::updateAbsolutePosition();
-	breakText();
+	// If use glyph layouts only there is no way at the moment to re-break the
+	// text
+	if (!m_use_glyph_layouts_only)
+		breakText();
 }
 
 
@@ -532,39 +297,23 @@ s32 CGUIStaticText::getTextHeight() const
 	if (!font)
 		return 0;
 
-	s32 height = font->getDimension(L"A").Height + font->getKerningHeight();
+	auto dim = getGlyphLayoutsDimension(m_glyph_layouts,
+		font->getHeightPerLine(), font->getInverseShaping(), font->getScale());
 
-	if (WordWrap)
-		height *= BrokenText.size();
-
-	return height;
+	return dim.Height;
 }
 
 
 s32 CGUIStaticText::getTextWidth() const
 {
 	IGUIFont * font = getActiveFont();
-	if(!font)
+	if (!font)
 		return 0;
 
-	if(WordWrap)
-	{
-		s32 widest = 0;
+	auto dim = getGlyphLayoutsDimension(m_glyph_layouts,
+		font->getHeightPerLine(), font->getInverseShaping(), font->getScale());
 
-		for(u32 line = 0; line < BrokenText.size(); ++line)
-		{
-			s32 width = font->getDimension(BrokenText[line].c_str()).Width;
-
-			if(width > widest)
-				widest = width;
-		}
-
-		return widest;
-	}
-	else
-	{
-		return font->getDimension(Text.c_str()).Width;
-	}
+	return dim.Width;
 }
 
 
@@ -580,7 +329,6 @@ void CGUIStaticText::serializeAttributes(io::IAttributes* out, io::SAttributeRea
 	out->addBool	("OverrideBGColorEnabled",OverrideBGColorEnabled);
 	out->addBool	("WordWrap",		WordWrap);
 	out->addBool	("Background",          Background);
-	out->addBool	("RightToLeft",         RightToLeft);
 	out->addBool	("RestrainTextInside",  RestrainTextInside);
 	out->addColor	("OverrideColor",       OverrideColor);
 	out->addColor	("BGColor",       	BGColor);
@@ -601,7 +349,6 @@ void CGUIStaticText::deserializeAttributes(io::IAttributes* in, io::SAttributeRe
 	OverrideBGColorEnabled = in->getAttributeAsBool("OverrideBGColorEnabled");
 	setWordWrap(in->getAttributeAsBool("WordWrap"));
 	Background = in->getAttributeAsBool("Background");
-	RightToLeft = in->getAttributeAsBool("RightToLeft");
 	RestrainTextInside = in->getAttributeAsBool("RestrainTextInside");
 	OverrideColor = in->getAttributeAsColor("OverrideColor");
 	BGColor = in->getAttributeAsColor("BGColor");
@@ -610,6 +357,156 @@ void CGUIStaticText::deserializeAttributes(io::IAttributes* in, io::SAttributeRe
                       (EGUI_ALIGNMENT) in->getAttributeAsEnumeration("VTextAlign", GUIAlignmentNames));
 
 	// OverrideFont = in->getAttributeAsFont("OverrideFont");
+}
+
+
+bool CGUIStaticText::OnEvent(const SEvent& event)
+{
+	if (IsEnabled)
+	{
+		switch(event.EventType)
+		{
+		case EET_MOUSE_INPUT_EVENT:
+		{
+			if (m_callback && m_callback(this, event.MouseInput))
+				return true;
+		}
+		default:
+			break;
+		}
+	}
+	return IGUIElement::OnEvent(event);
+}
+
+
+s32 CGUIStaticText::getCluster(int x, int y, std::shared_ptr<std::u32string>* out_orig_str, int* out_glyph_idx)
+{
+	core::position2di p;
+	p.X = x;
+	p.Y = y;
+	if (p.X < 0 || p.Y < 0)
+		return -1;
+
+	if (m_glyph_layouts.empty())
+		return -1;
+
+	core::rect<s32> draw_pos = AbsoluteRect;
+	IGUISkin* skin = Environment->getSkin();
+	if (!skin)
+		return -1;
+	if (Border)
+		draw_pos.UpperLeftCorner.X += skin->getSize(EGDS_TEXT_DISTANCE_X);
+
+	IGUIFont* font = getActiveFont();
+	bool hcenter;
+	const core::rect<s32>* clip;
+	getDrawPosition(&draw_pos, &hcenter, &clip);
+
+	core::position2d<float> offset;
+	f32 next_line_height = 0.0f;
+	std::vector<f32> width_per_line;
+	if (!gui::getDrawOffset(draw_pos, hcenter, false, m_glyph_layouts,
+		font->getInverseShaping(), font->getFaceFontMaxHeight(),
+		font->getFaceGlyphMaxHeight(), font->getScale(), clip, &offset,
+		&next_line_height, &width_per_line))
+		return -1;
+
+	// Check if the line is RTL
+	bool rtl = (m_glyph_layouts[0].flags & gui::GLF_RTL_LINE) != 0;
+	if (!hcenter && rtl)
+		offset.X += (s32)(draw_pos.getWidth() - width_per_line[0]);
+
+	unsigned cur_line = 0;
+	bool line_changed = false;
+
+	int idx = -1;
+	core::recti test_rect;
+	test_rect.UpperLeftCorner.X = test_rect.LowerRightCorner.X = (s32)offset.X;
+	test_rect.UpperLeftCorner.Y = (s32)offset.Y;
+	test_rect.LowerRightCorner.Y = (s32)offset.Y + (s32)next_line_height;
+
+	for (unsigned i = 0; i < m_glyph_layouts.size(); i++)
+	{
+		const GlyphLayout& glyph_layout = m_glyph_layouts[i];
+		// Newline handling (from font with face render)
+		if ((glyph_layout.flags & GLF_NEWLINE) != 0)
+		{
+			test_rect.UpperLeftCorner.Y += (int)next_line_height;
+			test_rect.LowerRightCorner.Y += (int)next_line_height;
+			cur_line++;
+			line_changed = true;
+			continue;
+		}
+		if (line_changed)
+		{
+			line_changed = false;
+			rtl = (glyph_layout.flags & gui::GLF_RTL_LINE) != 0;
+			offset.X = float(draw_pos.UpperLeftCorner.X);
+			if (hcenter)
+			{
+				offset.X += (s32)(
+					(draw_pos.getWidth() - width_per_line.at(cur_line)) / 2.f);
+			}
+			else if (rtl)
+			{
+				offset.X +=
+					(s32)(draw_pos.getWidth() - width_per_line.at(cur_line));
+			}
+			test_rect.UpperLeftCorner.X = test_rect.LowerRightCorner.X =
+				(s32)offset.X;
+		}
+		test_rect.LowerRightCorner.X += s32(
+			(f32)glyph_layout.x_advance * font->getInverseShaping() *
+			font->getScale());
+
+		if (test_rect.isPointInside(p))
+		{
+			idx = i;
+			break;
+		}
+	}
+	if (idx == -1)
+		return -1;
+
+	std::shared_ptr<std::u32string> s = m_glyph_layouts[idx].orig_string;
+	if (!s)
+		return -1;
+	unsigned cluster = m_glyph_layouts[idx].cluster.front();
+	if (cluster > s->size())
+		return -1;
+	*out_orig_str = s;
+	if (out_glyph_idx)
+		*out_glyph_idx = idx;
+	return cluster;
+}
+
+
+void CGUIStaticText::getDrawPosition(core::rect<s32>* draw_pos, bool* hcenter, const core::rect<s32>** clip)
+{
+	core::rect<s32> r = *draw_pos;
+	IGUIFont* font = getActiveFont();
+	auto dim = getGlyphLayoutsDimension(m_glyph_layouts,
+		font->getHeightPerLine(), font->getInverseShaping(), font->getScale());
+
+	s32 totalHeight = dim.Height;
+	if (VAlign == EGUIA_CENTER)
+	{
+		r.UpperLeftCorner.Y = r.getCenter().Y - (totalHeight / 2);
+	}
+	else if (VAlign == EGUIA_LOWERRIGHT)
+	{
+		r.UpperLeftCorner.Y = r.LowerRightCorner.Y - totalHeight;
+	}
+
+	if (HAlign == EGUIA_LOWERRIGHT)
+	{
+		r.UpperLeftCorner.X = AbsoluteRect.LowerRightCorner.X - dim.Width;
+	}
+
+	*draw_pos = r;
+	*hcenter = (HAlign == EGUIA_CENTER);
+	*clip = (RestrainTextInside ? &AbsoluteClippingRect : NULL);
+
 }
 
 

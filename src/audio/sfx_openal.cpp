@@ -18,7 +18,7 @@
 //  along with this program; if not, write to the Free Software
 //  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
-#if HAVE_OGGVORBIS
+#ifdef ENABLE_SOUND
 
 #include "audio/sfx_openal.hpp"
 
@@ -27,19 +27,13 @@
 #include "modes/world.hpp"
 #include "utils/vs.hpp"
 
-#ifdef __APPLE__
-#  include <OpenAL/al.h>
-#else
-#  include <AL/al.h>
-#endif
-
 #include <assert.h>
-#include <math.h>
+#include <cmath>
 #include <stdio.h>
 #include <string>
 
-SFXOpenAL::SFXOpenAL(SFXBuffer* buffer, bool positional, float volume, 
-                     bool owns_buffer) 
+SFXOpenAL::SFXOpenAL(SFXBuffer* buffer, bool positional, float volume,
+                     bool owns_buffer)
          : SFXBase()
 {
     m_sound_buffer = buffer;
@@ -70,6 +64,7 @@ SFXOpenAL::~SFXOpenAL()
     if (m_status!=SFX_UNKNOWN && m_status!=SFX_NOT_INITIALISED)
     {
         alDeleteSources(1, &m_sound_source);
+        SFXManager::checkError("deleting a source");
     }
 
     if (m_owns_buffer && m_sound_buffer)
@@ -80,7 +75,7 @@ SFXOpenAL::~SFXOpenAL()
 }   // ~SFXOpenAL
 
 //-----------------------------------------------------------------------------
-/** Initialises the sfx. 
+/** Initialises the sfx.
  */
 bool SFXOpenAL::init()
 {
@@ -147,7 +142,7 @@ void SFXOpenAL::updatePlayingSFX(float dt)
 void SFXOpenAL::setSpeed(float factor)
 {
     //if(m_status!=SFX_PLAYING || !SFXManager::get()->sfxAllowed()) return;
-    assert(!isnan(factor));
+    assert(!std::isnan(factor));
     SFXManager::get()->queue(SFXManager::SFX_SPEED, this, factor);
 }   // setSpeed
 
@@ -186,7 +181,7 @@ void SFXOpenAL::reallySetSpeed(float factor)
 void SFXOpenAL::setVolume(float volume)
 {
     if(m_status==SFX_UNKNOWN || !SFXManager::get()->sfxAllowed()) return;
-    assert(!isnan(volume)) ;
+    assert(!std::isnan(volume)) ;
     SFXManager::get()->queue(SFXManager::SFX_VOLUME, this, volume);
 }   // setVolume
 
@@ -232,7 +227,7 @@ void SFXOpenAL::reallySetMasterVolumeNow(float volume)
     
     if(m_status==SFX_UNKNOWN || m_status == SFX_NOT_INITIALISED) return;
 
-    alSourcef(m_sound_source, AL_GAIN, 
+    alSourcef(m_sound_source, AL_GAIN,
                (m_gain < 0.0f ? m_default_gain : m_gain) * m_master_gain);
     SFXManager::checkError("setting volume");
 }   // reallySetMasterVolumeNow
@@ -267,10 +262,11 @@ void SFXOpenAL::reallySetLoop(bool status)
 
 //-----------------------------------------------------------------------------
 /** Queues a stop for this effect to the sound manager.
+ * Stopping MUST be allowed when SFX are disabled
  */
 void SFXOpenAL::stop()
 {
-    if (m_status == SFX_UNKNOWN || !SFXManager::get()->sfxAllowed()) return;
+    if (m_status == SFX_UNKNOWN) return;
     SFXManager::get()->queue(SFXManager::SFX_STOP, this);
 }   // stop
 
@@ -285,7 +281,7 @@ void SFXOpenAL::reallyStopNow()
         m_loop = false;
         alSourcei(m_sound_source, AL_LOOPING, AL_FALSE);
         alSourceStop(m_sound_source);
-        SFXManager::checkError("stoping");
+        SFXManager::checkError("stopping");
     }
 }   // reallyStopNow
 
@@ -300,12 +296,13 @@ void SFXOpenAL::pause()
 //-----------------------------------------------------------------------------
 /** Pauses a SFX that's currently played. Nothing happens it the effect is
  *  currently not being played.
+ *  Pausing MUST be allowed when SFX are disabled
  */
 void SFXOpenAL::reallyPauseNow()
 {
     // Need to be tested again here, since this function can be called
     // from pauseAll, and we have to make sure to only pause playing sfx.
-    if (m_status != SFX_PLAYING || !SFXManager::get()->sfxAllowed()) return;
+    if (m_status != SFX_PLAYING) return;
     m_status = SFX_PAUSED;
     alSourcePause(m_sound_source);
     SFXManager::checkError("pausing");
@@ -364,7 +361,7 @@ void SFXOpenAL::play()
 //-----------------------------------------------------------------------------
 /** Plays this sound effect.
  */
-void SFXOpenAL::reallyPlayNow()
+void SFXOpenAL::reallyPlayNow(SFXBuffer* buffer)
 {
     if (!SFXManager::get()->sfxAllowed()) return;
     if (m_status==SFX_NOT_INITIALISED)
@@ -374,6 +371,18 @@ void SFXOpenAL::reallyPlayNow()
 
         // creation of OpenAL source failed, giving up
         if (m_status==SFX_UNKNOWN) return;
+    }
+
+    if (buffer != NULL)
+    {
+        if (m_status == SFX_PLAYING || m_status == SFX_PAUSED)
+            reallyStopNow();
+
+        m_sound_buffer = buffer;
+        alSourcei(m_sound_source, AL_BUFFER, m_sound_buffer->getBufferID());
+
+        if (!SFXManager::checkError("attaching the buffer to the source"))
+            return;
     }
 
     alSourcePlay(m_sound_source);
@@ -391,8 +400,11 @@ void SFXOpenAL::reallyPlayNow()
 /** This actually queues up the sfx in the sfx manager. It will be started
  *  from a separate thread later (in this frame).
  */
-void SFXOpenAL::play(const Vec3 &position)
+void SFXOpenAL::play(const Vec3 &position, SFXBuffer* buffer)
 {
+    if (m_owns_buffer && buffer != NULL)
+        assert(false); // sources that own a buffer cannot play any other buffer
+
     if (m_status == SFX_UNKNOWN || !SFXManager::get()->sfxAllowed()) return;
 
     if(m_status==SFX_STOPPED || m_status==SFX_NOT_INITIALISED)
@@ -404,16 +416,15 @@ void SFXOpenAL::play(const Vec3 &position)
     // - which can happen if the sfx thread had no time to actually start
     // it yet.
     m_status = SFX_PLAYING;
-    SFXManager::get()->queue(SFXManager::SFX_PLAY_POSITION, this, position);
+    SFXManager::get()->queue(SFXManager::SFX_PLAY_POSITION, this, position, buffer);
 }   // play(Vec3)
-
 //-----------------------------------------------------------------------------
 /** Plays this sound effect.
  */
-void SFXOpenAL::reallyPlayNow(const Vec3 &position)
+void SFXOpenAL::reallyPlayNow(const Vec3 &position, SFXBuffer* buffer)
 {
     reallySetPosition(position);
-    reallyPlayNow();
+    reallyPlayNow(buffer);
 }   // reallyPlayNow(Vec3)
 
 //-----------------------------------------------------------------------------
@@ -424,7 +435,7 @@ void SFXOpenAL::setPosition(const Vec3 &position)
 {
     // Don't send a position command to the thread if the sound is not playing
     // (or sfx disabled or the sound was not initialised correctly)
-//    if (m_status != SFX_PLAYING|| !SFXManager::get()->sfxAllowed()) return;
+    if (!SFXManager::get()->sfxAllowed()) return;
     SFXManager::get()->queue(SFXManager::SFX_POSITION, this, position);
 
 }   // setPosition
@@ -447,7 +458,7 @@ void SFXOpenAL::reallySetPosition(const Vec3 &position)
         // in multiplayer, all sounds are positional, so in this case don't
         // bug users with an error message if (note that 0 players is also
         // possible, in cutscenes)
-        if (race_manager->getNumLocalPlayers() < 2)
+        if (RaceManager::get()->getNumLocalPlayers() < 2)
         {
             Log::warn("SFX", "Position called on non-positional SFX");
         }
@@ -464,7 +475,7 @@ void SFXOpenAL::reallySetPosition(const Vec3 &position)
     }
     else
     {
-        alSourcef(m_sound_source, AL_GAIN, 
+        alSourcef(m_sound_source, AL_GAIN,
                   (m_gain < 0.0f ? m_default_gain : m_gain) * m_master_gain);
     }
 
@@ -504,7 +515,7 @@ void SFXOpenAL::deleteSFX()
 
 //-----------------------------------------------------------------------------
 
-void SFXOpenAL::onSoundEnabledBack()
+void SFXOpenAL::onSoundEnabledBack(bool resume_later)
 {
     if (m_loop)
     {
@@ -516,6 +527,8 @@ void SFXOpenAL::onSoundEnabledBack()
             pause();
             alSourcef(m_sound_source, AL_GAIN,
                      (m_gain < 0.0f ? m_default_gain : m_gain) * m_master_gain);
+            if (!resume_later)
+                play();
         }
     }
 }   // onSoundEnabledBack
@@ -527,4 +540,6 @@ void SFXOpenAL::setRolloff(float rolloff)
     alSourcef (m_sound_source, AL_ROLLOFF_FACTOR,  rolloff);
 }
 
-#endif //if HAVE_OGGVORBIS
+//-----------------------------------------------------------------------------
+
+#endif //ifdef ENABLE_SOUND

@@ -19,9 +19,10 @@
 #include <assert.h>
 #include <angelscript.h>
 #include "script_physics.hpp"
-#include "graphics/hit_effect.hpp"
-#include "items/projectile_manager.hpp"
 #include "graphics/explosion.hpp"
+#include "graphics/hit_effect.hpp"
+#include "guiengine/engine.hpp"
+#include "items/projectile_manager.hpp"
 
 namespace Scripting
 {
@@ -33,15 +34,20 @@ namespace Scripting
         void createExplosion(asIScriptGeneric *gen)
         {
             //TODO: allow different types? sand etc
+            if (GUIEngine::isNoGraphics())
+                return;
             Vec3 *explosion_loc = (Vec3*)gen->GetArgAddress(0);
             HitEffect *he = new Explosion(*explosion_loc, "explosion", "explosion_bomb.xml");
-            projectile_manager->addHitEffect(he);
+            ProjectileManager::get()->addHitEffect(he);
         }
         void registerScriptFunctions(asIScriptEngine *engine)
         {
-            int r;
             engine->SetDefaultNamespace("Physics");
-            r = engine->RegisterGlobalFunction("string createExplosion(Vec3 &in)", asFUNCTION(createExplosion), asCALL_GENERIC); assert(r >= 0);
+            
+            int r;
+            r = engine->RegisterGlobalFunction("string createExplosion(Vec3 &in)",
+                                               asFUNCTION(createExplosion),
+                                               asCALL_GENERIC); assert(r >= 0);
         }
     }
 }

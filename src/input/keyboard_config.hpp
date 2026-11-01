@@ -39,7 +39,7 @@ public:
                 KeyboardConfig();
     virtual    ~KeyboardConfig() {}
 
-    void        setDefaultBinds     ();
+    virtual void setDefaultBinds();
     virtual void save(std::ofstream& stream);
 
     // ------------------------------------------------------------------------

@@ -19,31 +19,39 @@
 
 #include "graphics/material.hpp"
 
-#include <stdexcept>
+#include <cmath>
 #include <iostream>
+#include <stdexcept>
 
 #include "audio/sfx_base.hpp"
 #include "audio/sfx_buffer.hpp"
 #include "config/user_config.hpp"
 #include "config/stk_config.hpp"
 #include "guiengine/engine.hpp"
-#include "graphics/callbacks.hpp"
 #include "graphics/central_settings.hpp"
-#include "graphics/glwrap.hpp"
 #include "graphics/irr_driver.hpp"
 #include "graphics/particle_kind_manager.hpp"
-#include "graphics/shaders.hpp"
+#include "graphics/stk_tex_manager.hpp"
 #include "io/file_manager.hpp"
 #include "io/xml_node.hpp"
-#include "utils/string_utils.hpp"
-#include "modes/world.hpp"
+#include "race/race_manager.hpp"
 #include "tracks/track.hpp"
+#include "utils/string_utils.hpp"
 #include "utils/log.hpp"
 #include "utils/vs.hpp"
 
+#include <IFileSystem.h>
 #include <IMaterialRendererServices.h>
 #include <ISceneNode.h>
-#include <IShaderConstantSetCallBack.h>
+#include <IVideoDriver.h>
+#include <mini_glm.hpp>
+
+#ifndef SERVER_ONLY
+#include <ge_main.hpp>
+#include <ge_material_manager.hpp>
+#include <ge_spm_buffer.hpp>
+#include <ge_texture.hpp>
+#endif
 
 using namespace irr::video;
 
@@ -56,9 +64,12 @@ const unsigned int VCLAMP = 2;
  */
 Material::Material(const XMLNode *node, bool deprecated)
 {
-    m_shader_type = SHADERTYPE_SOLID;
+    m_shader_name = "solid";
+    m_sampler_path = {{ }};
     m_deprecated = deprecated;
+    m_installed = false;
 
+    m_sampler_path[0] = "unicolor_white";
     node->get("name",      &m_texname);
     if (m_texname=="")
     {
@@ -66,22 +77,36 @@ Material::Material(const XMLNode *node, bool deprecated)
                                  "in file\n");
     }
 
-    std::string relativePath = file_manager->searchTexture(m_texname);
-    if (relativePath.size() == 0)
-        Log::warn("Material", "Cannot determine texture full path : <%s>", m_texname.c_str());
+    const std::string& relative_path = file_manager->searchTexture(m_texname);
+    if (relative_path.empty())
+    {
+        Log::warn("Material", "Cannot determine texture full path: %s",
+            m_texname.c_str());
+    }
     else
-        m_full_path = file_manager->getFileSystem()->getAbsolutePath(relativePath.c_str()).c_str();
+    {
+        m_full_path = m_sampler_path[0] =
+            file_manager->getFileSystem()->getAbsolutePath
+            (relative_path.c_str()).c_str();
+    }
+
+    if (m_full_path.size() > 0)
+    {
+        core::stringc texfname2(m_full_path.c_str());
+        texfname2.make_lower();
+        m_full_path = texfname2.c_str();
+    }
+
     init();
 
-    node->get("dont-load", &m_dont_load_texture);
     bool b = false;
-    
+
     node->get("clampu", &b);  if (b) m_clamp_tex |= UCLAMP; //blender 2.4 style
     node->get("clampU", &b);  if (b) m_clamp_tex |= UCLAMP; //blender 2.5 style
     b = false;
     node->get("clampv", &b);  if (b) m_clamp_tex |= VCLAMP; //blender 2.4 style
     node->get("clampV", &b);  if (b) m_clamp_tex |= VCLAMP; //blender 2.5 style
-
+    node->get("tex-compression", &m_tex_compression);
 
     std::string s;
 
@@ -133,20 +158,32 @@ Material::Material(const XMLNode *node, bool deprecated)
     // force the reset flag in this case.
     if(m_falling_effect)
         m_drive_reset=true;
-    node->get("surface",          &m_surface           );
-    node->get("ignore",           &m_ignore            );
+    node->get("surface",             &m_surface            );
+    node->get("ignore",              &m_ignore             );
 
-    node->get("max-speed",        &m_max_speed_fraction);
-    node->get("slowdown-time",    &m_slowdown_time     );
-    node->get("backface-culling", &m_backface_culling  );
-    node->get("disable-z-write",  &m_disable_z_write   );
-    node->get("fog",              &m_fog               );
+    node->get("max-speed",           &m_max_speed_fraction );
+    float f = stk_config->ticks2Time(m_slowdown_ticks);
+    node->get("slowdown-time",       &f                    );
+    m_slowdown_ticks = stk_config->time2Ticks(f);
+    node->get("colorizable",         &m_colorizable        );
+    node->get("colorization-factor", &m_colorization_factor);
+    node->get("hue-settings",        &m_hue_settings       );
 
-    node->get("mask",             &m_mask              );
-    node->get("gloss-map",        &m_gloss_map         );
-    node->get("water-splash",     &m_water_splash      );
-    node->get("jump",             &m_is_jump_texture   );
-    node->get("has-gravity",      &m_has_gravity       );
+    node->get("mask",                &m_mask               );
+    node->get("colorization-mask",   &m_colorization_mask  );
+    std::string gloss_map;
+    node->get("gloss-map",           &gloss_map            );
+    node->get("jump",                &m_is_jump_texture    );
+    node->get("has-gravity",         &m_has_gravity        );
+    node->get("uv-two-tex",          &m_uv_two_tex         );
+
+    if (!m_uv_two_tex.empty())
+    {
+        m_sampler_path[1] = m_uv_two_tex;
+        core::stringc layer_two_tex(m_uv_two_tex.c_str());
+        layer_two_tex.make_lower();
+        m_uv_two_tex = layer_two_tex.c_str();
+    }
 
     if (m_collision_reaction != NORMAL)
     {
@@ -157,101 +194,66 @@ Material::Material(const XMLNode *node, bool deprecated)
             // backwards compatibility
             node->get("crash-reset-particles", &m_collision_particles);
         }
-    }
-
-
-    s = "";
-    if (node->get("shader", &s))
-    {
-        if (s == "solid")
+        if (!m_collision_particles.empty())
         {
-            m_shader_type = SHADERTYPE_SOLID;
-        }
-        else if (s == "unlit")
-        {
-            m_shader_type = SHADERTYPE_SOLID_UNLIT;
-        }
-        else if (s == "additive")
-        {
-            m_shader_type = SHADERTYPE_ADDITIVE;
-        }
-        else if (s == "alphatest")
-        {
-            m_shader_type = SHADERTYPE_ALPHA_TEST;
-        }
-        else if (s == "alphablend")
-        {
-            m_shader_type = SHADERTYPE_ALPHA_BLEND;
-        }
-        else if (s == "spheremap")
-        {
-            m_shader_type = SHADERTYPE_SPHERE_MAP;
-        }
-        else if (s == "water_shader")
-        {
-            m_shader_type = SHADERTYPE_WATER;
-            node->get("water-shader-speed-1", &m_water_shader_speed_1);
-            node->get("water-shader-speed-2", &m_water_shader_speed_2);
-        }
-        else if (s == "grass")
-        {
-            m_shader_type = SHADERTYPE_VEGETATION;
-            m_grass_speed = 1.5f;
-            m_grass_amplitude = 0.25f;
-            node->get("grass-speed", &m_grass_speed);
-            node->get("grass-amplitude", &m_grass_amplitude);
-        }
-        else if (s == "splatting")
-        {
-            m_shader_type = SHADERTYPE_SPLATTING;
-            node->get("splatting-texture-1", &m_splatting_texture_1);
-            node->get("splatting-texture-2", &m_splatting_texture_2);
-            node->get("splatting-texture-3", &m_splatting_texture_3);
-            node->get("splatting-texture-4", &m_splatting_texture_4);
-        }
-        else
-        {
-            Log::warn("Material", "Unknown shader type <%s> for <%s>", s.c_str(), m_texname.c_str());
+            ParticleKindManager::get()->getParticles(m_collision_particles);
         }
     }
-    else
+
+    s = "solid";
+    std::string normal_map_tex;
+    node->get("normal-map", &normal_map_tex);
+    if (!node->get("shader", &s))
     {
         // BACKWARS COMPATIBILITY, EVENTUALLY REMOVE
 
         bool b = false;
         node->get("additive", &b);
         if (b)
-            m_shader_type = SHADERTYPE_ADDITIVE;
+        {
+            m_shader_name = "alphablend";
+        }
 
         b = false;
         node->get("transparency", &b);
         if (b)
-            m_shader_type = SHADERTYPE_ALPHA_TEST;
+        {
+            m_shader_name = "alphatest";
+        }
 
         //node->get("lightmap", &m_lightmap);
 
         b = false;
         node->get("alpha", &b);
         if (b)
-            m_shader_type = SHADERTYPE_ALPHA_BLEND;
+        {
+            m_shader_name = "alphablend";
+        }
 
         b = true;
         node->get("light", &b);
         if (!b)
-            m_shader_type = SHADERTYPE_SOLID_UNLIT;
-
-        b = false;
-        node->get("smooth-reflection", &b);
-        if (b)
-            m_shader_type = SHADERTYPE_SPHERE_MAP;
-
-
+        {
+            m_shader_name = "unlit";
+        }
         if (node->get("compositing", &s))
         {
-            if (s == "blend")         m_shader_type = SHADERTYPE_ALPHA_BLEND;
-            else if (s == "test")     m_shader_type = SHADERTYPE_ALPHA_TEST;
-            else if (s == "additive") m_shader_type = SHADERTYPE_ADDITIVE;
-            else if (s == "coverage") m_shader_type = SHADERTYPE_ALPHA_TEST;
+            if (s == "blend")
+            {
+                m_shader_name = "alphablend";
+            }
+            else if (s == "test")
+            {
+                m_shader_name = "alphatest";
+            }
+            else if (s == "additive")
+            {
+                m_shader_name = "additive";
+            }
+            else if (s == "coverage")
+            {
+                m_shader_name = "alphatest";
+            }
             else if (s != "none")
                 Log::warn("material", "Unknown compositing mode '%s'", s.c_str());
         }
@@ -259,40 +261,9 @@ Material::Material(const XMLNode *node, bool deprecated)
         s = "";
         node->get("graphical-effect", &s);
 
-        if (s == "water")
+        if (s == "normal_map")
         {
-            m_water_splash = true;
-        }
-        else if (s == "grass")
-        {
-            m_shader_type = SHADERTYPE_VEGETATION;
-            m_grass_speed = 1.5f;
-            m_grass_amplitude = 0.25f;
-            node->get("grass-speed", &m_grass_speed);
-            node->get("grass-amplitude", &m_grass_amplitude);
-        }
-        else if (s == "water_shader")
-        {
-            m_shader_type = SHADERTYPE_WATER;
-            node->get("water-shader-speed-1", &m_water_shader_speed_1);
-            node->get("water-shader-speed-2", &m_water_shader_speed_2);
-        }
-        else if (s == "normal_map")
-        {
-            m_shader_type = SHADERTYPE_SOLID;
-            node->get("normal-map", &m_normal_map_tex);
-        }
-        else if (s == "spheremap")
-        {
-            m_shader_type = SHADERTYPE_SPHERE_MAP;
-        }
-        else if (s == "splatting")
-        {
-            m_shader_type = SHADERTYPE_SPLATTING;
-            node->get("splatting-texture-1", &m_splatting_texture_1);
-            node->get("splatting-texture-2", &m_splatting_texture_2);
-            node->get("splatting-texture-3", &m_splatting_texture_3);
-            node->get("splatting-texture-4", &m_splatting_texture_4);
+            node->get("normal-map", &normal_map_tex);
         }
         else if (s == "none")
         {
@@ -309,7 +280,7 @@ Material::Material(const XMLNode *node, bool deprecated)
 
         if (use_normal_map)
         {
-            if (node->get("normal-map", &m_normal_map_tex))
+            if (node->get("normal-map", &normal_map_tex))
             {
                 //m_graphical_effect = GE_NORMAL_MAP;
             }
@@ -319,36 +290,69 @@ Material::Material(const XMLNode *node, bool deprecated)
                     "Could not find normal map image in materials.xml");
             }
         }
-
-        bool sphere_map = false;
-        node->get("sphere", &sphere_map);
-        if (sphere_map)
-        {
-            m_shader_type = SHADERTYPE_SPHERE_MAP;
-        }
-
-        bool water_shader = false;
-        node->get("water-shader", &water_shader);
-        if (water_shader)
-        {
-            m_shader_type = SHADERTYPE_WATER;
-            node->get("water-shader-speed-1", &m_water_shader_speed_1);
-            node->get("water-shader-speed-2", &m_water_shader_speed_2);
-        }
-
         // ---- End backwards compatibility
     }
 
-    if (m_shader_type == SHADERTYPE_SOLID)
+    if (m_shader_name == "solid" && !s.empty())
     {
-        node->get("normal-map", &m_normal_map_tex);
+        m_shader_name = s;
+    }
+    if (m_shader_name == "solid")
+    {
+        if (!normal_map_tex.empty())
+        {
+            m_shader_name = "normalmap";
+        }
+    }
+    else if (m_shader_name == "normal_map")
+    {
+        m_shader_name = "normalmap";
     }
 
-    if (m_disable_z_write && m_shader_type != SHADERTYPE_ALPHA_BLEND && m_shader_type != SHADERTYPE_ADDITIVE)
+    // SP specific, now for backwards compatibility assign gloss map and
+    // normal map to layer 2 and 3 (current all sp shaders use tex_layer_2 and
+    // 3), and overwrite with tex-layer-(2-5) from xml
+    if (!gloss_map.empty())
     {
-        Log::debug("material", "Disabling writes to z buffer only makes sense when compositing is blending or additive (for %s)", m_texname.c_str());
-        m_disable_z_write = false;
+        m_sampler_path[2] = gloss_map;
     }
+    if (!normal_map_tex.empty())
+    {
+        m_sampler_path[3] = normal_map_tex;
+    }
+    for (unsigned i = 2; i < m_sampler_path.size(); i++)
+    {
+        const std::string key =
+            std::string("tex-layer-") + StringUtils::toString(i);
+        node->get(key, &m_sampler_path[i]);
+    }
+    // Convert to full path
+    for (unsigned i = 1; i < m_sampler_path.size(); i++)
+    {
+        if (m_sampler_path[i].empty())
+        {
+            continue;
+        }
+        const std::string& relative_path =
+            file_manager->searchTexture(m_sampler_path[i]);
+        if (!relative_path.empty())
+        {
+            m_sampler_path[i] =
+                file_manager->getFileSystem()->getAbsolutePath(
+                relative_path.c_str()).c_str();
+        }
+        else
+        {
+            Log::warn("Material", "Cannot determine texture full path: %s",
+                m_sampler_path[i].c_str());
+            m_sampler_path[i] = "";
+        }
+    }
+    loadContainerId();
+
+    core::stringc texfname(m_texname.c_str());
+    texfname.make_lower();
+    m_texname = texfname.c_str();
 
     // Terrain-specifc sound effect
     const unsigned int children_count = node->getNumNodes();
@@ -392,9 +396,48 @@ Material::Material(const XMLNode *node, bool deprecated)
 
     if(m_has_gravity)
         m_high_tire_adhesion = true;
-
-    install(/*is_full_path*/false);
 }   // Material
+
+//-----------------------------------------------------------------------------
+video::ITexture* Material::getTexture(bool srgb, bool premul_alpha)
+{
+    std::function<void(video::IImage*)> image_mani;
+#ifndef SERVER_ONLY
+    if (srgb)
+    {
+        image_mani = [](video::IImage* img)->void
+        {
+            if (!CVS->isDeferredEnabled() || !CVS->isGLSL())
+                return;
+            uint8_t* data = (uint8_t*)img->lock();
+            for (unsigned int i = 0; i < img->getDimension().Width *
+                img->getDimension().Height; i++)
+            {
+                data[i * 4] = GE::srgb255ToLinear(data[i * 4]);
+                data[i * 4 + 1] = GE::srgb255ToLinear(data[i * 4 + 1]);
+                data[i * 4 + 2] = GE::srgb255ToLinear(data[i * 4 + 2]);
+            }
+            img->unlock();
+        };
+    }
+#endif
+    if (!m_installed)
+        install(image_mani);
+    return m_texture;
+}   // getTexture
+
+//-----------------------------------------------------------------------------
+void Material::loadContainerId()
+{
+    if (m_sampler_path[0] != "unicolor_white")
+    {
+        if (!file_manager->searchTextureContainerId(m_container_id, m_texname))
+        {
+            Log::warn("Material", "Missing container id for %s, no texture"
+                " compression for it will be done.", m_texname.c_str());
+        }
+    }
+}   // loadContainerId
 
 //-----------------------------------------------------------------------------
 /** Create a standard material using the default settings for materials.
@@ -402,17 +445,55 @@ Material::Material(const XMLNode *node, bool deprecated)
  *  \param is_full_path If the fname contains the full path.
  */
 Material::Material(const std::string& fname, bool is_full_path,
-                   bool complain_if_not_found, bool load_texture)
+                   bool complain_if_not_found, bool load_texture,
+                   const std::string& shader_name)
 {
+    m_shader_name = shader_name;
+    m_sampler_path = {{ }};
     m_deprecated = false;
-
-    m_texname = fname;
+    m_installed = false;
     init();
-    m_full_path = file_manager->getFileSystem()->getAbsolutePath(
-        file_manager->searchTexture(m_texname).c_str()).c_str();
+
+    m_sampler_path[0] = "unicolor_white";
+    if (is_full_path)
+    {
+        m_texname = StringUtils::getBasename(fname);
+        m_full_path = m_sampler_path[0] = fname;
+    }
+    else
+    {
+        m_texname = fname;
+        if (m_texname != "unicolor_white")
+        {
+            const std::string& relative_path =
+                file_manager->searchTexture(m_texname);
+            if (!relative_path.empty())
+            {
+                m_full_path = m_sampler_path[0] =
+                    file_manager->getFileSystem()->getAbsolutePath(
+                    relative_path.c_str()).c_str();
+            }
+            else
+            {
+                Log::warn("Material", "Cannot determine texture full path: %s",
+                    fname.c_str());
+            }
+        }
+    }
+    loadContainerId();
+
+    core::stringc texfname(m_texname.c_str());
+    texfname.make_lower();
+    m_texname = texfname.c_str();
+
+    core::stringc texfname2(m_full_path.c_str());
+    texfname2.make_lower();
+    m_full_path = texfname2.c_str();
+
+    m_complain_if_not_found = complain_if_not_found;
 
     if (load_texture)
-        install(is_full_path, complain_if_not_found);
+        install();
 }   // Material
 
 //-----------------------------------------------------------------------------
@@ -420,11 +501,8 @@ Material::Material(const std::string& fname, bool is_full_path,
  */
 void Material::init()
 {
-    m_dont_load_texture         = false;
     m_texture                   = NULL;
     m_clamp_tex                 = 0;
-    m_shader_type               = SHADERTYPE_SOLID;
-    m_backface_culling          = true;
     m_high_tire_adhesion        = false;
     m_below_surface             = false;
     m_falling_effect            = false;
@@ -433,12 +511,12 @@ void Material::init()
     m_drive_reset               = false;
     m_mirror_axis_when_reverse  = ' ';
     m_collision_reaction        = NORMAL;
-    m_disable_z_write           = false;
-    m_water_shader_speed_1      = 6.6667f;
-    m_water_shader_speed_2      = 4.0f;
-    m_fog                       = true;
+    m_colorizable               = false;
+    m_tex_compression           = true;
+    m_colorization_factor       = 0.0f;
+    m_colorization_mask         = "";
     m_max_speed_fraction        = 1.0f;
-    m_slowdown_time             = 1.0f;
+    m_slowdown_ticks            = stk_config->time2Ticks(1.0f);
     m_sfx_name                  = "";
     m_sfx_min_speed             = 0.0f;
     m_sfx_max_speed             = 30;
@@ -452,38 +530,38 @@ void Material::init()
     m_zipper_speed_gain         = -1.0f;
     m_zipper_engine_force       = -1.0f;
     m_zipper_min_speed          = -1.0f;
-    m_water_splash              = false;
     m_is_jump_texture           = false;
     m_has_gravity               = false;
-
+    m_complain_if_not_found     = true;
     for (int n=0; n<EMIT_KINDS_COUNT; n++)
     {
         m_particles_effects[n] = NULL;
     }
+    m_vk_textures               = {{ }};
 }   // init
 
 //-----------------------------------------------------------------------------
-void Material::install(bool is_full_path, bool complain_if_not_found)
+void Material::install(std::function<void(video::IImage*)> image_mani,
+                       video::SMaterial* m)
 {
     // Don't load a texture that are not supposed to be loaded automatically
-    if(m_dont_load_texture) return;
+    if (m_installed) return;
 
-    const std::string &full_path = is_full_path
-                                 ? m_texname
-                                 : file_manager->searchTexture(m_texname);
+    m_installed = true;
 
-    if (complain_if_not_found && full_path.size() == 0)
+    if (m_texname.find(".") == std::string::npos || m_full_path.empty())
     {
-        Log::error("material", "Cannot find texture '%s'.", m_texname.c_str());
+        if (m_complain_if_not_found)
+        {
+            Log::error("material", "Cannot find texture '%s'.",
+                m_texname.c_str());
+        }
         m_texture = NULL;
     }
-
     else
     {
-        m_texture = irr_driver->getTexture(full_path,
-                                           false, //isPreMul(),
-                                           false, //isPreDiv(),
-                                           complain_if_not_found);
+        m_texture = STKTexManager::getInstance()->getTexture(m_sampler_path[0],
+            image_mani);
     }
 
     if (m_texture == NULL) return;
@@ -491,32 +569,46 @@ void Material::install(bool is_full_path, bool complain_if_not_found)
     // now set the name to the basename, so that all tests work as expected
     m_texname  = StringUtils::getBasename(m_texname);
 
-    if (m_mask.size() > 0)
-    {
-        video::ITexture* tex = irr_driver->applyMask(m_texture, m_mask);
-        if (tex)
-        {
-            irr_driver->removeTexture(m_texture);
-            m_texture = tex;
-        }
-        else
-        {
-            Log::warn("material", "Applying mask failed for '%s'!",
-                      m_texname.c_str());
-        }
-    }
+    core::stringc texfname(m_texname.c_str());
+    texfname.make_lower();
+    m_texname = texfname.c_str();
+
     m_texture->grab();
+
+#ifndef SERVER_ONLY
+    if (irr_driver->getVideoDriver()->getDriverType() != EDT_VULKAN)
+        return;
+
+    for (unsigned i = 2; i < m_sampler_path.size(); i++)
+    {
+        if (m_shader_name == "displace" && i == 2 && m_sampler_path[i].empty())
+        {
+            const std::string& displace_mask_path =
+                file_manager->searchTexture("displace.png");
+            if (!displace_mask_path.empty())
+            {
+                m_sampler_path[2] =
+                    file_manager->getFileSystem()->getAbsolutePath(
+                    displace_mask_path.c_str()).c_str();
+            }
+        }
+        if (m_sampler_path[i].empty())
+            continue;
+        GE::getGEConfig()->m_ondemand_load_texture_paths.insert(
+            m_sampler_path[i]);
+        m_vk_textures[i - 2] = STKTexManager::getInstance()->getTexture(
+            m_sampler_path[i]);
+        GE::getGEConfig()->m_ondemand_load_texture_paths.erase(m_sampler_path[i]);
+        if (m_vk_textures[i - 2])
+            m_vk_textures[i - 2]->grab();
+    }
+#endif
 }   // install
 
 //-----------------------------------------------------------------------------
 Material::~Material()
 {
-    if (m_texture != NULL)
-    {
-        m_texture->drop();
-        if(m_texture->getReferenceCount()==1)
-            irr_driver->removeTexture(m_texture);
-    }
+    unloadTexture();
 
     // If a special sfx is installed (that isn't part of stk itself), the
     // entry needs to be removed from the sfx_manager's mapping, since other
@@ -526,6 +618,37 @@ Material::~Material()
         SFXManager::get()->deleteSFXMapping(m_sfx_name);
     }
 }   // ~Material
+
+//-----------------------------------------------------------------------------
+
+void Material::unloadTexture()
+{
+    if (m_texture != NULL)
+    {
+        m_texture->drop();
+        if (m_texture->getReferenceCount() == 1)
+        {
+            irr_driver->removeTexture(m_texture);
+        }
+        m_texture = NULL;
+        m_installed = false;
+    }
+
+#ifndef SERVER_ONLY
+    if (irr_driver->getVideoDriver()->getDriverType() == EDT_VULKAN)
+    {
+        for (unsigned i = 2; i < m_sampler_path.size(); i++)
+        {
+            if (!m_vk_textures[i - 2])
+                continue;
+            m_vk_textures[i - 2]->drop();
+            if (m_vk_textures[i - 2]->getReferenceCount() == 1)
+                irr_driver->removeTexture(m_vk_textures[i - 2]);
+            m_vk_textures[i - 2] = NULL;
+        }
+    }
+#endif
+}
 
 //-----------------------------------------------------------------------------
 /** Initialise the data structures for a custom sfx to be played when a
@@ -572,10 +695,10 @@ void Material::initCustomSFX(const XMLNode *sfx)
     {
 
         // The directory for the track was added to the model search path
-        // so just misuse the getModelFile function
-        const std::string full_path = file_manager->getAsset(FileManager::MODEL,
-                                                             filename);
-        SFXBuffer* buffer = SFXManager::get()->loadSingleSfx(sfx, full_path);
+        // so just misuse the searchModel function
+        std::string path = file_manager->searchModel(filename);
+        path = StringUtils::getPath(path);
+        SFXBuffer* buffer = SFXManager::get()->loadSingleSfx(sfx, path);
 
         if (buffer != NULL)
         {
@@ -682,15 +805,15 @@ void Material::setSFXSpeed(SFXBase *sfx, float speed, bool should_be_paused) con
     }
     if (speed > m_sfx_max_speed)
     {
-        assert(!isnan(m_sfx_max_speed));
+        assert(!std::isnan(m_sfx_max_speed));
         sfx->setSpeed(m_sfx_max_pitch);
         return;
     }
 
-    assert(!isnan(speed));
+    assert(!std::isnan(speed));
 
     float f = m_sfx_pitch_per_speed*(speed-m_sfx_min_speed) + m_sfx_min_pitch;
-    assert(!isnan(f));
+    assert(!std::isnan(f));
     sfx->setSpeed(f);
 }   // setSFXSpeed
 
@@ -700,6 +823,11 @@ void Material::setSFXSpeed(SFXBase *sfx, float speed, bool should_be_paused) con
  */
 void  Material::setMaterialProperties(video::SMaterial *m, scene::IMeshBuffer* mb)
 {
+    if (!m_installed)
+    {
+        install(nullptr, m);
+    }
+
     if (m_deprecated ||
         (m->getTexture(0) != NULL &&
          ((core::stringc)m->getTexture(0)->getName()).find("deprecated") != -1))
@@ -708,139 +836,66 @@ void  Material::setMaterialProperties(video::SMaterial *m, scene::IMeshBuffer* m
                   m_texname.c_str());
     }
 
-    if (CVS->isGLSL())
+    m->setColorizable(m_colorizable);
+    bool is_vk = irr_driver->getVideoDriver()->getDriverType() == EDT_VULKAN;
+    // Default solid
+    m->MaterialType = video::EMT_SOLID;
+    if (RaceManager::get()->getReverseTrack() &&
+        m_mirror_axis_when_reverse != ' ')
     {
-        ITexture *tex;
-        ITexture *glossytex;
-        if (m_gloss_map.size() > 0)
+        if (m_mirrorred_mesh_buffers.find((void*)mb) == m_mirrorred_mesh_buffers.end())
         {
-            glossytex = irr_driver->getTexture(m_gloss_map);
-        }
-        else
-        {
-            glossytex = getUnicolorTexture(SColor(0, 0, 0, 0));
-        }
-        switch (m_shader_type)
-        {
-        case SHADERTYPE_SOLID_UNLIT:
-            m->MaterialType = Shaders::getShader(ES_OBJECT_UNLIT);
-            m->setTexture(1, glossytex);
-            return;
-        case SHADERTYPE_ALPHA_TEST:
-            m->MaterialType = video::EMT_TRANSPARENT_ALPHA_CHANNEL_REF;
-            m->setTexture(1, glossytex);
-            return;
-        case SHADERTYPE_ALPHA_BLEND:
-            m->MaterialType = video::EMT_ONETEXTURE_BLEND;
-            m->MaterialTypeParam =
-                pack_textureBlendFunc(video::EBF_SRC_ALPHA,
-                video::EBF_ONE_MINUS_SRC_ALPHA,
-                video::EMFN_MODULATE_1X,
-                video::EAS_TEXTURE | video::EAS_VERTEX_COLOR);
-            return;
-        case SHADERTYPE_ADDITIVE:
-            m->MaterialType = video::EMT_ONETEXTURE_BLEND;
-            m->MaterialTypeParam = pack_textureBlendFunc(video::EBF_SRC_ALPHA,
-                video::EBF_ONE,
-                video::EMFN_MODULATE_1X,
-                video::EAS_TEXTURE |
-                video::EAS_VERTEX_COLOR);
-            return;
-        case SHADERTYPE_SPHERE_MAP:
-            m->MaterialType = Shaders::getShader(ES_SPHERE_MAP);
-            m->setTexture(1, glossytex);
-            return;
-        case SHADERTYPE_SPLATTING:
-            tex = irr_driver->getTexture(m_splatting_texture_1);
-            m->setTexture(2, tex);
-
-            if (m_splatting_texture_2.size() > 0)
+            m_mirrorred_mesh_buffers[(void*)mb] = true;
+            video::S3DVertexSkinnedMesh* mbVertices = (video::S3DVertexSkinnedMesh*)mb->getVertices();
+            for (unsigned int i = 0; i < mb->getVertexCount(); i++)
             {
-                tex = irr_driver->getTexture(m_splatting_texture_2);
+                if (mb->getVertexType() == video::EVT_SKINNED_MESH)
+                {
+                    using namespace MiniGLM;
+                    if (m_mirror_axis_when_reverse == 'V')
+                    {
+                        mbVertices[i].m_all_uvs[1] =
+                            toFloat16(1.0f - toFloat32(mbVertices[i].m_all_uvs[1]));
+                    }
+                    else
+                    {
+                        mbVertices[i].m_all_uvs[0] =
+                            toFloat16(1.0f - toFloat32(mbVertices[i].m_all_uvs[0]));
+                    }
+                }
+                else
+                {
+                    core::vector2df &tc = mb->getTCoords(i);
+                    if (m_mirror_axis_when_reverse == 'V')
+                        tc.Y = 1 - tc.Y;
+                    else
+                        tc.X = 1 - tc.X;
+                }
             }
-            m->setTexture(3, tex);
-
-            if (m_splatting_texture_3.size() > 0)
+#ifndef SERVER_ONLY
+            if (is_vk)
             {
-                tex = irr_driver->getTexture(m_splatting_texture_3);
+                GE::GESPMBuffer* spmb = static_cast<GE::GESPMBuffer*>(mb);
+                spmb->destroyVertexIndexBuffer();
+                spmb->createVertexIndexBuffer();
             }
-            m->setTexture(4, tex);
-
-            if (m_splatting_texture_4.size() > 0)
-            {
-                tex = irr_driver->getTexture(m_splatting_texture_4);
-            }
-            m->setTexture(5, tex);
-            m->setTexture(6, glossytex);
-
-            // Material and shaders
-            m->MaterialType = Shaders::getShader(ES_SPLATTING);
-            return;
-        case SHADERTYPE_WATER:
-            m->setTexture(1, irr_driver->getTexture(FileManager::TEXTURE,
-                "waternormals.jpg"));
-            m->setTexture(2, irr_driver->getTexture(FileManager::TEXTURE,
-                "waternormals2.jpg"));
-
-            ((WaterShaderProvider *)Shaders::getCallback(ES_WATER))->
-                setSpeed(m_water_shader_speed_1 / 100.0f, m_water_shader_speed_2 / 100.0f);
-
-            m->MaterialType = Shaders::getShader(ES_WATER);
-            return;
-        case SHADERTYPE_VEGETATION:
-            // Only one grass speed & amplitude per map for now
-            ((GrassShaderProvider *)Shaders::getCallback(ES_GRASS))->
-                setSpeed(m_grass_speed);
-            ((GrassShaderProvider *)Shaders::getCallback(ES_GRASS))->
-                setAmplitude(m_grass_amplitude);
-            m->MaterialType = Shaders::getShader(ES_GRASS_REF);
-            m->setTexture(1, glossytex);
-            return;
-        default:
-            break;
+#endif
         }
+    }   // reverse track and texture needs mirroring
 
-        if (!m->getTexture(0))
-            m->setTexture(0, getUnicolorTexture(SColor(255, 255, 255, 255)));
-
-        if (m_normal_map_tex.size() > 0)
-        {
-            tex = irr_driver->getTexture(m_normal_map_tex);
-            m->setTexture(2, tex);
-
-            // Material and shaders
-            m->MaterialType = Shaders::getShader(ES_NORMAL_MAP);
-            m->setTexture(1, glossytex);
-            return;
-        }
-
-        // Detail map : move it to slot 3 and add glossy to slot 2
-        // Sometimes the material will be parsed twice, in this case we dont want to swap 1 and 2 again.
-        if (mb && mb->getVertexType() == video::EVT_2TCOORDS)
-        {
-            if (m->getTexture(1) != glossytex)
-                m->setTexture(2, m->getTexture(1));
-            if (!m->getTexture(2))
-                m->setTexture(2, getUnicolorTexture(SColor(255, 255, 255, 255)));
-        }
-        m->setTexture(1, glossytex);
-    }
-
-
-    if (m_shader_type == SHADERTYPE_SOLID_UNLIT)
+    if (m_shader_name == "unlit")
     {
         m->AmbientColor = video::SColor(255, 255, 255, 255);
         m->DiffuseColor = video::SColor(255, 255, 255, 255);
         m->EmissiveColor = video::SColor(255, 255, 255, 255);
         m->SpecularColor = video::SColor(255, 255, 255, 255);
+        m->MaterialType = video::EMT_TRANSPARENT_ALPHA_CHANNEL_REF;
     }
-
-    if (m_shader_type == SHADERTYPE_ALPHA_TEST)
+    else if (m_shader_name == "alphatest")
     {
         m->MaterialType = video::EMT_TRANSPARENT_ALPHA_CHANNEL_REF;
     }
-
-    if (m_shader_type == SHADERTYPE_ALPHA_BLEND)
+    else if (m_shader_name == "alphablend" || m_shader_name == "displace")
     {
         // EMT_TRANSPARENT_ALPHA_CHANNEL doesn't include vertex color alpha into
         // account, which messes up fading in/out effects. So we use the more
@@ -852,8 +907,7 @@ void  Material::setMaterialProperties(video::SMaterial *m, scene::IMeshBuffer* m
                                   video::EMFN_MODULATE_1X,
                                   video::EAS_TEXTURE | video::EAS_VERTEX_COLOR);
     }
-
-    if (m_shader_type == SHADERTYPE_ADDITIVE)
+    else if (m_shader_name == "additive")
     {
         // EMT_TRANSPARENT_ADD_COLOR doesn't include vertex color alpha into
         // account, which messes up fading in/out effects. So we use the
@@ -865,44 +919,32 @@ void  Material::setMaterialProperties(video::SMaterial *m, scene::IMeshBuffer* m
             video::EAS_TEXTURE |
             video::EAS_VERTEX_COLOR);
     }
-
-    if (m_shader_type == SHADERTYPE_SPHERE_MAP)
+    else if (m_shader_name == "grass")
     {
-        m->MaterialType = video::EMT_SPHERE_MAP;
-    }
-
-    if (m_shader_type == SHADERTYPE_SOLID && m_normal_map_tex.size() > 0)
-    {
-        // remove normal map texture so that it's not blended with the rest
-        m->setTexture(1, NULL);
-    }
-
-    if (m_shader_type == SHADERTYPE_SPLATTING)
-    {
-        m->MaterialType = video::EMT_SOLID;
-    }
-
-
-    // Modify lightmap materials so that vertex colors are taken into account.
-    // But disable lighting because we assume all lighting is already part
-    // of the lightmap
-    if (m->MaterialType == video::EMT_LIGHTMAP)
-    {
-        m->MaterialType = video::EMT_LIGHTMAP_LIGHTING;
-        m->AmbientColor  = video::SColor(255, 255, 255, 255);
-        m->DiffuseColor  = video::SColor(255, 255, 255, 255);
-        m->EmissiveColor = video::SColor(255, 255, 255, 255);
-        m->SpecularColor = video::SColor(255, 255, 255, 255);
-    }
-
-    if (m_shader_type == SHADERTYPE_VEGETATION)
-    {
+#ifdef USE_GLES2
+        m->MaterialType = video::EMT_STK_GRASS;
+#else
         m->MaterialType = video::EMT_TRANSPARENT_ALPHA_CHANNEL_REF;
+
+#ifndef SERVER_ONLY
+        // A hack that makes the grass more bright in legacy pipeline, so that
+        // it looks more similar to our shader-based pipeline
+        if (!CVS->isGLSL())
+        {
+            m->AmbientColor  = video::SColor(255, 150, 150, 150);
+            m->DiffuseColor  = video::SColor(255, 150, 150, 150);
+            m->EmissiveColor = video::SColor(255, 150, 150, 150);
+            m->SpecularColor = video::SColor(255, 150, 150, 150);
+        }
+#endif
+
+#endif
     }
 
-    if (m_disable_z_write)
+    if (isTransparent())
     {
         m->ZWriteEnable = false;
+        m->BackfaceCulling = false;
     }
 
 #ifdef DEBUG
@@ -923,10 +965,7 @@ void  Material::setMaterialProperties(video::SMaterial *m, scene::IMeshBuffer* m
                     UserConfigParams::m_anisotropic;
         }
     }
-    else if (UserConfigParams::m_trilinear)
-    {
-        m->setFlag(video::EMF_TRILINEAR_FILTER, true);
-    }
+    m->setFlag(video::EMF_TRILINEAR_FILTER, true);
 
     // UV clamping
     if ( (m_clamp_tex & UCLAMP) != 0)
@@ -952,10 +991,6 @@ void  Material::setMaterialProperties(video::SMaterial *m, scene::IMeshBuffer* m
         }
     }
 
-    // Backface culling
-    if(!m_backface_culling)
-        m->setFlag(video::EMF_BACK_FACE_CULLING, false);
-
     // Material color
     m->ColorMaterial = video::ECM_DIFFUSE_AND_AMBIENT;
 
@@ -965,60 +1000,117 @@ void  Material::setMaterialProperties(video::SMaterial *m, scene::IMeshBuffer* m
         m->ColorMaterial = video::ECM_NONE; // Override one above
     }
 #endif
-
+#ifndef SERVER_ONLY
+    if (is_vk)
+    {
+        m->MaterialType =
+            GE::GEMaterialManager::getIrrMaterialType(m_shader_name);
+        for (unsigned i = 2; i < m_sampler_path.size(); i++)
+        {
+            if (m_vk_textures[i - 2])
+                m->setTexture(i, m_vk_textures[i - 2]);
+        }
+    }
+#endif
 } // setMaterialProperties
 
 //-----------------------------------------------------------------------------
-
-void Material::adjustForFog(scene::ISceneNode* parent, video::SMaterial *m,
-                            bool use_fog) const
+std::function<void(irr::video::IImage*)> Material::getMaskImageMani() const
 {
-    if (CVS->isGLSL())
+#ifndef SERVER_ONLY
+    std::function<void(irr::video::IImage*)> image_mani;
+
+    // Material using alpha channel will be colorized as a whole
+    if (CVS->supportsColorization() &&
+        !useAlphaChannel() && (!m_colorization_mask.empty() ||
+        m_colorization_factor > 0.0f || m_colorizable))
     {
-        // to disable fog in the new pipeline, we slightly abuse the steps :
-        // moving an object into the transparent pass will make it rendered
-        // above fog and thus unaffected by it
-        if (use_fog && !m_fog && m_shader_type != SHADERTYPE_ALPHA_BLEND && m_shader_type != SHADERTYPE_ADDITIVE)
+        io::path colorization_mask;
+        if (!m_colorization_mask.empty())
         {
-            //m->ZWriteEnable = true;
-            //m->MaterialType = video::EMT_ONETEXTURE_BLEND;
-            //m->MaterialTypeParam =
-            //    pack_textureBlendFunc(video::EBF_SRC_ALPHA,
-            //                            video::EBF_ONE_MINUS_SRC_ALPHA,
-            //                            video::EMFN_MODULATE_1X,
-            //                            video::EAS_TEXTURE | video::EAS_VERTEX_COLOR);
+            colorization_mask = (StringUtils::getPath(m_sampler_path[0]) + "/" +
+                m_colorization_mask).c_str();
         }
+        float colorization_factor = m_colorization_factor;
+        image_mani = [colorization_mask, colorization_factor]
+            (video::IImage* img)->void
+        {
+            video::IImage* mask = NULL;
+            core::dimension2du img_size = img->getDimension();
+            const unsigned total_size = img_size.Width * img_size.Height;
+            std::vector<uint8_t> empty_mask;
+            uint8_t* mask_data = NULL;
+            if (!colorization_mask.empty())
+            {
+                core::dimension2du max_size;
+                mask = GE::getResizedImageFullPath(colorization_mask, max_size,
+                    NULL, &img_size);
+                if (!mask)
+                {
+                    Log::warn("Material",
+                        "Applying colorization mask failed for '%s'!",
+                        colorization_mask.c_str());
+                    return;
+                }
+                mask_data = (uint8_t*)mask->lock();
+            }
+            else
+            {
+                empty_mask.resize(total_size * 4, 0);
+                mask_data = empty_mask.data();
+            }
+            uint8_t colorization_factor_encoded = uint8_t
+                (irr::core::clamp(
+                int(colorization_factor * 0.4f * 255.0f), 0, 255));
+            for (unsigned int i = 0; i < total_size; i++)
+            {
+                if (!colorization_mask.empty() && mask_data[i * 4 + 3] > 127)
+                    continue;
+                mask_data[i * 4 + 3] = colorization_factor_encoded;
+            }
+            uint8_t* img_data = (uint8_t*)img->lock();
+            for (unsigned int i = 0; i < total_size; i++)
+                img_data[i * 4 + 3] = mask_data[i * 4 + 3];
+            if (mask)
+                mask->drop();
+        };
+        return image_mani;
     }
-    else
+
+    io::path mask_full_path;
+    if (!m_mask.empty())
     {
-        m->setFlag(video::EMF_FOG_ENABLE, m_fog && use_fog);
-
-        if (parent != NULL)
-            parent->setMaterialFlag(video::EMF_FOG_ENABLE, m_fog && use_fog);
+        mask_full_path = (StringUtils::getPath(m_sampler_path[0]) + "/" +
+            m_mask).c_str();
     }
-}   // adjustForFog
-
-//-----------------------------------------------------------------------------
-
-/** Callback from LOD nodes to create some effects */
-void Material::onMadeVisible(scene::IMeshBuffer* who)
-{
-    if (!CVS->isGLSL()) return;
-}
-
-//-----------------------------------------------------------------------------
-
-/** Callback from LOD nodes to create some effects */
-void Material::onHidden(scene::IMeshBuffer* who)
-{
-    if (!CVS->isGLSL()) return;
-}
-
-//-----------------------------------------------------------------------------
-
-void Material::isInitiallyHidden(scene::IMeshBuffer* who)
-{
-    if (!CVS->isGLSL()) return;
-}
-
-//-----------------------------------------------------------------------------
+    if (!mask_full_path.empty())
+    {
+        image_mani = [mask_full_path](video::IImage* img)->void
+        {
+            core::dimension2du dim = img->getDimension();
+            core::dimension2du max_size;
+            video::IImage* converted_mask = GE::getResizedImageFullPath(
+                mask_full_path, max_size, NULL, &dim);
+            if (converted_mask == NULL)
+            {
+                Log::warn("Material", "Applying alpha mask failed for '%s'!",
+                    mask_full_path.c_str());
+                return;
+            }
+            for (unsigned int x = 0; x < dim.Width; x++)
+            {
+                for (unsigned int y = 0; y < dim.Height; y++)
+                {
+                    video::SColor col = img->getPixel(x, y);
+                    video::SColor alpha = converted_mask->getPixel(x, y);
+                    col.setAlpha(alpha.getRed());
+                    img->setPixel(x, y, col, false);
+                }   // for y
+            }   // for x
+            converted_mask->drop();
+        };
+        return image_mani;
+    }
+#endif
+    return nullptr;
+} // getMaskImageMani

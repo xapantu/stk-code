@@ -9,6 +9,8 @@
 #include "IXMLReader.h"
 #include "IFileArchive.h"
 
+#include <mutex>
+
 namespace irr
 {
 namespace video
@@ -159,6 +161,8 @@ public:
 	//! Get the number of archives currently attached to the file system
 	virtual u32 getFileArchiveCount() const =0;
 
+	virtual void removeAllFileArchives() =0;
+
 	//! Removes an archive from the file system.
 	/** This will close the archive and free any file handles, but will not
 	close resources which have already been loaded and are now cached, for
@@ -304,6 +308,10 @@ public:
 	See IReferenceCounted::drop() for more information. */
 	virtual IFileList* createFileList() =0;
 
+	//! Creates a list of files and directories in specified directory
+	//! and returns it.
+	virtual IFileList* createFileList(const io::path& directory) =0;
+
 	//! Creates an empty filelist
 	/** \return a Pointer to the created IFileList is returned. After the list has been used
 	it has to be deleted using its IFileList::drop() method.
@@ -317,6 +325,11 @@ public:
 	/** \param filename is the string identifying the file which should be tested for existence.
 	\return True if file exists, and false if it does not exist or an error occured. */
 	virtual bool existFile(const path& filename) const =0;
+
+	//! Determines if a file exists and could be opened (thread-safe, ignore file archives), this function returns false for directory
+	/** \param filename is the string identifying the file which should be tested for existence.
+	\return True if file exists, and false if it does not exist or an error occured. */
+	virtual bool existFileOnly(const path& filename) const =0;
 
 	//! Creates a XML Reader from a file which returns all parsed strings as wide characters (wchar_t*).
 	/** Use createXMLReaderUTF8() if you prefer char* instead of wchar_t*. See IIrrXMLReader for
@@ -375,6 +388,8 @@ public:
 	If you no longer need the object, you should call IAttributes::drop().
 	See IReferenceCounted::drop() for more information. */
 	virtual IAttributes* createEmptyAttributes(video::IVideoDriver* driver=0) =0;
+
+	virtual std::unique_lock<std::recursive_mutex> acquireFileArchivesMutex() const = 0;
 };
 
 

@@ -32,9 +32,11 @@
 #include <enet/enet.h>
 
 #include <stdio.h>
+#include <vector>
 
+class BareNetworkString;
 class NetworkString;
-class TransportAddress;
+class SocketAddress;
 
 /** \class EnetHost
  *  A small wrapper around enet to allow sending and receiving
@@ -46,29 +48,38 @@ private:
     /** ENet host interfacing sockets. */
     ENetHost*  m_host;
 
+    uint16_t m_port;
+
+    bool m_ipv6_socket;
     /** Where to log packets. If NULL for FILE* logging is disabled. */
     static Synchronised<FILE*> m_log_file;
 
 public:
+    static bool m_connection_debug;
               Network(int peer_count, int channel_limit,
                       uint32_t max_incoming_bandwidth,
                       uint32_t max_outgoing_bandwidth,
-                      ENetAddress* address = NULL);
+                      ENetAddress* address,
+                      bool change_port_if_bound = false);
     virtual  ~Network();
 
     static void openLog();
-    static void logPacket(const NetworkString &ns, bool incoming);
+    static void logPacket(const BareNetworkString &ns, bool incoming);
     static void closeLog();
-    ENetPeer *connectTo(const TransportAddress &address);
-    void     sendRawPacket(uint8_t* data, int length,
-                           const TransportAddress& dst);
+    ENetPeer *connectTo(const ENetAddress &address);
+    void     sendRawPacket(const BareNetworkString &buffer,
+                           const SocketAddress& dst);
     int receiveRawPacket(char *buffer, int buf_len,
-                         TransportAddress* sender, int max_tries = -1);
-    void     broadcastPacket(const NetworkString& data,
+                         SocketAddress* sender, int max_tries = -1);
+    void     broadcastPacket(NetworkString *data,
                              bool reliable = true);
+    // ------------------------------------------------------------------------
+    uint16_t getPort() const { return m_port; }
     // ------------------------------------------------------------------------
     /** Returns a pointer to the ENet host object. */
     ENetHost* getENetHost() { return m_host; }
+    // ------------------------------------------------------------------------
+    bool isIPv6Socket() { return m_ipv6_socket; }
 };   // class Network
 
 #endif // HEADER_ENET_SOCKET_HPP

@@ -21,19 +21,30 @@
 
 #include <vector3d.h>
 
-#include "items/item.hpp"
 #include "physics/physical_object.hpp"
 #include "scriptengine/scriptvec3.hpp"
 #include "tracks/track_object_presentation.hpp"
 #include "utils/cpp2011.hpp"
-#include "utils/no_copy.hpp"
 #include "utils/vec3.hpp"
 #include <string>
 #include "animations/three_d_animation.hpp"
 
-class XMLNode;
-class ThreeDAnimation;
+#include <memory>
+
 class ModelDefinitionLoader;
+namespace GE { class GERenderInfo; }
+class ThreeDAnimation;
+class XMLNode;
+
+namespace irr
+{
+    namespace scene
+    {
+        class IAnimatedMeshSceneNode;
+    }
+}
+
+using namespace irr;
 
 /**
  * \ingroup tracks
@@ -41,7 +52,7 @@ class ModelDefinitionLoader;
  *  might also have a skeletal animation. This is used by objects that
  *  have an IPO animation, as well as physical objects.
  */
-class TrackObject : public NoCopy
+class TrackObject
 {
 //public:
     // The different type of track objects: physical objects, graphical
@@ -55,12 +66,13 @@ private:
 
     TrackObjectPresentation* m_presentation;
 
-	std::string m_name;
+    std::string m_name;
 
     std::string m_id;
 
-protected:
+    std::shared_ptr<GE::GERenderInfo>    m_render_info;
 
+protected:
 
     /** The initial XYZ position of the object. */
     core::vector3df                m_init_xyz;
@@ -83,7 +95,7 @@ protected:
     /** True if a kart can drive on this object. This will */
     bool                           m_is_driveable;
 
-    PhysicalObject*                m_physical_object;
+    std::shared_ptr<PhysicalObject> m_physical_object;
 
     ThreeDAnimation*               m_animator;
 
@@ -115,6 +127,8 @@ public:
                              const PhysicalObject::Settings* physicsSettings);
     virtual      ~TrackObject();
     virtual void update(float dt);
+    virtual void updateGraphics(float dt);
+    virtual void resetAfterRewind();
     void move(const core::vector3df& xyz, const core::vector3df& hpr,
               const core::vector3df& scale, bool updateRigidBody,
               bool isAbsoluteCoord);
@@ -125,7 +139,7 @@ public:
     const core::vector3df  getAbsoluteCenterPosition() const;
     const core::vector3df& getRotation() const;
     const core::vector3df& getScale() const;
-    bool castRay(const btVector3 &from, 
+    bool castRay(const btVector3 &from,
                  const btVector3 &to, btVector3 *hit_point,
                  const Material **material, btVector3 *normal,
                  bool interpolate_normal) const;
@@ -150,19 +164,20 @@ public:
     // ------------------------------------------------------------------------
     const std::string& getType() const { return m_type; }
     // ------------------------------------------------------------------------
-	const std::string getName() const { return m_name; }
+    const std::string getName() const { return m_name; }
     // ------------------------------------------------------------------------
     const std::string getID() const { return m_id; }
     // ------------------------------------------------------------------------
     const std::string getInteraction() const { return m_interaction; }
     // ------------------------------------------------------------------------
-	bool isEnabled() const { return m_enabled; }
+    bool isEnabled() const { return m_enabled; }
     // ------------------------------------------------------------------------
     bool isSoccerBall() const { return m_soccer_ball; }
     // ------------------------------------------------------------------------
-    const PhysicalObject* getPhysicalObject() const { return m_physical_object; }
+    const PhysicalObject* getPhysicalObject() const
+                                            { return m_physical_object.get(); }
     // ------------------------------------------------------------------------
-    PhysicalObject* getPhysicalObject() { return m_physical_object; }
+    PhysicalObject* getPhysicalObject()     { return m_physical_object.get(); }
     // ------------------------------------------------------------------------
     const core::vector3df getInitXYZ() const { return m_init_xyz; }
     // ------------------------------------------------------------------------
@@ -188,7 +203,7 @@ public:
     /** Should only be used on mesh track objects.
     * On the script side, the returned object is of type : @ref Scripting_Mesh
     */
-    TrackObjectPresentationMesh* getMesh() { return getPresentation<TrackObjectPresentationMesh>(); }
+    scene::IAnimatedMeshSceneNode* getMesh();
     /** Should only be used on particle emitter track objects.
     * On the script side, the returned object is of type : @ref Scripting_ParticleEmitter
     */
@@ -210,7 +225,7 @@ public:
     /** Get the physics representation of an object.
       * On the script side, the returned object is of type : @ref Scripting_PhysicalObject
       */
-    PhysicalObject* getPhysics() { return m_physical_object; }
+    PhysicalObject* getPhysics() { return m_physical_object.get(); }
     /** Hide or show the object */
     void setEnabled(bool mode);
 
@@ -225,7 +240,19 @@ public:
     // ------------------------------------------------------------------------
     const ThreeDAnimation* getAnimator() const { return m_animator; }
     // ------------------------------------------------------------------------
+    /* Return true if it has animator or its parent library has */
+    bool hasAnimatorRecursively() const
+    {
+        if (m_animator)
+            return true;
+        if (!m_parent_library)
+            return false;
+        return m_parent_library->hasAnimatorRecursively();
+    }
+    // ------------------------------------------------------------------------
     void setPaused(bool mode){ m_animator->setPaused(mode); }
+    // ------------------------------------------------------------------------
+    void setInitiallyVisible(bool val)           { m_initially_visible = val; }
     // ------------------------------------------------------------------------
     /** Returns if a kart can drive on this object. */
     bool isDriveable() const { return m_is_driveable; }
@@ -242,6 +269,10 @@ public:
     std::vector<TrackObject*>& getChildren() { return m_children; }
     // ------------------------------------------------------------------------
     void movePhysicalBodyToGraphicalNode(const core::vector3df& xyz, const core::vector3df& hpr);
+    // ------------------------------------------------------------------------
+    bool joinToMainTrack();
+    // ------------------------------------------------------------------------
+    TrackObject* cloneToChild();
     LEAK_CHECK()
 };   // TrackObject
 

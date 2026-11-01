@@ -28,6 +28,8 @@
 #include <SColor.h>
 #include <SVertexIndex.h>
 
+void preloadShaders();
+
 void draw2DImageFromRTT(GLuint texture, size_t texture_w, size_t texture_h,
                         const irr::core::rect<irr::s32>& destRect,
                         const irr::core::rect<irr::s32>& sourceRect,
@@ -48,6 +50,12 @@ void draw2DImage(const irr::video::ITexture* texture,
                  const irr::core::rect<irr::s32>* clipRect,
                  const irr::video::SColor* const colors,
                  bool useAlphaChannelOfTexture);
+
+void draw2DImageRotationColor(irr::video::ITexture* texture,
+                 const irr::core::rect<irr::s32>& destRect,
+                 const irr::core::rect<irr::s32>& sourceRect,
+                 const irr::core::rect<irr::s32>* clipRect,
+                 float rotation, const irr::video::SColor& color);
 
 void draw2DVertexPrimitiveList(irr::video::ITexture *t, const void* vertices,
                   irr::u32 vertexCount, const void* indexList,

@@ -17,12 +17,11 @@
 
 #include "states_screens/dialogs/message_dialog.hpp"
 
-#include "guiengine/engine.hpp"
-#include "guiengine/screen.hpp"
-#include "guiengine/widgets/button_widget.hpp"
 #include "guiengine/widgets/label_widget.hpp"
+#include "guiengine/widgets/ribbon_widget.hpp"
 #include "modes/world.hpp"
 #include "states_screens/state_manager.hpp"
+#include "utils/string_utils.hpp"
 #include "utils/translation.hpp"
 
 using namespace GUIEngine;
@@ -41,13 +40,14 @@ MessageDialog::MessageDialog(const irr::core::stringw &msg,
                              MessageDialogType type,
                              IConfirmDialogListener* listener,
                              bool own_listener, bool from_queue,
-                             float width, float height)
+                             float width, float height, bool focus_on_cancel)
              : ModalDialog(width, height)
 {
-    m_msg          = msg;
-    m_type         = type;
-    m_listener     = listener;
-    m_own_listener = own_listener;
+    m_msg             = msg;
+    m_type            = type;
+    m_listener        = listener;
+    m_own_listener    = own_listener;
+    m_focus_on_cancel = focus_on_cancel;
     doInit(from_queue);
 }   // MessageDialog(stringw, type, listener, own_listener)
 
@@ -58,13 +58,15 @@ MessageDialog::MessageDialog(const irr::core::stringw &msg,
  *         loadFromFile() is not called (it will be called when the dialog
  *         is finally being removed from the queue and shown).
  */
-MessageDialog::MessageDialog(const irr::core::stringw &msg, bool from_queue)
+MessageDialog::MessageDialog(const irr::core::stringw &msg, bool from_queue,
+                             bool focus_on_cancel)
              : ModalDialog(0.6f, 0.6f)
 {
     m_msg          = msg;
     m_type         = MessageDialog::MESSAGE_DIALOG_OK;
     m_listener     = NULL;
     m_own_listener = false;
+    m_focus_on_cancel = focus_on_cancel;
     if (!from_queue) doInit(false);
 }   // MessageDialog(stringw)
 
@@ -97,7 +99,7 @@ void MessageDialog::doInit(bool from_queue)
 
 MessageDialog::~MessageDialog()
 {
-    if (m_own_listener) delete m_listener; 
+    if (m_own_listener) delete m_listener;
     m_listener = NULL;
 
     if (StateManager::get()->getGameState() == GUIEngine::GAME)
@@ -111,29 +113,36 @@ void MessageDialog::loadedFromFile()
 {
     LabelWidget* message = getWidget<LabelWidget>("title");
     message->setText( m_msg, false );
+    RibbonWidget* ribbon = getWidget<RibbonWidget>("buttons");
+    ribbon->setFocusForPlayer(PLAYER_ID_GAME_MASTER);
 
     // If the dialog is a simple 'OK' dialog, then hide the "Yes" button and
     // change "Cancel" to "OK"
     if (m_type == MessageDialog::MESSAGE_DIALOG_OK)
     {
-        ButtonWidget* yesbtn = getWidget<ButtonWidget>("confirm");
+        IconButtonWidget* yesbtn = getWidget<IconButtonWidget>("cancel");
         yesbtn->setVisible(false);
 
-        ButtonWidget* cancelbtn = getWidget<ButtonWidget>("cancel");
+        IconButtonWidget* cancelbtn = getWidget<IconButtonWidget>("confirm");
         cancelbtn->setText(_("OK"));
-        cancelbtn->setFocusForPlayer(PLAYER_ID_GAME_MASTER);
     }
     else if (m_type == MessageDialog::MESSAGE_DIALOG_YESNO)
     {
-        ButtonWidget* cancelbtn = getWidget<ButtonWidget>("cancel");
+        IconButtonWidget* cancelbtn = getWidget<IconButtonWidget>("cancel");
         cancelbtn->setText(_("No"));
-
     }
     else if (m_type == MessageDialog::MESSAGE_DIALOG_OK_CANCEL)
     {
         // In case of a OK_CANCEL dialog, change the text from 'Yes' to 'Ok'
-        ButtonWidget* yesbtn = getWidget<ButtonWidget>("confirm");
+        IconButtonWidget* yesbtn = getWidget<IconButtonWidget>("confirm");
         yesbtn->setText(_("OK"));
+    }
+    else if (m_type == MessageDialog::MESSAGE_DIALOG_OK_DONTSHOWAGAIN)
+    {
+        IconButtonWidget* yesbtn = getWidget<IconButtonWidget>("confirm");
+        yesbtn->setText(_("OK"));
+        IconButtonWidget* cancel = getWidget<IconButtonWidget>("cancel");
+        cancel->setText(_("Don't show again"));
     }
 }
 
@@ -147,8 +156,9 @@ void MessageDialog::onEnterPressedInternal()
 
 GUIEngine::EventPropagation MessageDialog::processEvent(const std::string& eventSource)
 {
-
-    if (eventSource == "cancel")
+    RibbonWidget* ribbon = getWidget<RibbonWidget>(eventSource.c_str());
+    
+    if (ribbon->getSelectionIDString(PLAYER_ID_GAME_MASTER) == "cancel")
     {
         if (m_listener == NULL)
         {
@@ -161,7 +171,7 @@ GUIEngine::EventPropagation MessageDialog::processEvent(const std::string& event
 
         return GUIEngine::EVENT_BLOCK;
     }
-    else if (eventSource == "confirm")
+    else if (ribbon->getSelectionIDString(PLAYER_ID_GAME_MASTER) == "confirm")
     {
         if (m_listener == NULL)
         {
@@ -184,3 +194,14 @@ void MessageDialog::onUpdate(float dt)
 {
     if (m_listener != NULL) m_listener->onDialogUpdate(dt);
 }
+
+
+// -----------------------------------------------------------------------------
+void MessageDialog::init()
+{
+    if (m_focus_on_cancel)
+    {
+        RibbonWidget* ribbon = getWidget<RibbonWidget>("buttons");
+        ribbon->select("cancel", PLAYER_ID_GAME_MASTER);
+    }
+}   // init

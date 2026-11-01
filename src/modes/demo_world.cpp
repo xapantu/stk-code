@@ -28,9 +28,11 @@
 #include "tracks/track.hpp"
 #include "tracks/track_manager.hpp"
 
+#include <limits>
+
 std::vector<std::string> DemoWorld::m_demo_tracks;
-int                      DemoWorld::m_num_karts         = 2;
-float                    DemoWorld::m_max_idle_time     = 99999.0f;
+int                      DemoWorld::m_default_num_karts = 2;
+float                    DemoWorld::m_max_idle_time     = std::numeric_limits<float>::max();
 float                    DemoWorld::m_current_idle_time = 0;
 bool                     DemoWorld::m_do_demo           = false;
 
@@ -46,12 +48,39 @@ DemoWorld::DemoWorld()
     setPhase(SETUP_PHASE);
     m_abort = false;
     ProfileWorld::setProfileModeLaps(m_num_laps);
-    race_manager->setReverseTrack(false);
-    race_manager->setMinorMode (RaceManager::MINOR_MODE_NORMAL_RACE);
-    race_manager->setDifficulty(RaceManager::DIFFICULTY_HARD);
-    race_manager->setNumKarts(m_num_karts);
-    race_manager->setNumPlayers(1);
-    race_manager->setPlayerKart(0, UserConfigParams::m_default_kart);
+
+    // Randomly select whether reverse mode is activated or not.
+    if (rand() % 2 == 0)
+        RaceManager::get()->setReverseTrack(true);
+    else
+        RaceManager::get()->setReverseTrack(false);
+
+    // Selects the user's current game mode setting (not all modes are supported)
+    switch (atoi(UserConfigParams::m_game_mode.toString().c_str()))
+    {
+        case 0: RaceManager::get()->setMinorMode(RaceManager::MINOR_MODE_NORMAL_RACE); break;
+        case 1: RaceManager::get()->setMinorMode(RaceManager::MINOR_MODE_TIME_TRIAL); break;
+        case 2: RaceManager::get()->setMinorMode(RaceManager::MINOR_MODE_FOLLOW_LEADER); break;
+        default: RaceManager::get()->setMinorMode(RaceManager::MINOR_MODE_NORMAL_RACE); break;
+    }
+    // Selects the user's current difficulty setting
+    switch (atoi(UserConfigParams::m_difficulty.toString().c_str()))
+    {
+        case 0: RaceManager::get()->setDifficulty(RaceManager::DIFFICULTY_EASY); break;
+        case 1: RaceManager::get()->setDifficulty(RaceManager::DIFFICULTY_MEDIUM); break;
+        case 2: RaceManager::get()->setDifficulty(RaceManager::DIFFICULTY_HARD); break;
+        case 3: RaceManager::get()->setDifficulty(RaceManager::DIFFICULTY_BEST); break;
+        default: RaceManager::get()->setDifficulty(RaceManager::DIFFICULTY_HARD); break;
+    }
+
+    Log::info("[DemoWorld]", "Reverse mode state: %d", RaceManager::get()->getReverseTrack());
+    Log::info("[DemoWorld]", "Current game mode: %s", RaceManager::get()->getMinorModeName().c_str());
+    Log::info("[DemoWorld]", "Current difficulty: %s", RaceManager::get()->
+    getDifficultyAsString(RaceManager::get()->getDifficulty()).c_str());
+
+    RaceManager::get()->setNumKarts(m_default_num_karts);
+    RaceManager::get()->setNumPlayers(1);
+    RaceManager::get()->setPlayerKart(0, UserConfigParams::m_default_kart);
 
 }   // DemoWorld
 
@@ -82,7 +111,7 @@ bool DemoWorld::isRaceOver()
     if(m_abort) return true;
 
     // Now it must be laps based profiling:
-    return race_manager->getFinishedKarts()==getNumKarts();
+    return RaceManager::get()->getFinishedKarts()==getNumKarts();
 }   // isRaceOver
 
 //-----------------------------------------------------------------------------
@@ -104,6 +133,9 @@ void DemoWorld::enterRaceOverState()
  */
 bool DemoWorld::updateIdleTimeAndStartDemo(float dt)
 {
+    // Demo world is disabled if max float
+    if (m_max_idle_time == std::numeric_limits<float>::max())
+        return false;
     // We get crashes if stk is activated when a modal dialog is open
     if(GUIEngine::ModalDialog::isADialogActive())
         return false;
@@ -137,7 +169,7 @@ bool DemoWorld::updateIdleTimeAndStartDemo(float dt)
     }
 
     StateManager::get()->enterGameState();
-    race_manager->setNumPlayers(1);
+    RaceManager::get()->setNumPlayers(1);
     InputDevice *device;
 
     // Use keyboard 0 by default in --no-start-screen
@@ -149,10 +181,11 @@ bool DemoWorld::updateIdleTimeAndStartDemo(float dt)
     input_manager->getDeviceManager()->setAssignMode(ASSIGN);
 
     m_do_demo = true;
-    race_manager->setNumKarts(m_num_karts);
-    race_manager->setPlayerKart(0, "tux");
-    race_manager->setupPlayerKartInfo();
-    race_manager->startSingleRace(m_demo_tracks[0], m_num_laps, false);
+    RaceManager::get()->setNumKarts(m_default_num_karts);
+    // Use the user's last selected kart
+    RaceManager::get()->setPlayerKart(0, UserConfigParams::m_default_kart);
+    RaceManager::get()->setupPlayerKartInfo();
+    RaceManager::get()->startSingleRace(m_demo_tracks[0], m_num_laps, false);
     m_demo_tracks.push_back(m_demo_tracks[0]);
     m_demo_tracks.erase(m_demo_tracks.begin());
 

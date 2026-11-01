@@ -18,108 +18,171 @@
 
 #include "network/servers_manager.hpp"
 
+#include "config/stk_config.hpp"
 #include "config/user_config.hpp"
+#include "io/xml_node.hpp"
 #include "network/network.hpp"
 #include "network/network_config.hpp"
 #include "network/network_string.hpp"
+#include "network/server.hpp"
+#include "network/socket_address.hpp"
+#include "network/stk_host.hpp"
+#include "network/stk_ipv6.hpp"
 #include "online/xml_request.hpp"
+#include "online/request_manager.hpp"
 #include "utils/translation.hpp"
 #include "utils/time.hpp"
 
 #include <assert.h>
-#include <irrString.h>
+#include <functional>
+#include <set>
 #include <string>
+#include <thread>
 
-#define SERVER_REFRESH_INTERVAL 5.0f
+#if defined(WIN32)
+#  undef _WIN32_WINNT
+#  define _WIN32_WINNT 0x600
+#  include <iphlpapi.h>
+#else
+#ifndef __SWITCH__
+#  include <ifaddrs.h>
+#else
+extern "C" {
+  #define u64 uint64_t
+  #define u32 uint32_t
+  #define s64 int64_t
+  #define s32 int32_t
+  #define Event libnx_Event
+  #include <switch/services/nifm.h>
+  #undef Event
+  #undef u64
+  #undef u32
+  #undef s32
+  #undef s64
+}
+#endif
+#  include <net/if.h>
+#endif
 
-static ServersManager* manager_singleton(NULL);
+static ServersManager* g_manager_singleton(NULL);
 
+// ============================================================================
 ServersManager* ServersManager::get()
 {
-    if (manager_singleton == NULL)
-        manager_singleton = new ServersManager();
+    if (g_manager_singleton == NULL)
+        g_manager_singleton = new ServersManager();
 
-    return manager_singleton;
+    return g_manager_singleton;
 }   // get
 
-// ------------------------------------------------------------------------
+// ============================================================================
 void ServersManager::deallocate()
 {
-    delete manager_singleton;
-    manager_singleton = NULL;
+    delete g_manager_singleton;
+    g_manager_singleton = NULL;
 }   // deallocate
 
-// ===========================================================-=============
+// ----------------------------------------------------------------------------
 ServersManager::ServersManager()
 {
-    m_last_load_time.setAtomic(0.0f);
-    m_joined_server.setAtomic(NULL);
 }   // ServersManager
 
-// ------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 ServersManager::~ServersManager()
 {
-    cleanUpServers();
 }   // ~ServersManager
-
-// ------------------------------------------------------------------------
-/** Removes all stored server information. After this call the list of
- *  servers can be refreshed.
- */
-void ServersManager::cleanUpServers()
-{
-    if(m_joined_server.getAtomic()!=NULL)
-    {
-        // m_joinsed_server is a pointer into the m_server structure,
-        // we can not modify this data structure while this pointer exists.
-        Log::warn("ServersManager", "Server cleanUp while being already "
-                                    "connected to a server.");
-        return;
-    }
-
-    m_sorted_servers.lock();
-    m_sorted_servers.getData().clearAndDeleteAll();
-    m_sorted_servers.unlock();
-    m_mapped_servers.lock();
-    m_mapped_servers.getData().clear();
-    m_mapped_servers.unlock();
-}   // cleanUpServers
 
 // ----------------------------------------------------------------------------
 /** Returns a WAN update-list-of-servers request. It queries the
  *  STK server for an up-to-date list of servers.
  */
-Online::XMLRequest* ServersManager::getWANRefreshRequest() const
+std::shared_ptr<ServerList> ServersManager::getWANRefreshRequest() const
 {
     // ========================================================================
     /** A small local class that triggers an update of the ServersManager
      *  when the request is finished. */
     class WANRefreshRequest : public Online::XMLRequest
     {
+    private:
+        std::weak_ptr<ServerList> m_server_list;
+        // Run the ip detect in separate thread, so it can be done parallel
+        // with the wan server request (which takes few seconds too)
+        uint64_t m_creation_time;
     public:
-        WANRefreshRequest() : Online::XMLRequest(/*manage_memory*/false,
-                                                 /*priority*/100) {}
-        // --------------------------------------------------------------------
-        virtual void callback()
+        WANRefreshRequest(std::shared_ptr<ServerList> server_list)
+        : Online::XMLRequest(/*priority*/100)
         {
-            ServersManager::get()->refresh(isSuccess(), getXMLData());
-        }   // callback
+            NetworkConfig::queueIPDetection();
+            m_creation_time = StkTime::getMonoTimeMs();
+            m_server_list = server_list;
+        }
+        // --------------------------------------------------------------------
+        virtual void afterOperation() OVERRIDE
+        {
+            Online::XMLRequest::afterOperation();
+            // Wait at most 2 seconds for ip detection
+            uint64_t timeout = StkTime::getMonoTimeMs() - m_creation_time;
+            if (timeout > 2000)
+                timeout = 0;
+            else
+                timeout = 2000 - timeout;
+            NetworkConfig::get()->getIPDetectionResult(timeout);
+            auto server_list = m_server_list.lock();
+            if (!server_list)
+                return;
+
+            if (!isSuccess())
+            {
+                Log::error("ServersManager", "Could not refresh server list");
+                server_list->m_list_updated = true;
+                return;
+            }
+
+            const XMLNode *servers_xml = getXMLData()->getNode("servers");
+            for (unsigned int i = 0; i < servers_xml->getNumNodes(); i++)
+            {
+                const XMLNode* s = servers_xml->getNode(i);
+                assert(s);
+                const XMLNode* si = s->getNode("server-info");
+                assert(si);
+                int version = 0;
+                si->get("version", &version);
+                assert(version != 0);
+                if (version < stk_config->m_max_server_version ||
+                    version > stk_config->m_max_server_version)
+                {
+                    Log::verbose("ServersManager", "Skipping a server");
+                    continue;
+                }
+                std::shared_ptr<Server> ser = std::make_shared<Server>(*s);
+                if (ser->getAddress().isUnset() &&
+                    NetworkConfig::get()->getIPType() == NetworkConfig::IP_V4)
+                {
+                    Log::verbose("ServersManager",
+                        "Skipping an IPv6 only server");
+                    continue;
+                }
+                server_list->m_servers.emplace_back(ser);
+            }
+            server_list->m_list_updated = true;
+        }   // afterOperation
         // --------------------------------------------------------------------
     };   // RefreshRequest
     // ========================================================================
 
-    Online::XMLRequest *request = new WANRefreshRequest();
+    auto server_list = std::make_shared<ServerList>();
+    auto request = std::make_shared<WANRefreshRequest>(server_list);
     request->setApiURL(Online::API::SERVER_PATH, "get-all");
-
-    return request;
+    Online::RequestManager::get()->addRequest(request);
+    return server_list;
 }   // getWANRefreshRequest
 
 // ----------------------------------------------------------------------------
 /** Returns a LAN update-list-of-servers request. It uses UDP broadcasts
- *  to find LAN servers, and waits for a certain amount of time fr 
+ *  to find LAN servers, and waits for a certain amount of time fr
  *  answers.
  */
-Online::XMLRequest* ServersManager::getLANRefreshRequest() const
+std::shared_ptr<ServerList> ServersManager::getLANRefreshRequest() const
 {
     /** A simple class that uses LAN broadcasts to find local servers.
      *  It is based on XML request, but actually does not use any of the
@@ -128,10 +191,17 @@ Online::XMLRequest* ServersManager::getLANRefreshRequest() const
      */
     class LANRefreshRequest : public Online::XMLRequest
     {
+    private:
+        std::weak_ptr<ServerList> m_server_list;
     public:
 
         /** High priority for this request. */
-        LANRefreshRequest() : XMLRequest(false, 100) {m_success = false;}
+        LANRefreshRequest(std::shared_ptr<ServerList> server_list)
+            : XMLRequest(/*priority*/100)
+        {
+            m_success = false;
+            m_server_list = server_list;
+        }
         // --------------------------------------------------------------------
         virtual ~LANRefreshRequest() {}
         // --------------------------------------------------------------------
@@ -150,43 +220,101 @@ Online::XMLRequest* ServersManager::getLANRefreshRequest() const
         // --------------------------------------------------------------------
         virtual void operation() OVERRIDE
         {
-            Network *broadcast = new Network(1, 1, 0, 0);
+            auto server_list = m_server_list.lock();
+            if (!server_list)
+                return;
 
-            NetworkString s(std::string("stk-server"));
-            TransportAddress broadcast_address(-1, 2757);
-            broadcast->sendRawPacket(s.getBytes(), s.size(), broadcast_address);
+            ENetAddress addr = {};
+            setIPv6Socket(UserConfigParams::m_ipv6_lan ? 1 : 0);
+            NetworkConfig::get()->setIPType(UserConfigParams::m_ipv6_lan ?
+                NetworkConfig::IP_DUAL_STACK : NetworkConfig::IP_V4);
+            Network *broadcast = new Network(1, 1, 0, 0, &addr);
+            if (!broadcast->getENetHost())
+            {
+                setIPv6Socket(0);
+                m_success = true;
+                delete broadcast;
+                server_list->m_list_updated = true;
+                return;
+            }
+            const std::vector<SocketAddress> &all_bcast =
+                ServersManager::get()->getBroadcastAddresses(
+                UserConfigParams::m_ipv6_lan);
+            for (auto bcast_addr : all_bcast)
+            {
+                Log::info("Server Discovery", "Broadcasting to %s",
+                          bcast_addr.toString().c_str());
+                broadcast->sendRawPacket(std::string("stk-server"), bcast_addr);
+            }
 
             Log::info("ServersManager", "Sent broadcast message.");
 
             const int LEN=2048;
             char buffer[LEN];
-            // Wait for up to 0.5 seconds to receive an answer from 
+            // Wait for up to 0.5 seconds to receive an answer from
             // any local servers.
-            double start_time = StkTime::getRealTime();
-            const double DURATION = 1.0;
-            while(StkTime::getRealTime() - start_time < DURATION)
+            uint64_t start_time = StkTime::getMonoTimeMs();
+            const uint64_t DURATION = 1000;
+            int cur_server_id = 0;
+            // Use a map with the server name as key to automatically remove
+            // duplicated answers from a server (since we potentially do
+            // multiple broadcasts). We can not use the sender ip address,
+            // because e.g. a local client would answer as 127.0.0.1 and
+            // 192.168.**.
+            std::map<irr::core::stringw, std::shared_ptr<Server> > servers_now;
+            while (StkTime::getMonoTimeMs() - start_time < DURATION)
             {
-                TransportAddress sender;
+                SocketAddress sender;
                 int len = broadcast->receiveRawPacket(buffer, LEN, &sender, 1);
-                if(len>0)
+                if (len > 0)
                 {
-                    NetworkString s(buffer, len);
+                    BareNetworkString s(buffer, len);
+                    int version = s.getUInt32();
+                    if (version < stk_config->m_max_server_version ||
+                        version > stk_config->m_max_server_version)
+                    {
+                        Log::verbose("ServersManager", "Skipping a server");
+                        continue;
+                    }
                     irr::core::stringw name;
-                    // name_len is the number of bytes read
-                    uint8_t bytes_read = s.decodeStringW(0, &name);
-                    uint8_t max_players = s.getUInt8(bytes_read  );
-                    uint8_t players     = s.getUInt8(bytes_read+1);
-                    uint32_t my_ip      = s.getUInt32(bytes_read+2);
-                    uint32_t my_port    = s.getUInt16(bytes_read+6);
-                    ServersManager::get()
-                          ->addServer(new Server(name, /*lan*/true,
-                                                 max_players, players, 
-                                                 sender)               );
-                    TransportAddress me(my_ip, my_port);
-                    NetworkConfig::get()->setMyAddress(me);
-                    m_success = true;
+                    // bytes_read is the number of bytes read
+                    s.decodeStringW(&name);
+                    uint8_t max_players = s.getUInt8();
+                    uint8_t players     = s.getUInt8();
+                    uint16_t port       = s.getUInt16();
+                    uint8_t difficulty  = s.getUInt8();
+                    uint8_t mode        = s.getUInt8();
+                    sender.setPort(port);
+                    uint8_t password    = s.getUInt8();
+                    uint8_t game_started = s.getUInt8();
+                    std::string current_track;
+                    try
+                    {
+                        s.decodeString(&current_track);
+                    }
+                    catch (std::exception& e)
+                    {
+                        (void)e;
+                    }
+                    auto server = std::make_shared<Server>(cur_server_id++,
+                        name, max_players, players, difficulty, mode,
+                        SocketAddress(sender.getIP(), sender.getPort()),
+                        password == 1, game_started == 1, current_track);
+                    if (sender.isIPv6())
+                    {
+                        server->setIPV6Address(sender);
+                        server->setIPV6Connection(true);
+                    }
+                    servers_now.insert(std::make_pair(name, server));
+                    //all_servers.[name] = servers_now.back();
                 }   // if received_data
             }    // while still waiting
+            setIPv6Socket(0);
+            delete broadcast;
+            m_success = true;
+            for (auto& i : servers_now)
+                server_list->m_servers.emplace_back(i.second);
+            server_list->m_list_updated = true;
         }   // operation
         // --------------------------------------------------------------------
         /** This function is necessary, otherwise the XML- and HTTP-Request
@@ -196,139 +324,241 @@ Online::XMLRequest* ServersManager::getLANRefreshRequest() const
     };   // LANRefreshRequest
     // ========================================================================
 
-    return new LANRefreshRequest();
+    auto server_list = std::make_shared<ServerList>();
+    auto request = std::make_shared<LANRefreshRequest>(server_list);
+    Online::RequestManager::get()->addRequest(request);
+    return server_list;
 
 }   // getLANRefreshRequest
 
 // ----------------------------------------------------------------------------
-/** Factory function to create either a LAN or a WAN update-of-server
- *  requests. The current list of servers is also cleared/
+/** Sets a list of default broadcast addresses which is used in case no valid
+ *  broadcast address is found. This list includes default private network
+ *  addresses.
  */
-Online::XMLRequest* ServersManager::getRefreshRequest(bool request_now)
+std::vector<SocketAddress> ServersManager::getDefaultBroadcastAddresses()
 {
-    if (StkTime::getRealTime() - m_last_load_time.getAtomic()
-        < SERVER_REFRESH_INTERVAL)
+    // Add some common LAN addresses
+    std::vector<SocketAddress> result;
+    uint16_t port = stk_config->m_server_discovery_port;
+    result.emplace_back(std::string("192.168.255.255"), port);
+    result.emplace_back(std::string("192.168.0.255"), port);
+    result.emplace_back(std::string("192.168.1.255"), port);
+    result.emplace_back(std::string("172.31.255.255"), port);
+    result.emplace_back(std::string("172.16.255.255"), port);
+    result.emplace_back(std::string("172.16.0.255"), port);
+    result.emplace_back(std::string("10.255.255.255"), port);
+    result.emplace_back(std::string("10.0.255.255"), port);
+    result.emplace_back(std::string("10.0.0.255"), port);
+    result.emplace_back(std::string("255.255.255.255"), port);
+    result.emplace_back(std::string("127.0.0.255"), port);
+    result.emplace_back(std::string("127.0.0.1"), port);
+    return result;
+}   // getDefaultBroadcastAddresses
+
+// ----------------------------------------------------------------------------
+/** This masks various possible broadcast addresses. For example, in a /16
+ *  network it would first use *.*.255.255, then *.*.*.255. Also if the
+ *  length of the mask is not a multiple of 8, the original value will
+ *  be used, before multiple of 8 are create: /22 (*.3f.ff.ff), then
+ *  /16 (*.*.ff.ff), /8 (*.*.*.ff). While this is usually an overkill,
+ *  it can help in the case that the router does not forward a broadcast
+ *  as expected (this problem often happens with 255.255.255.255, which is
+ *  why this broadcast address creation code was added).
+ *  \param a The transport address for which the broadcast addresses need
+ *         to be created.
+ *  \param len Number of bits to be or'ed.
+ *  \param result Location to put address.
+ */
+void ServersManager::addAllBroadcastAddresses(const SocketAddress &a, int len,
+                                            std::vector<SocketAddress>* result)
+{
+    // Try different broadcast addresses - by masking on
+    // byte boundaries
+    while (len > 0)
     {
-        // Avoid too frequent refreshing
-        return NULL;
+        unsigned int mask = (1 << len) - 1;
+        SocketAddress bcast(a.getIP() | mask,
+            stk_config->m_server_discovery_port);
+        Log::info("Broadcast", "address %s length %d mask %x --> %s",
+            a.toString().c_str(),
+            len, mask,
+            bcast.toString().c_str());
+        result->push_back(bcast);
+        if (len % 8 != 0)
+            len -= (len % 8);
+        else
+            len = len - 8;
+    }   // while len > 0
+}   // addAllBroadcastAddresses
+
+// ----------------------------------------------------------------------------
+/** Returns a list of all possible broadcast addresses on this machine.
+ *  It queries all adapters for active IPv4 interfaces, determines their
+ *  netmask to create the broadcast addresses. It will also add 'smaller'
+ *  broadcast addesses, e.g. in a /16 network, it will add *.*.255.255 and
+ *  *.*.*.255, since it was sometimes observed that routers would not let
+ *  all broadcast addresses through. Duplicated answers (from the same server
+ *  to different addersses) will be filtered out in ServersManager.
+ */
+std::vector<SocketAddress> ServersManager::getBroadcastAddresses(bool ipv6)
+{
+    std::vector<SocketAddress> result;
+#ifdef __SWITCH__
+    uint32_t addr;
+    uint32_t u;
+
+    Result resultCode = nifmGetCurrentIpConfigInfo(&addr, &u, NULL, NULL, NULL);
+
+    if(R_SUCCEEDED(resultCode))
+    {
+        u = htonl(u);
+        // Convert mask to #bits:  SWAT algorithm
+        u = u - ((u >> 1) & 0x55555555);
+        u = (u & 0x33333333) + ((u >> 2) & 0x33333333);
+        u = (((u + (u >> 4)) & 0x0F0F0F0F) * 0x01010101) >> 24;
+        SocketAddress saddr(htonl(addr));
+        addAllBroadcastAddresses(saddr, u, &result);
+    }
+    else
+    {
+        Log::warn("ServersManager", "Failed to get broadcast address! Error 0x%x", resultCode);
+        result = getDefaultBroadcastAddresses();
+    }
+#elif !defined(WIN32)
+    struct ifaddrs *addresses, *p;
+
+    if (getifaddrs(&addresses) == -1)
+    {
+        Log::warn("SocketAddress", "Error in getifaddrs");
+        return result;
+    }
+    std::set<uint32_t> used_scope_id;
+    for (p = addresses; p; p = p->ifa_next)
+    {
+        SocketAddress socket_address;
+        if (p->ifa_addr == NULL)
+            continue;
+        if (p->ifa_addr->sa_family == AF_INET)
+        {
+            struct sockaddr_in *sa = (struct sockaddr_in *) p->ifa_addr;
+            uint32_t addr = htonl(sa->sin_addr.s_addr);
+
+            // Skip 169.254.*.* local link address
+            if (((addr >> 24) & 0xff) == 169 &&
+                ((addr >> 16) & 0xff) == 254)
+                continue;
+
+            SocketAddress saddr(addr, 0);
+            uint32_t u = ((sockaddr_in*)(p->ifa_netmask))->sin_addr.s_addr;
+            // Convert mask to #bits:  SWAT algorithm
+            u = u - ((u >> 1) & 0x55555555);
+            u = (u & 0x33333333) + ((u >> 2) & 0x33333333);
+            u = (((u + (u >> 4)) & 0x0F0F0F0F) * 0x01010101) >> 24;
+
+            Log::debug("ServerManager",
+                "Interface: %s\tAddress: %s\tmask: %x\n", p->ifa_name,
+                saddr.toString().c_str(), u);
+            addAllBroadcastAddresses(saddr, u, &result);
+        }
+        else if (p->ifa_addr->sa_family == AF_INET6 && ipv6)
+        {
+            uint32_t idx = if_nametoindex(p->ifa_name);
+            if (used_scope_id.find(idx) != used_scope_id.end())
+                continue;
+            used_scope_id.insert(idx);
+            SocketAddress socket_address("ff02::1",
+                stk_config->m_server_discovery_port);
+            sockaddr_in6* in6 = (sockaddr_in6*)socket_address.getSockaddr();
+            in6->sin6_scope_id = idx;
+            result.push_back(socket_address);
+        }
+    }
+    freeifaddrs(addresses);
+#else
+    // From docs from microsoft it recommends 15k size
+    const int WORKING_BUFFER_SIZE = 15000;
+    PIP_ADAPTER_ADDRESSES paddr = NULL;
+    unsigned long len = WORKING_BUFFER_SIZE;
+    int return_code = 0;
+    int iteration = 0;
+    do
+    {
+        paddr = (IP_ADAPTER_ADDRESSES*)malloc(len);
+        if (paddr == NULL)
+            return result;
+        long flags = 0;
+        return_code = GetAdaptersAddresses(AF_UNSPEC, flags, NULL, paddr,
+            &len);
+        if (return_code == ERROR_BUFFER_OVERFLOW)
+        {
+            free(paddr);
+            paddr = NULL;
+        }
+        else
+            break;
+        iteration++;
+    } while ((return_code == ERROR_BUFFER_OVERFLOW) && (iteration < 10));
+
+    if (return_code == ERROR_BUFFER_OVERFLOW)
+    {
+        Log::warn("ServerManager", "Can not get broadcast addresses.");
+        result = getDefaultBroadcastAddresses();
+        paddr = NULL;
     }
 
-    if(m_joined_server.getAtomic()!=NULL)
+    for (IP_ADAPTER_ADDRESSES *p = paddr; p; p = p->Next)
     {
-        // m_joinsed_server is a pointer into the m_server structure,
-        // we can not modify this data structure while this pointer exists.
-        Log::warn("ServersManager", "Server refresh while being already "
-                                    "connected to a server.");
-        return NULL;
+        if (p->OperStatus != IfOperStatusUp)
+            continue;
+
+        std::set<uint32_t> used_scope_id;
+        for (PIP_ADAPTER_UNICAST_ADDRESS unicast = p->FirstUnicastAddress;
+            unicast != NULL; unicast = unicast->Next)
+        {
+            SocketAddress socket_address;
+            if (unicast->Address.lpSockaddr->sa_family == AF_INET)
+            {
+                const sockaddr_in *sa =
+                    (const sockaddr_in*)unicast->Address.lpSockaddr;
+
+                // Skip 169.254.*.* local link address
+                if (sa->sin_addr.S_un.S_un_b.s_b1 == 169 &&
+                    sa->sin_addr.S_un.S_un_b.s_b2 == 254)
+                    continue;
+
+                // Use sa->sin_addr.S_un.S_addr and htonl?
+                SocketAddress ta(sa->sin_addr.S_un.S_un_b.s_b1,
+                    sa->sin_addr.S_un.S_un_b.s_b2,
+                    sa->sin_addr.S_un.S_un_b.s_b3,
+                    sa->sin_addr.S_un.S_un_b.s_b4);
+                int len = 32 - unicast->OnLinkPrefixLength;
+                addAllBroadcastAddresses(ta, len, &result);
+            }
+            if (unicast->Address.lpSockaddr->sa_family == AF_INET6 && ipv6)
+            {
+                sockaddr_in6* in6 =
+                    (sockaddr_in6*)unicast->Address.lpSockaddr;
+                const uint32_t scope_id = in6->sin6_scope_id;
+                if (used_scope_id.find(scope_id) !=
+                    used_scope_id.end())
+                    continue;
+                used_scope_id.insert(scope_id);
+                SocketAddress socket_address("ff02::1",
+                    stk_config->m_server_discovery_port);
+                in6 = (sockaddr_in6*)socket_address.getSockaddr();
+                in6->sin6_scope_id = scope_id;
+                result.push_back(socket_address);
+            }
+        }
     }
-
-    cleanUpServers();
-    Online::XMLRequest *request = 
-        NetworkConfig::get()->isWAN() ? getWANRefreshRequest()
-                                      : getLANRefreshRequest();
-
-    if (request_now)
-        Online::RequestManager::get()->addRequest(request);
-
-    return request;
-}   // getRefreshRequest
-
-// ----------------------------------------------------------------------------
-/** Callback from the refresh request.
- *  \param success If the refresh was successful.
- *  \param input The XML data describing the server.
- */
-void ServersManager::refresh(bool success, const XMLNode *input)
-{
-    if (!success)
+    free(paddr);
+#endif
+    if (ipv6)
     {
-        Log::error("Server Manager", "Could not refresh server list");
-        return;
+        // Convert IPv4 socket address to ::ffff:x.y.z.w
+        for (auto& addr : result)
+            addr.convertForIPv6Socket(ipv6);
     }
-
-    const XMLNode *servers_xml = input->getNode("servers");
-    for (unsigned int i = 0; i < servers_xml->getNumNodes(); i++)
-    {
-        addServer(new Server(*servers_xml->getNode(i), /*is_lan*/false));
-    }
-    m_last_load_time.setAtomic((float)StkTime::getRealTime());
-}   // refresh
-
-// ----------------------------------------------------------------------------
-const Server* ServersManager::getQuickPlay() const
-{
-    if (m_sorted_servers.getData().size() > 0)
-        return getServerBySort(0);
-
-    return NULL;
-}   // getQuickPlay
-
-// ----------------------------------------------------------------------------
-/** Sets a pointer to the server to which this client is connected. From now
- *  on the list of servers must not be modified (else this pointer might
- *  become invalid).
- */
-void ServersManager::setJoinedServer(uint32_t id)
-{
-    MutexLocker(m_mapped_servers);
-    m_joined_server.getData() = m_mapped_servers.getData().at(id);
-}   // setJoinedServer
-
-// ----------------------------------------------------------------------------
-/** Unsets the server to which this client is connected.
- */
-void ServersManager::unsetJoinedServer()
-{
-    MutexLocker(m_joined_server);
-    m_joined_server.getData() = NULL;
-}   // unsetJoinedServer
-
-// ----------------------------------------------------------------------------
-/** Adds a server to the list of known servers.
- *  \param server The server to add.
- */
-void ServersManager::addServer(Server *server)
-{
-    m_sorted_servers.lock();
-    m_sorted_servers.getData().push_back(server);
-    m_sorted_servers.unlock();
-
-    m_mapped_servers.lock();
-    m_mapped_servers.getData()[server->getServerId()] = server;
-    m_mapped_servers.unlock();
-}   // addServer
-
-// ----------------------------------------------------------------------------
-int ServersManager::getNumServers() const
-{
-    MutexLocker(m_sorted_servers);
-    return m_sorted_servers.getData().size();
-}   // getNumServers
-
-// ----------------------------------------------------------------------------
-const Server* ServersManager::getServerBySort(int index) const
-{
-    MutexLocker(m_sorted_servers);
-    return m_sorted_servers.getData().get(index);
-}   // getServerBySort
-
-// ------------------------------------------------------------------------
-const Server* ServersManager::getServerByID(uint32_t id) const
-{
-    MutexLocker(m_mapped_servers);
-    return m_mapped_servers.getData().at(id);
-}   // getServerByID
-
-// ----------------------------------------------------------------------------
-Server* ServersManager::getJoinedServer() const
-{
-    return m_joined_server.getAtomic();
-}   // getJoinedServer
-
-// ----------------------------------------------------------------------------
-void ServersManager::sort(bool sort_desc)
-{
-    MutexLocker(m_sorted_servers);
-    m_sorted_servers.getData().insertionSort(0, sort_desc);
-}   // sort
-
+    return result;
+}   // getBroadcastAddresses

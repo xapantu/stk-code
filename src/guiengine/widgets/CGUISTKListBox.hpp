@@ -12,6 +12,9 @@
 #include "IGUIElement.h"
 #include "irrArray.h"
 #include <string>
+#include <vector>
+
+#include "GlyphLayout.h"
 
 namespace irr
 {
@@ -32,6 +35,7 @@ namespace irr
                     irr::core::stringw m_text;
                     int m_proportion;
                     s32 m_icon;
+                    std::vector<GlyphLayout> m_glyph_layouts;
                     bool m_center;
 
                     ListCell(irr::core::stringw text, s32 icon = -1, int proportion = 1, bool center = false)
@@ -48,6 +52,8 @@ namespace irr
                 // Actually only used in list_widget -- still refactoring FIXME
                 std::string m_internal_name;
                 int m_current_id;
+
+                bool m_word_wrap = false;
 
                 // A multicolor extension
                 struct ListItemOverrideColor
@@ -160,34 +166,51 @@ namespace irr
             //! set global itemHeight
             virtual void setItemHeight( s32 height );
 
+            /* return item height */
+            int getItemHeight() { return (int) m_item_height; }
+
             //! Sets whether to draw the background
             virtual void setDrawBackground(bool draw);
 
+            void setAlternatingDarkness(bool val) { m_alternating_darkness = val; }
+            gui::IGUIScrollBar* getScrollBar() const { return ScrollBar; }
+            void setDisactivated(bool val)
+            {
+                m_deactivated = val;
+                if (m_deactivated)
+                    Selected = -1;
+            }
     private:
 
             void recalculateItemHeight();
+            void updateDefaultItemHeight();
             void selectNew(s32 ypos, bool onlyHover=false);
             void recalculateScrollPos();
+            void updateScrollBarSize(s32 size);
 
             // extracted that function to avoid copy&paste code
             void recalculateIconWidth();
 
             core::array< ListItem > Items;
             s32 Selected;
-            s32 ItemHeight;
+            s32 m_item_height;
             s32 ItemHeightOverride;
             s32 TotalItemHeight;
             s32 ItemsIconWidth;
-            gui::IGUIFont* Font;
+            s32 MousePosY;
+            gui::IGUIFont* m_font;
             gui::IGUISpriteBank* IconBank;
             gui::IGUIScrollBar* ScrollBar;
             u32 selectTime;
             core::stringw KeyBuffer;
             bool Selecting;
+            bool Moving;
             bool DrawBack;
             bool MoveOverSelect;
             bool AutoScroll;
             bool HighlightWhenNotFocused;
+            bool m_alternating_darkness;
+            bool m_deactivated;
     };
 
 

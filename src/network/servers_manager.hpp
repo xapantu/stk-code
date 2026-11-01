@@ -19,56 +19,62 @@
 #ifndef HEADER_SERVERS_MANAGER_HPP
 #define HEADER_SERVERS_MANAGER_HPP
 
-#include "online/request_manager.hpp"
-#include "network/server.hpp"
-#include "utils/ptr_vector.hpp"
-#include "utils/synchronised.hpp"
-#include "utils/types.hpp"
+#include <irrString.h>
+
+#include <atomic>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
 
 namespace Online { class XMLRequest; }
+class Server;
+class SocketAddress;
+class XMLNode;
 
 /**
  * \brief
  * \ingroup online
  */
+struct ServerList
+{
+    /** List of servers */
+    std::vector<std::shared_ptr<Server> > m_servers;
+    std::atomic_bool m_list_updated;
+    ServerList() { m_list_updated.store(false); }
+};
+
 class ServersManager
 {
 private:
+    /** List of broadcast addresses to use. */
+    std::vector<SocketAddress> m_broadcast_address;
+
+    // ------------------------------------------------------------------------
      ServersManager();
+    // ------------------------------------------------------------------------
     ~ServersManager();
-
-    /** Sorted vector of servers */
-    Synchronised<PtrVector<Server> >                m_sorted_servers;
-
-    /** Maps server id's to the same servers*/
-    Synchronised<std::map<uint32_t, Server*> >      m_mapped_servers;
-
-    /** This is a pointer to a copy of the server, the moment it got joined */
-    Synchronised<Server *>   m_joined_server;
-
-    Synchronised<float>      m_last_load_time;
-    void                     refresh(bool success, const XMLNode * input);
-    void                     cleanUpServers();
-    Online::XMLRequest *     getWANRefreshRequest() const;
-    Online::XMLRequest *     getLANRefreshRequest() const;
-
+    // ------------------------------------------------------------------------
+    void setWanServers(bool success, const XMLNode* input);
+    // ------------------------------------------------------------------------
+    void setLanServers(const std::map<irr::core::stringw,
+                                      std::shared_ptr<Server> >& servers);
+                                      
+    std::vector<SocketAddress> getDefaultBroadcastAddresses();
+    void addAllBroadcastAddresses(const SocketAddress &a, int len,
+                                  std::vector<SocketAddress>* result);
 public:
+    // ------------------------------------------------------------------------
     // Singleton
-    static ServersManager*   get();
-    static void              deallocate();
-
-    Online::XMLRequest *     getRefreshRequest(bool request_now = true);
-    void                     setJoinedServer(uint32_t server_id);
-    void                     unsetJoinedServer();
-    void                     addServer(Server * server);
-    int                      getNumServers() const;
-    const Server *           getServerByID(uint32_t server_id) const;
-    const Server *           getServerBySort(int index) const;
-    void                     sort(bool sort_desc);
-    Server *                 getJoinedServer() const;
-
-    // Returns the best server to join
-    const Server *           getQuickPlay() const;
+    static ServersManager* get();
+    // ------------------------------------------------------------------------
+    static void deallocate();
+    // ------------------------------------------------------------------------
+    std::vector<SocketAddress> getBroadcastAddresses(bool ipv6);
+    // ------------------------------------------------------------------------
+    std::shared_ptr<ServerList> getWANRefreshRequest() const;
+    // ------------------------------------------------------------------------
+    std::shared_ptr<ServerList> getLANRefreshRequest() const;
 
 };   // class ServersManager
 #endif // HEADER_SERVERS_MANAGER_HPP

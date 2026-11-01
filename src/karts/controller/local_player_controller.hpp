@@ -22,11 +22,16 @@
 #define HEADER_LOCAL_PLAYER_CONTROLLER_HPP
 
 #include "karts/controller/player_controller.hpp"
+#include <memory>
 
 class AbstractKart;
-class Camera;
-class Player;
 class SFXBase;
+class SFXBuffer;
+class btTransform;
+
+#ifndef SERVER_ONLY
+class ParticleEmitter;
+#endif
 
 /** PlayerKart manages control events from the player and moves
   * them to the Kart
@@ -41,27 +46,47 @@ private:
     StateManager::ActivePlayer *m_player;
 
     bool           m_sound_schedule;
+    bool           m_has_started;
+    bool           m_is_above_nitro_target;
 
-    /** The camera attached to the kart for this controller. The camera
-     *  object is managed in the Camera class, so no need to free it. */
-    Camera        *m_camera;
+#ifndef SERVER_ONLY
+    std::unique_ptr<ParticleEmitter> m_sky_particles_emitter;
+#endif
 
-    SFXBase       *m_bzzt_sound;
-    SFXBase       *m_wee_sound;
-    SFXBase       *m_ugh_sound;
-    SFXBase       *m_grab_sound;
-    SFXBase       *m_full_sound;
+    /** The index of the camera attached to the kart for this controller. The
+     *  camera object is managed in the Camera class, so no need to free it. */
+    int  m_camera_index;
 
-    virtual void steer(float, int) OVERRIDE;
+    int m_last_crash;
+
+    HandicapLevel m_handicap;
+
+    SFXBase     *m_wee_sound;
+    SFXBuffer   *m_bzzt_sound;
+    SFXBuffer   *m_ugh_sound;
+    SFXBuffer   *m_grab_sound;
+    SFXBuffer   *m_full_sound;
+    SFXBuffer   *m_unfull_sound;
+
+
+    virtual void steer(int, int) OVERRIDE;
     virtual void displayPenaltyWarning() OVERRIDE;
+    void         nitroNotFullSound();
+
+    void doCrashHaptics();
+    void setParticleEmitterPosition(const btTransform& t);
+
 public:
                  LocalPlayerController(AbstractKart *kart,
-                                       StateManager::ActivePlayer *player);
+                                       const int local_player_id,
+                                       HandicapLevel h);
                 ~LocalPlayerController();
-    void         update            (float) OVERRIDE;
-    void         action            (PlayerAction action, int value) OVERRIDE;
+    void         update            (int ticks) OVERRIDE;
+    bool         action            (PlayerAction action, int value,
+                                    bool dry_run=false) OVERRIDE;
+            void initParticleEmitter();
     virtual void handleZipper      (bool play_sound) OVERRIDE;
-    void         collectedItem     (const Item &item, int add_info=-1,
+    void         collectedItem     (const ItemState &item,
                                     float previous_energy=0) OVERRIDE;
     virtual void setPosition       (int p) OVERRIDE;
     virtual void reset             () OVERRIDE;
@@ -69,15 +94,18 @@ public:
     virtual void resetInputState   () OVERRIDE;
     virtual bool canGetAchievements() const OVERRIDE;
 
+    virtual void crashed(const AbstractKart *k) OVERRIDE;
+    virtual void crashed(const Material *m) OVERRIDE;
+
+    virtual void rumble(float strength_low, float strength_high, uint16_t duration) OVERRIDE;
+
     // ------------------------------------------------------------------------
     virtual bool isPlayerController() const OVERRIDE {return true;}
     // ------------------------------------------------------------------------
     virtual bool isLocalPlayerController() const OVERRIDE {return true;}
     // ------------------------------------------------------------------------
     /** Returns the name of the player profile. */
-    core::stringw getName() const OVERRIDE { return m_player->getProfile()->getName(); }
-
-
+    core::stringw getName(bool include_handicap_string = true) const OVERRIDE;
 };   // LocalPlayerController
 
 #endif

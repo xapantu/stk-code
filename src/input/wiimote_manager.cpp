@@ -34,6 +34,8 @@
 
 #include "wiiuse.h"
 
+#include <functional>
+
 WiimoteManager*  wiimote_manager;
 
 
@@ -143,7 +145,6 @@ void WiimoteManager::launchDetection(int timeout)
 
     //To prevent segmentation fault, have to delete NULLs
     number_deletables = 0;
-    number_deletables = 0;
     deletable_wiimotes = (wiimote_t**) malloc(sizeof(struct wiimote_t*) * (number_previous_wiimotes-number_merged_wiimotes));
     memset(deletable_wiimotes,0,sizeof(struct wiimote_t*) * (number_previous_wiimotes-number_merged_wiimotes));
     for (int i = 0; i < number_previous_wiimotes; i++)
@@ -204,7 +205,7 @@ void WiimoteManager::launchDetection(int timeout)
     // Launch the update thread
 #ifdef WIIMOTE_THREADING
     m_shut = false;
-    pthread_create(&m_thread, NULL, &threadFuncWrapper, this);
+    m_thread = std::thread(std::bind(&WiimoteManager::threadFunc, this));
 #endif
 }   // launchDetection
 
@@ -264,7 +265,7 @@ void WiimoteManager::cleanup()
         // Shut the update thread
 #ifdef WIIMOTE_THREADING
         m_shut = true;
-        pthread_join(m_thread, NULL);
+        m_thread.join();
 #endif
         // Cleanup WiiUse
         wiiuse_cleanup(m_all_wiimote_handles, MAX_WIIMOTES);
@@ -312,6 +313,7 @@ void WiimoteManager::enableAccelerometer(bool state)
 void WiimoteManager::threadFunc()
 {
 #ifdef WIIMOTE_THREADING
+    VS::setThreadName("WiimoteManager");
     while(!m_shut)
 #endif
     {
@@ -368,30 +370,18 @@ void WiimoteManager::threadFunc()
 }   // threadFunc
 
 // ----------------------------------------------------------------------------
-/** This is the start function of a separate thread used to poll the wiimotes.
- *  It receives the wiimote manager as parameter when the thread is created.
- *  \param data Pointer to the wiimote manager.
- */
-void* WiimoteManager::threadFuncWrapper(void *data)
-{
-    VS::setThreadName("WiimoteManager");
-    ((WiimoteManager*)data)->threadFunc();
-    return NULL;
-}   // threadFuncWrapper
-
-// ----------------------------------------------------------------------------
 /** Shows a simple popup menu asking the user to connect all wiimotes.
  */
 int WiimoteManager::askUserToConnectWiimotes()
 {
     new MessageDialog(
 #ifdef WIN32
-        _("Connect your wiimote to the Bluetooth manager, then click on Ok."
-                  "Detailed instructions at supertuxkart.net/Wiimote"),
+        _("Connect your wiimote to the Bluetooth manager, then click on Ok. "
+                  "Detailed instructions at %s.", "https://supertuxkart.net/Wiimote"),
 #else
         _("Press the buttons 1+2 simultaneously on your wiimote to put "
-          "it in discovery mode, then click on Ok."
-                  "Detailed instructions at supertuxkart.net/Wiimote"),
+          "it in discovery mode, then click on Ok. "
+                  "Detailed instructions at %s.", "https://supertuxkart.net/Wiimote"),
 #endif
         MessageDialog::MESSAGE_DIALOG_OK_CANCEL,
         new WiimoteDialogListener(), true);
@@ -413,7 +403,7 @@ void WiimoteManager::WiimoteDialogListener::onConfirm()
     if(nb_wiimotes > 0)
     {
         new MessageDialog(_P("Found %d wiimote", "Found %d wiimotes",
-                             nb_wiimotes));
+            /* to pick the plural form */ nb_wiimotes, /* to insert in the final string */ nb_wiimotes));
     }
     else
     {

@@ -16,7 +16,15 @@
 #else
 	#define GL_GLEXT_PROTOTYPES 1
 #endif
+
+#if defined(_IRR_COMPILE_WITH_SDL_DEVICE_)
+	#include "glad/gl.h"
 #ifdef _IRR_WINDOWS_API_
+	#define WIN32_LEAN_AND_MEAN
+	#include <windows.h>
+#endif
+
+#elif defined (_IRR_WINDOWS_API_)
 	// include windows headers for HWND
 	#define WIN32_LEAN_AND_MEAN
 	#include <windows.h>
@@ -25,11 +33,8 @@
 	#pragma comment(lib, "OpenGL32.lib")
 #endif
 #elif defined(_IRR_OSX_PLATFORM_)
+	#define GL_SILENCE_DEPRECATION
 	#include <OpenGL/gl.h>
-#elif defined(_IRR_COMPILE_WITH_SDL_DEVICE_)
-	#define NO_SDL_GLEXT
-	#include <SDL/SDL_video.h>
-	#include <SDL/SDL_opengl.h>
 #else
 	#if defined(_IRR_OSX_PLATFORM_)
 		#include <OpenGL/gl.h>
@@ -78,7 +83,7 @@ public:
 	virtual u32 getPitch() const;
 
 	//! return open gl texture name
-	GLuint getOpenGLTextureName() const;
+	virtual u64 getTextureHandler() const;
 
 	//! return whether this texture has mipmaps
 	virtual bool hasMipMaps() const;
@@ -102,6 +107,13 @@ public:
 
 	//! sets whether this texture is intended to be used as a render target.
 	void setIsRenderTarget(bool isTarget);
+
+	void setImage(IImage* new_image)
+	{
+		if (Image)
+			Image->drop();
+		Image = new_image;
+	}
 
 protected:
 

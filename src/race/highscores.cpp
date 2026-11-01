@@ -20,10 +20,16 @@
 
 #include "io/utf_writer.hpp"
 #include "io/xml_node.hpp"
+#include "race/grand_prix_manager.hpp"
 #include "race/race_manager.hpp"
+#include "tracks/track.hpp"
+#include "tracks/track_manager.hpp"
+#include "utils/log.hpp"
 
 #include <stdexcept>
 #include <fstream>
+
+Highscores::SortOrder Highscores::m_sort_order = Highscores::SO_DEFAULT;
 
 // -----------------------------------------------------------------------------
 Highscores::Highscores(const HighscoreType &highscore_type,
@@ -39,6 +45,29 @@ Highscores::Highscores(const HighscoreType &highscore_type,
     m_difficulty      = difficulty;
     m_number_of_laps  = number_of_laps;
     m_reverse         = reverse;
+    m_gp_reverse_type = (int)GrandPrixData::GP_DEFAULT_REVERSE;
+    m_gp_minor_mode   = (int)RaceManager::MINOR_MODE_NORMAL_RACE;
+
+    for(int i=0; i<HIGHSCORE_LEN; i++)
+    {
+        m_name[i]      = "";
+        m_kart_name[i] = "";
+        m_time[i]      = -9.9f;
+    }
+}
+// ----------------------------------------------------------------------------
+Highscores::Highscores(int num_karts, const RaceManager::Difficulty &difficulty,
+                       const std::string &track_name, const int target,
+                       const GrandPrixData::GPReverseType reverse_type, RaceManager::MinorRaceModeType minor_mode)
+{
+    m_track           = track_name;
+    m_highscore_type  = "HST_GRANDPRIX";
+    m_number_of_karts = num_karts;
+    m_difficulty      = difficulty;
+    m_number_of_laps  = target;
+    m_reverse         = false;
+    m_gp_reverse_type = reverse_type;
+    m_gp_minor_mode   = minor_mode;
 
     for(int i=0; i<HIGHSCORE_LEN; i++)
     {
@@ -52,10 +81,12 @@ Highscores::Highscores(const XMLNode &node)
 {
     m_track           = "";
     m_highscore_type  = "HST_UNDEFINED";
-    m_number_of_karts = -1;
+    m_number_of_karts = 0;
     m_difficulty      = -1;
-    m_number_of_laps  = -1;
+    m_number_of_laps  = 0;
     m_reverse         = false;
+    m_gp_reverse_type = (int)GrandPrixData::GP_DEFAULT_REVERSE;
+    m_gp_minor_mode   = (int)RaceManager::MINOR_MODE_NORMAL_RACE;
 
     for(int i=0; i<HIGHSCORE_LEN; i++)
     {
@@ -76,14 +107,27 @@ void Highscores::readEntry(const XMLNode &node)
     node.get("hscore-type",    &hst                   );
     m_highscore_type = (HighscoreType)hst;
     node.get("difficulty",     &m_difficulty          );
-    node.get("number-of-laps", &m_number_of_laps      );
-    node.get("reverse",        &m_reverse             );
-
+    node.get("number-of-laps", &m_number_of_laps);
+    if (hst == "HST_GRANDPRIX")
+    {
+        node.get("reverse-type", &m_gp_reverse_type);
+        node.get("minor-mode", &m_gp_minor_mode);
+    }
+    else
+    {
+        node.get("reverse", &m_reverse);
+    }
     for(unsigned int i=0; i<node.getNumNodes(); i++)
     {
+        if (i >= HIGHSCORE_LEN)
+        {
+            Log::warn("Highscores", "Hiscore has too many entries.");
+            break;
+        }
+        
         const XMLNode *entry = node.getNode(i);
         entry->get("time",     &m_time[i]            );
-        entry->get("name",     &m_name[i]            );
+        entry->getAndDecode("name",     &m_name[i]            );
         entry->get("kartname", &m_kart_name[i]       );
 
         // a non-empty entry needs a non-empty kart name.
@@ -113,25 +157,31 @@ void Highscores::writeEntry(UTFWriter &writer)
         one_is_set |= m_time[i]>=0;
     if(!one_is_set) return;
 
-    writer << L"  <highscore track-name    =\"" << m_track.c_str()           << "\"\n";
-    writer << L"             number-karts  =\"" << m_number_of_karts         << "\"\n";
-    writer << L"             difficulty    =\"" << m_difficulty              << "\"\n";
-    writer << L"             hscore-type   =\"" << m_highscore_type.c_str()  << "\"\n";
-    writer << L"             number-of-laps=\"" << m_number_of_laps          << "\"\n";
-    writer << L"             reverse       =\"" << m_reverse                 << "\">\n";
+    writer << "  <highscore track-name    =\"" << m_track.c_str()           << "\"\n";
+    writer << "             number-karts  =\"" << m_number_of_karts         << "\"\n";
+    writer << "             difficulty    =\"" << m_difficulty              << "\"\n";
+    writer << "             hscore-type   =\"" << m_highscore_type.c_str()  << "\"\n";
+    writer << "             number-of-laps=\"" << m_number_of_laps          << "\"\n";
+    if (m_highscore_type == "HST_GRANDPRIX")
+    {
+        writer << "             reverse-type  =\"" << m_gp_reverse_type       << "\"\n";
+        writer << "             minor-mode    =\"" << m_gp_minor_mode       << "\">\n";
+    }
+    else
+        writer << "             reverse       =\"" << m_reverse             << "\">\n";
 
     for(int i=0; i<HIGHSCORE_LEN; i++)
     {
         if (m_time[i] > 0.0f)
         {
             assert(m_kart_name[i].size() > 0);
-            writer << L"             <entry time    =\"" << m_time[i] << L"\"\n";
-            writer << L"                    name    =\"" << m_name[i] << L"\"\n";
-            writer << L"                    kartname=\"" << m_kart_name[i].c_str()
-                   << L"\"/>\n";
+            writer << "             <entry time    =\"" << m_time[i] << L"\"\n";
+            writer << "                    name    =\"" << StringUtils::xmlEncode(m_name[i]) << L"\"\n";
+            writer << "                    kartname=\"" << m_kart_name[i]
+                   << "\"/>\n";
         }
     }   // for i
-    writer << L"  </highscore>\n";
+    writer << "  </highscore>\n";
 }   // writeEntry
 
 // -----------------------------------------------------------------------------
@@ -147,15 +197,23 @@ int Highscores::matches(const HighscoreType &highscore_type,
             m_number_of_karts == num_karts        &&
             m_reverse         == reverse            );
 }   // matches
-
 // -----------------------------------------------------------------------------
-/** Inserts the data into the highscore list.
- *  If the new entry is fast enough to
- *  be in the highscore list, the new position (1-HIGHSCORE_LEN) is returned,
- *  otherwise a 0.
- */
-int Highscores::addData(const std::string& kart_name,
-                        const core::stringw& name, const float time)
+int Highscores::matches(int num_karts,
+                        const RaceManager::Difficulty &difficulty,
+                        const std::string &track, const int target,
+                        const GrandPrixData::GPReverseType reverse_type, RaceManager::MinorRaceModeType minor_mode)
+{
+    return (m_highscore_type  == "HST_GRANDPRIX"  &&
+            m_track           == track            &&
+            m_difficulty      == difficulty       &&
+            m_number_of_laps  == target           &&
+            m_number_of_karts == num_karts        &&
+            m_gp_reverse_type == reverse_type     &&
+            m_gp_minor_mode   == minor_mode         );
+}
+
+int Highscores::findHighscorePosition(const std::string& kart_name,
+                              const core::stringw& name, const float time)
 {
     int position=-1;
     for(int i=0; i<HIGHSCORE_LEN; i++)
@@ -168,7 +226,7 @@ int Highscores::addData(const std::string& kart_name,
         }
         // Check if new entry is faster than than in slot 'i', if so
         // move times etc and insert new entry
-        if(time < m_time[i])
+        if(RaceManager::get()->isLapTrialMode() ? (time > m_time[i]) : (time < m_time[i]))
         {
             for(int j=HIGHSCORE_LEN-2;j>=i;j--)
             {
@@ -180,14 +238,29 @@ int Highscores::addData(const std::string& kart_name,
             break;
         }
     }//next score slot
+    return position;
+}
 
+// -----------------------------------------------------------------------------
+/** Inserts the data into the highscore list.
+ *  If the new entry is fast enough to
+ *  be in the highscore list, the new position (1-HIGHSCORE_LEN) is returned,
+ *  otherwise a 0.
+ */
+int Highscores::addData(const std::string& kart_name,
+                        const core::stringw& name, const float time)
+{
+    int position = findHighscorePosition(kart_name, name, time);
     if(position>=0)
     {
-        m_track               = race_manager->getTrackName();
-        m_number_of_karts     = race_manager->getNumberOfKarts();
-        m_difficulty          = race_manager->getDifficulty();
-        m_number_of_laps      = race_manager->getNumLaps();
-        m_reverse             = race_manager->getReverseTrack();
+        m_track               = RaceManager::get()->getTrackName();
+        m_number_of_karts     = RaceManager::get()->getNumNonGhostKarts();
+        m_difficulty          = RaceManager::get()->getDifficulty();
+        if (RaceManager::get()->isLapTrialMode())
+            m_number_of_laps  = static_cast<int>(RaceManager::get()->getTimeTarget());
+        else
+            m_number_of_laps  = RaceManager::get()->getNumLaps();
+        m_reverse             = RaceManager::get()->getReverseTrack();
         m_name[position]      = name;
         m_time[position]      = time;
         m_kart_name[position] = kart_name;
@@ -195,6 +268,29 @@ int Highscores::addData(const std::string& kart_name,
 
     return position+1;
 }   // addData
+// -----------------------------------------------------------------------------
+int Highscores::addGPData(const std::string& kart_name,
+                          const core::stringw& name, std::string track_name, const float time)
+{
+    int position = findHighscorePosition(kart_name, name, time);
+    if(position>=0)
+    {
+        m_track               = track_name;
+        m_number_of_karts     = RaceManager::get()->getNumNonGhostKarts();
+        m_difficulty          = RaceManager::get()->getDifficulty();
+        if (RaceManager::get()->isLapTrialMode())
+            m_number_of_laps  = static_cast<int>(RaceManager::get()->getTimeTarget());
+        else
+            m_number_of_laps  = 0;
+        m_gp_reverse_type     = RaceManager::get()->getGrandPrix().getReverseType();
+        m_gp_minor_mode       = RaceManager::get()->getMinorMode();
+        m_name[position]      = name;
+        m_time[position]      = time;
+        m_kart_name[position] = kart_name;
+    }
+
+    return position+1;
+}
 
 // -----------------------------------------------------------------------------
 int Highscores::getNumberEntries() const
@@ -225,3 +321,46 @@ void Highscores::getEntry(int number, std::string &kart_name,
 }   // getEntry
 
 // -----------------------------------------------------------------------------
+bool Highscores::operator < (const Highscores& hi) const
+{
+    switch (m_sort_order)
+    {
+        case SO_TRACK:
+        {
+            std::wstring sort_name_a, sort_name_b;
+            Track* a = track_manager->getTrack(m_track);
+            Track* b = track_manager->getTrack(hi.m_track);
+            if (a != nullptr)
+                sort_name_a = a->getSortName().c_str();
+            if (b != nullptr)
+                sort_name_b = b->getSortName().c_str();
+            return sort_name_a < sort_name_b;
+        }
+        case SO_KART_NUM:
+            return m_number_of_karts < hi.m_number_of_karts;
+        case SO_DIFF:
+            return m_difficulty < hi.m_difficulty;
+        case SO_LAPS:
+            return m_number_of_laps < hi.m_number_of_laps;
+        case SO_REV:
+            return m_reverse < hi.m_reverse;
+        // None < All < Random < Default
+        case SO_REV_GP:
+            return m_gp_reverse_type < hi.m_gp_reverse_type;
+        // Normal race < Time-trial
+        case SO_MODE:
+            return m_gp_minor_mode < hi.m_gp_minor_mode;
+        case SO_GP_NAME:
+        {
+            std::wstring sort_name_a, sort_name_b;
+            const GrandPrixData* gp_a = grand_prix_manager->getGrandPrix(m_track);
+            const GrandPrixData* gp_b = grand_prix_manager->getGrandPrix(hi.m_track);
+            if (gp_a != nullptr)
+                sort_name_a = gp_a->getName().c_str();
+            if (gp_b != nullptr)
+                sort_name_b = gp_b->getName().c_str();
+            return sort_name_a < sort_name_b;
+        }
+    }   // switch
+    return true;
+}   // operator <

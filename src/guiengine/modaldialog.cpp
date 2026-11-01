@@ -15,18 +15,21 @@
 //  along with this program; if not, write to the Free Software
 //  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
+#include "guiengine/modaldialog.hpp"
+#include "config/user_config.hpp"
 #include "graphics/irr_driver.hpp"
 #include "guiengine/engine.hpp"
 #include "guiengine/layout_manager.hpp"
-#include "guiengine/modaldialog.hpp"
 #include "guiengine/screen.hpp"
 #include "guiengine/widget.hpp"
 #include "input/input_manager.hpp"
 #include "io/file_manager.hpp"
 #include "utils/log.hpp"
 
+#include <IrrlichtDevice.h>
 #include <IGUIEnvironment.h>
 #include <IGUIButton.h>
+#include <IVideoDriver.h>
 
 using namespace irr;
 using namespace core;
@@ -64,7 +67,7 @@ ModalDialog::ModalDialog(const float percentWidth, const float percentHeight,
 void ModalDialog::loadFromFile(const char* xmlFile)
 {
     doInit();
-    std::string path = file_manager->getAssetChecked(FileManager::GUI,xmlFile,
+    std::string path = file_manager->getAssetChecked(FileManager::GUI_DIALOG,xmlFile,
                                                      true);
     IXMLReader* xml = file_manager->createXMLReader(path);
 
@@ -91,10 +94,43 @@ void ModalDialog::doInit()
     pointer_was_shown = irr_driver->isPointerShown();
     irr_driver->showPointer();
 
+    setArea();
+
+    if (modalWindow != NULL)
+    {
+        delete modalWindow;
+        Log::warn("GUIEngine", "Showing a modal dialog while the previous one "
+                  "is still open. Destroying the previous dialog.");
+    }
+    modalWindow = this;
+
+    m_irrlicht_window = GUIEngine::getGUIEnv()->addWindow(m_area,
+                                                          true /* modal */);
+    m_irrlicht_window->setDrawTitlebar(false);
+    m_irrlicht_window->getCloseButton()->setVisible(false);
+    if (!UserConfigParams::m_artist_debug_mode)
+        m_irrlicht_window->setDraggable(false);
+
+    GUIEngine::getSkin()->m_dialog = true;
+    GUIEngine::getSkin()->m_dialog_size = 0.0f;
+
+    m_previous_mode=input_manager->getMode();
+    input_manager->setMode(InputManager::MENU);
+}   // doInit
+
+// ----------------------------------------------------------------------------
+
+void ModalDialog::setArea()
+{
     const core::dimension2d<u32>& frame_size =
         GUIEngine::getDriver()->getCurrentRenderTargetSize();
 
-    const int w = (int)(frame_size.Width* m_percent_width);
+    int left_padding = irr_driver->getDevice()->getLeftPadding();
+    int right_padding = irr_driver->getDevice()->getRightPadding();
+    int total_padding = left_padding + right_padding;
+    int w = (int)(frame_size.Width* m_percent_width);
+    if (w > total_padding)
+        w -= total_padding;
     const int h = (int)(frame_size.Height* m_percent_height);
 
     assert(frame_size.Width > 0);
@@ -124,26 +160,7 @@ void ModalDialog::doInit()
     {
         assert(false);
     }
-
-    if (modalWindow != NULL)
-    {
-        delete modalWindow;
-        Log::warn("GUIEngine", "Showing a modal dialog while the previous one "
-                  "is still open. Destroying the previous dialog.");
-    }
-    modalWindow = this;
-
-    m_irrlicht_window = GUIEngine::getGUIEnv()->addWindow(m_area,
-                                                          true /* modal */);
-    m_irrlicht_window->setDrawTitlebar(false);
-    m_irrlicht_window->getCloseButton()->setVisible(false);
-
-    GUIEngine::getSkin()->m_dialog = true;
-    GUIEngine::getSkin()->m_dialog_size = 0.0f;
-
-    m_previous_mode=input_manager->getMode();
-    input_manager->setMode(InputManager::MENU);
-}   // doInit
+}   // setArea
 
 // ----------------------------------------------------------------------------
 
@@ -191,6 +208,16 @@ void ModalDialog::clearWindow()
     m_irrlicht_window->remove();
     m_irrlicht_window = GUIEngine::getGUIEnv()->addWindow( m_area, true /* modal */ );
 }   // clearWindow
+
+// ----------------------------------------------------------------------------
+
+void ModalDialog::onResize()
+{
+    setArea();
+    m_irrlicht_window->setRelativePosition(m_area);
+    LayoutManager::calculateLayout(m_widgets, this);
+    resizeWidgetsRecursively(m_widgets);
+}   // onResize
 
 // ----------------------------------------------------------------------------
 

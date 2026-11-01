@@ -1,14 +1,14 @@
-cmake_minimum_required(VERSION 2.6)
-set(CMAKE_ALLOW_LOOSE_LOOP_CONSTRUCTS TRUE)
-cmake_policy(SET CMP0003 NEW)
-
-if(NOT (CMAKE_MAJOR_VERSION VERSION_LESS 3))
-  cmake_policy(SET CMP0048 OLD)
-endif()
+cmake_minimum_required(VERSION 3.10)
 
 project(angelscript)
 
 option(BUILD_SHARED_LIBS "Build shared library" OFF)
+option(AS_NO_EXCEPTIONS "Disable exception handling in script context" OFF)
+option(AS_DISABLE_INSTALL "Disable installation of AngelScript" OFF)
+
+if(MSVC)
+    set(MSVC_COMPILE_FLAGS "/MP" CACHE STRING "Compiler flags to use with MSVC")
+endif()
 
 if(APPLE)
     option(BUILD_FRAMEWORK "Build Framework bundle for OSX" OFF)
@@ -20,6 +20,13 @@ set(ANGELSCRIPT_VERSION_MAJOR ${CMAKE_MATCH_1})
 set(ANGELSCRIPT_VERSION_MINOR ${CMAKE_MATCH_2})
 set(ANGELSCRIPT_VERSION_PATCH ${CMAKE_MATCH_3})
 set(PROJECT_VERSION ${ANGELSCRIPT_VERSION_MAJOR}.${ANGELSCRIPT_VERSION_MINOR}.${ANGELSCRIPT_VERSION_PATCH})
+
+set(ARCHFLAGS "${CMAKE_SYSTEM_PROCESSOR}")
+if (APPLE OR IOS)
+  if (${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm")
+    set(ARCHFLAGS "aarch64")
+  endif ()
+endif ()
 
 message(STATUS "Configuring angelscript ${PROJECT_VERSION}")
 
@@ -67,6 +74,7 @@ set(ANGELSCRIPT_SOURCE
     ../../source/as_builder.cpp
     ../../source/as_bytecode.cpp
     ../../source/as_callfunc.cpp
+    ../../source/as_callfunc_mips.cpp
     ../../source/as_callfunc_x86.cpp
     ../../source/as_callfunc_x64_gcc.cpp
     ../../source/as_callfunc_x64_msvc.cpp
@@ -97,7 +105,7 @@ set(ANGELSCRIPT_SOURCE
     ../../source/as_variablescope.cpp
 )
 
-if(MSVC AND CMAKE_CL_64)
+if(MSVC AND CMAKE_CL_64 AND ${ARCHFLAGS} MATCHES "^x86_64")
     enable_language(ASM_MASM)
     if(CMAKE_ASM_MASM_COMPILER_WORKS)
         set(ANGELSCRIPT_SOURCE ${ANGELSCRIPT_SOURCE} ../../source/as_callfunc_x64_msvc_asm.asm)
@@ -106,28 +114,67 @@ if(MSVC AND CMAKE_CL_64)
     endif()
 endif()
 
-if(${CMAKE_SYSTEM_PROCESSOR} MATCHES "^arm")
+if(${ARCHFLAGS} MATCHES "^arm")
     enable_language(ASM)
     if(CMAKE_ASM_COMPILER_WORKS)
         set(ANGELSCRIPT_SOURCE ${ANGELSCRIPT_SOURCE} ../../source/as_callfunc_arm.cpp ../../source/as_callfunc_arm_gcc.S)
+
+    if(COMPILER_SUPPORTS_MIMPLICIT_IT)
         set_property(SOURCE ../../source/as_callfunc_arm_gcc.S APPEND PROPERTY COMPILE_FLAGS " -Wa,-mimplicit-it=always")
+    else()
+        set_property(SOURCE ../../source/as_callfunc_arm_gcc.S APPEND PROPERTY COMPILE_FLAGS "")
+    endif()
+
     else()
         message(FATAL ERROR "ARM target requires a working assembler")
     endif()
 endif()
 
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../include)
+if(${ARCHFLAGS} MATCHES "^aarch64")
+    if(MSVC)
+        if(CMAKE_VERSION VERSION_LESS 3.26)
+            message(FATAL_ERROR "MSVC ARM64 target requires CMake 3.26 or newer for ASM_MARMASM support")
+        endif()
+        enable_language(ASM_MARMASM)
+        if(CMAKE_ASM_MARMASM_COMPILER_WORKS)
+            set(ANGELSCRIPT_SOURCE ${ANGELSCRIPT_SOURCE} ../../source/as_callfunc_arm64.cpp ../../source/as_callfunc_arm64_msvc.asm)
+        else()
+            message(FATAL ERROR "MSVC ARM64 target requires a working ARM assembler")
+        endif()
+    else()
+        enable_language(ASM)
+        if(CMAKE_ASM_COMPILER_WORKS)
+            if(NOT APPLE)
+                set(ANGELSCRIPT_SOURCE ${ANGELSCRIPT_SOURCE} ../../source/as_callfunc_arm64.cpp ../../source/as_callfunc_arm64_gcc.S)
+            else()
+                set(ANGELSCRIPT_SOURCE ${ANGELSCRIPT_SOURCE} ../../source/as_callfunc_arm64.cpp ../../source/as_callfunc_arm64_xcode.S)
+            endif()
+        else()
+            message(FATAL ERROR "ARM64 target requires a working assembler")
+        endif()
+    endif()
+endif()
+
+if(${ARCHFLAGS} MATCHES "riscv64")
+    enable_language(ASM)
+    if(CMAKE_ASM_COMPILER_WORKS)
+        set(ANGELSCRIPT_SOURCE ${ANGELSCRIPT_SOURCE} ../../source/as_callfunc_riscv64.cpp ../../source/as_callfunc_riscv64_gcc.S)
+    else()
+        message(FATAL ERROR "RISC-V 64 target requires a working assembler")
+    endif()
+endif()
+
+if(${ARCHFLAGS} MATCHES "^e2k")
+    enable_language(ASM)
+    if(CMAKE_ASM_COMPILER_WORKS)
+        set(ANGELSCRIPT_SOURCE ${ANGELSCRIPT_SOURCE} ../../source/as_callfunc_e2k.cpp ../../source/as_callfunc_e2k.S)
+    else()
+        message(FATAL ERROR "E2K target requires a working assembler")
+    endif()
+endif()
 
 if(MSVC)
     set(CMAKE_DEBUG_POSTFIX "d")
-    add_definitions(-D_CRT_SECURE_NO_WARNINGS)    
-endif()
-
-add_definitions(-DANGELSCRIPT_EXPORT -D_LIB)
-
-# Fix x64 issues on Linux
-if("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "x86_64" AND NOT APPLE)
-    add_definitions(-fPIC)
 endif()
 
 if(NOT BUILD_FRAMEWORK)
@@ -136,30 +183,95 @@ else()
     set(ANGELSCRIPT_LIBRARY_NAME Angelscript) # OS X frameworks should have capitalized name
     set(BUILD_SHARED_LIBS TRUE)
 endif()
+set(ANGELSCRIPT_LIBRARY_NAME ${ANGELSCRIPT_LIBRARY_NAME} CACHE STRING "" FORCE)
 
 add_library(${ANGELSCRIPT_LIBRARY_NAME} ${ANGELSCRIPT_SOURCE} ${ANGELSCRIPT_HEADERS})
+
+target_include_directories(${ANGELSCRIPT_LIBRARY_NAME} PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../include>")
+
+if(MSVC)
+    target_compile_definitions(${ANGELSCRIPT_LIBRARY_NAME} PRIVATE -D_CRT_SECURE_NO_WARNINGS)    
+endif()
+
+target_compile_definitions(${ANGELSCRIPT_LIBRARY_NAME} PRIVATE -DANGELSCRIPT_EXPORT -D_LIB)
+
+if(AS_NO_EXCEPTIONS)
+	target_compile_definitions(${ANGELSCRIPT_LIBRARY_NAME} PRIVATE AS_NO_EXCEPTIONS)
+endif()
+
+# Fix x64 issues on Linux
+if("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "x86_64" AND UNIX AND NOT APPLE)
+	target_compile_options(${ANGELSCRIPT_LIBRARY_NAME} PRIVATE -fPIC)
+endif()
+
+if(MSVC AND MSVC_COMPILE_FLAGS)
+	target_compile_options(${ANGELSCRIPT_LIBRARY_NAME} PRIVATE $<$<COMPILE_LANGUAGE:C,CXX>:${MSVC_COMPILE_FLAGS}>)
+endif()
+
+# Don't override the default library output path to avoid conflicts when building for multiple target platforms
 #set(LIBRARY_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/../../lib)
-target_link_libraries(${ANGELSCRIPT_LIBRARY_NAME} ${CMAKE_THREAD_LIBS_INIT})
+target_link_libraries(${ANGELSCRIPT_LIBRARY_NAME} Threads::Threads)
 
 set_target_properties(${ANGELSCRIPT_LIBRARY_NAME} PROPERTIES VERSION ${PROJECT_VERSION})
 
 if(BUILD_FRAMEWORK)
-    set_target_properties(${ANGELSCRIPT_LIBRARY_NAME} PROPERTIES
-        FRAMEWORK TRUE
-        FRAMEWORK_VERSION ${PROJECT_VERSION}
-        MACOSX_FRAMEWORK_IDENTIFIER com.angelcode.Angelscript
-        MACOSX_FRAMEWORK_SHORT_VERSION_STRING ${PROJECT_VERSION}
-        MACOSX_FRAMEWORK_BUNDLE_VERSION ${PROJECT_VERSION}
-        XCODE_ATTRIBUTE_INSTALL_PATH "@rpath"
-        PUBLIC_HEADER ../../include/angelscript.h
-    )
+	set_target_properties(${ANGELSCRIPT_LIBRARY_NAME} PROPERTIES
+		FRAMEWORK TRUE
+		FRAMEWORK_VERSION ${PROJECT_VERSION}
+		MACOSX_FRAMEWORK_IDENTIFIER com.angelcode.Angelscript
+		MACOSX_FRAMEWORK_SHORT_VERSION_STRING ${PROJECT_VERSION}
+		MACOSX_FRAMEWORK_BUNDLE_VERSION ${PROJECT_VERSION}
+		XCODE_ATTRIBUTE_INSTALL_PATH "@rpath"
+		PUBLIC_HEADER ../../include/angelscript.h
+	)
 endif()
 
-if(MSVC)
-    set_target_properties(${ANGELSCRIPT_LIBRARY_NAME} PROPERTIES COMPILE_FLAGS "/MP")
+if(NOT AS_DISABLE_INSTALL)
+	# Don't override the default runtime output path to avoid conflicts when building for multiple target platforms
+	#set(RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/../../bin)
+
+	#See https://cmake.org/cmake/help/latest/manual/cmake-packages.7.html#creating-packages for a detailed explanation about this part
+	install(TARGETS ${ANGELSCRIPT_LIBRARY_NAME} EXPORT AngelscriptTargets
+		RUNTIME DESTINATION bin
+		LIBRARY DESTINATION lib
+		ARCHIVE DESTINATION lib
+		INCLUDES DESTINATION include
+	)
+
+	install(FILES
+		${CMAKE_CURRENT_SOURCE_DIR}/../../include/angelscript.h
+		DESTINATION include
+		COMPONENT Devel
+	)
+
+	include(CMakePackageConfigHelpers)
+	write_basic_package_version_file(
+		"${CMAKE_CURRENT_BINARY_DIR}/Angelscript/AngelscriptConfigVersion.cmake"
+		VERSION ${PROJECT_VERSION}
+		COMPATIBILITY AnyNewerVersion
+	)
+
+	export(EXPORT AngelscriptTargets
+		FILE "${CMAKE_CURRENT_BINARY_DIR}/Angelscript/AngelscriptTargets.cmake"
+		NAMESPACE Angelscript::
+	)
+	configure_file(cmake/AngelscriptConfig.cmake
+		"${CMAKE_CURRENT_BINARY_DIR}/Angelscript/AngelscriptConfig.cmake"
+		COPYONLY
+	)
+
+	set(ConfigPackageLocation lib/cmake/Angelscript)
+	install(EXPORT AngelscriptTargets
+		FILE AngelscriptTargets.cmake
+		NAMESPACE Angelscript::
+		DESTINATION ${ConfigPackageLocation}
+	)
+	install(
+		FILES
+			cmake/AngelscriptConfig.cmake
+			"${CMAKE_CURRENT_BINARY_DIR}/Angelscript/AngelscriptConfigVersion.cmake"
+		DESTINATION ${ConfigPackageLocation}
+		COMPONENT Devel
+	)
 endif()
-
-#set(RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/../../bin)
-
-#add_subdirectory(../../../samples/game/projects/cmake/ ./game)
 

@@ -100,9 +100,11 @@ class ITexture : public virtual IReferenceCounted
 public:
 
 	//! constructor
-	ITexture(const io::path& name) : NamedPath(name)
+	ITexture(const io::path& name) : NamedPath(name), LoadingFailed(false)
 	{
 	}
+
+	virtual ~ITexture() {}
 
 	//! Lock function.
 	/** Locks the Texture and returns a pointer to access the
@@ -190,6 +192,22 @@ public:
 	//! Get name of texture (in most cases this is the filename)
 	const io::SNamedPath& getName() const { return NamedPath; }
 
+	void setName(const char* name) { NamedPath = io::SNamedPath(name); }
+
+	//! return open gl texture name
+	virtual u64 getTextureHandler() const = 0;
+
+	virtual u32 getTextureSize() const { return 0; }
+
+	virtual void updateTexture(void* data, ECOLOR_FORMAT format, u32 w, u32 h, u32 x, u32 y) {}
+
+	virtual void reload() {}
+
+	virtual bool loadingFailed() const { return LoadingFailed; }
+
+	virtual bool useOnDemandLoad() const { return false; }
+
+	virtual const io::path& getFullPath() const { return NamedPath.getPath(); }
 protected:
 
 	//! Helper function, helps to get the desired texture creation format from the flags.
@@ -209,6 +227,7 @@ protected:
 	}
 
 	io::SNamedPath NamedPath;
+	bool LoadingFailed;
 };
 
 

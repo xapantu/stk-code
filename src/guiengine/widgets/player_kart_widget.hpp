@@ -27,30 +27,32 @@
 
 
 class KartSelectionScreen;
-class NetworkPlayerProfile;
 
 namespace GUIEngine
 {
-    class PlayerNameSpinner;
     class KartStatsWidget;
     class ModelViewWidget;
     class LabelWidget;
+    class SpinnerWidget;
+    class IconButtonWidget;
 
     /** A widget representing the kart selection for a player (i.e. the player's
      *  number, name, the kart view, the kart's name) */
     class PlayerKartWidget : public GUIEngine::Widget,
-        public GUIEngine::SpinnerWidget::ISpinnerConfirmListener
+        public SpinnerWidget::ISpinnerConfirmListener
     {
         /** Whether this player confirmed their selection */
         bool m_ready;
         /** If the player is handicapped. */
-        bool m_handicapped;
+        HandicapLevel m_handicap;
 
         /** widget coordinates */
         int player_name_x, player_name_y, player_name_w, player_name_h;
         int model_x, model_y, model_w, model_h;
         int kart_name_x, kart_name_y, kart_name_w, kart_name_h;
+        int m_crown_icon_x, m_crown_icon_y, m_crown_icon_w, m_crown_icon_h;
         int m_kart_stats_x, m_kart_stats_y, m_kart_stats_w, m_kart_stats_h;
+        int m_left_arrow_width;
 
         /** A reserved ID for this widget if any, -1 otherwise.  (If no ID is
          *  reserved, widget will not be in the regular tabbing order */
@@ -65,9 +67,6 @@ namespace GUIEngine
         StateManager::ActivePlayer* m_associated_player;
         int m_player_id;
 
-        /** Network info about the user. */
-        NetworkPlayerProfile* m_associated_user;
-
         /** Internal name of the spinner; useful to interpret spinner events,
          *  which contain the name of the activated object */
         std::string spinnerID;
@@ -76,28 +75,30 @@ namespace GUIEngine
         long m_magic_number;
 #endif
 
+        // -------------------------------------------------------------------------
+        void updateSize();
     public:
 
         LEAK_CHECK()
 
         /** Sub-widgets created by this widget */
-        PlayerNameSpinner* m_player_ident_spinner;
+        SpinnerWidget* m_player_ident_spinner;
         KartStatsWidget* m_kart_stats;
         ModelViewWidget* m_model_view;
         LabelWidget* m_kart_name;
+        IconButtonWidget* m_crown_icon;
 
         KartSelectionScreen* m_parent_screen;
 
         irr::gui::IGUIStaticText* m_ready_text;
 
         core::stringw deviceName;
-        std::string m_kartInternalName;
+        std::string m_kart_internal_name;
 
         bool m_not_updated_yet;
 
         PlayerKartWidget(KartSelectionScreen* parent,
                          StateManager::ActivePlayer* associated_player,
-                         NetworkPlayerProfile* associated_user,
                          core::recti area, const int player_id,
                          std::string kart_group,
                          const int irrlicht_idget_id=-1);
@@ -108,7 +109,9 @@ namespace GUIEngine
         // ------------------------------------------------------------------------
         /** Called when players are renumbered (changes the player ID) */
         void setPlayerID(const int newPlayerID);
-
+        // ------------------------------------------------------------------------
+        SpinnerWidget* getPlayerNameSpinner() const
+                                                 { return m_player_ident_spinner; }
         // ------------------------------------------------------------------------
         /** Returns the ID of this player */
         int getPlayerID() const;
@@ -135,8 +138,8 @@ namespace GUIEngine
         bool isReady();
 
         // ------------------------------------------------------------------------
-        /** \return Whether this player is handicapped or not */
-        bool isHandicapped();
+        /** \return handicap */
+        HandicapLevel getHandicap();
 
         // -------------------------------------------------------------------------
         /** Updates the animation (moving/shrinking/etc.) */
@@ -167,6 +170,17 @@ namespace GUIEngine
 
         /** \brief Event callback from ISpinnerConfirmListener */
         virtual GUIEngine::EventPropagation onSpinnerConfirmed();
+        // -------------------------------------------------------------------------
+        void enableHandicapForNetwork();
+        // -------------------------------------------------------------------------
+        void updateSizeNow(int x, int y, int w, int h)
+        {
+            target_x = m_x = x;
+            target_y = m_y = y;
+            target_w = m_w = w;
+            target_h = m_h = h;
+            updateSize();
+        }
     };   // PlayerKartWidget
 }
 

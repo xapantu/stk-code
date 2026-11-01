@@ -9,7 +9,9 @@
 #include "IVideoDriver.h"
 #include "ITexture.h"
 #include <cassert>
+#include "font/font_drawer.hpp"
 #include "graphics/2dutils.hpp"
+#include "guiengine/engine.hpp"
 
 namespace irr
 {
@@ -26,8 +28,8 @@ STKModifiedSpriteBank::STKModifiedSpriteBank(IGUIEnvironment* env) :
     #endif
 
     m_scale = 1.0f;
-    m_height = 0;
-
+    m_fixed_scale = 0.0f;
+    m_target_icon_size = core::dimension2du(0, 0);
     if (Environment)
     {
         Driver = Environment->getVideoDriver();
@@ -63,8 +65,19 @@ core::array< core::rect<s32> >& STKModifiedSpriteBank::getPositions()
 
     for (int n=0; n<(int)Rectangles.size(); n++)
     {
-        const int h = getScaledHeight(Rectangles[n].getHeight());
-        const int w = getScaledWidth(Rectangles[n].getWidth());
+        float icon_scale_x = 1.0f;
+        float icon_scale_y = 1.0f;
+        
+        if (m_target_icon_size.Width > 0 && m_target_icon_size.Height > 0)
+        {
+            icon_scale_x = (float)m_target_icon_size.Width /
+                           (float)Rectangles[n].getWidth();
+            icon_scale_y = (float)m_target_icon_size.Height /
+                           (float)Rectangles[n].getHeight();
+        }
+ 
+        const int h = getScaledHeight(Rectangles[n].getHeight()) * icon_scale_y;
+        const int w = getScaledWidth(Rectangles[n].getWidth()) * icon_scale_x;
         copy.push_back( core::rect<s32>(Rectangles[n].UpperLeftCorner,
                                        core::dimension2d<s32>(w,h) )
                        );
@@ -174,6 +187,7 @@ void STKModifiedSpriteBank::draw2DSprite(u32 index,
         const core::rect<s32>* clip, const video::SColor& color,
         u32 starttime, u32 currenttime, bool loop, bool center)
 {
+#ifndef SERVER_ONLY
     assert( m_magic_number == 0xCAFEC001 );
     if (index >= Sprites.size() || Sprites[index].Frames.empty() )
         return;
@@ -190,7 +204,7 @@ void STKModifiedSpriteBank::draw2DSprite(u32 index,
                   ? Sprites[index].Frames.size()-1 : f;
     }
 
-    const video::ITexture* tex =
+    video::ITexture* tex =
         Textures[Sprites[index].Frames[frame].textureNumber];
     if (!tex)
         return;
@@ -203,9 +217,20 @@ void STKModifiedSpriteBank::draw2DSprite(u32 index,
 
     const core::dimension2d<s32>& dim = r.getSize();
 
-    core::rect<s32> dest( pos,
-                          core::dimension2d<s32>(getScaledWidth(dim.Width),
-                                                 getScaledHeight(dim.Height)));
+    float icon_scale_x = 1.0f;
+    float icon_scale_y = 1.0f;
+    if (m_target_icon_size.Width > 0 && m_target_icon_size.Height > 0 &&
+        tex->getSize() != m_target_icon_size)
+    {
+        icon_scale_x = (float)m_target_icon_size.Width /
+            (float)tex->getSize().Width;
+        icon_scale_y = (float)m_target_icon_size.Height /
+            (float)tex->getSize().Height;
+    }
+
+    core::rect<s32> dest(pos, core::dimension2d<s32>
+        (getScaledWidth(dim.Width) * icon_scale_x,
+        getScaledHeight(dim.Height) * icon_scale_y));
     if (center)
     {
         dest -= dest.getSize() / 2;
@@ -219,9 +244,21 @@ void STKModifiedSpriteBank::draw2DSprite(u32 index,
                       const video::SColor  *const colors=0,
                       bool useAlphaChannelOfTexture=false)=0
      */
-    draw2DImage(tex, dest, r /* source rect */, clip,
-                        NULL /* colors */, true);
-
+    if (FontDrawer::isBatching())
+    {
+        // FontDrawing is batching when stk list box widget is drawing text,
+        // so we combine the images to them to make it faster (for example in
+        // server list when there are all green tick icons)
+        FontDrawer::addGlyph(tex, core::rect<f32>(dest.UpperLeftCorner.X,
+            dest.UpperLeftCorner.Y, dest.LowerRightCorner.X,
+            dest.LowerRightCorner.Y), r, clip, video::SColor(-1));
+    }
+    else
+    {
+        draw2DImage(tex, dest, r /* source rect */, clip, NULL /* colors */,
+            true);
+    }
+#endif
 }   // draw2DSprite
 
 // ----------------------------------------------------------------------------
@@ -297,27 +334,21 @@ void STKModifiedSpriteBank::draw2DSpriteBatch(const core::array<u32>& indices,
 }   // draw2DSpriteBatch
 
 // ----------------------------------------------------------------------------
-void STKModifiedSpriteBank::scaleToHeight(int height)
-{
-    m_height = height;
-}
-
-// ----------------------------------------------------------------------------
 s32 STKModifiedSpriteBank::getScaledWidth(s32 width) const
 {
-    if (m_height == 0)
-        return (s32)((float)width * m_scale);
+    if (m_fixed_scale == 0.0f)
+        return (s32)(GUIEngine::getFontHeight() * (float)width * m_scale);
     else
-        return m_height;
+        return (s32)(GUIEngine::getFontHeight() * m_fixed_scale);
 }
 
 // ----------------------------------------------------------------------------
 s32 STKModifiedSpriteBank::getScaledHeight(s32 height) const
 {
-    if (m_height == 0)
-        return (s32)((float)height * m_scale);
+    if (m_fixed_scale == 0.0f)
+        return (s32)(GUIEngine::getFontHeight() * (float)height * m_scale);
     else
-        return m_height;
+        return (s32)(GUIEngine::getFontHeight() * m_fixed_scale);
 }
 
 // ----------------------------------------------------------------------------

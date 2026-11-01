@@ -28,11 +28,22 @@
 
 namespace GUIEngine
 {
+    // This enum can allow showing different soft keyboard in android
+    enum TextBoxType: int
+    {
+        TBT_TEXT = 0, /* Normal text input (default) */
+        TBT_CAP_SENTENCES = 1, /* Capitalize the first character of each sentence */
+        TBT_PASSWORD = 2, /* Password input */
+        TBT_NUMBER = 3, /* Number only input */
+        TBT_EMAIL = 4, /* Email input */
+    };
+
     class ITextBoxWidgetListener
     {
     public:
         virtual ~ITextBoxWidgetListener() {}
         virtual void onTextUpdated() = 0;
+        virtual bool onEnterPressed(const irr::core::stringw& text) { return false; }
     };
     
     /** \brief A text field widget.
@@ -69,11 +80,16 @@ namespace GUIEngine
         
         irr::core::stringw getText() const;
         void setPasswordBox(bool passwordBox, wchar_t passwordChar = L'*');
-        
+        void setTextBoxType(TextBoxType t);
         virtual void elementRemoved();
 
         /** Override method from base class Widget */
         virtual void setActive(bool active=true);
+        
+        virtual EventPropagation onActivationInput(const int playerID);
+        virtual EventPropagation rightPressed(const int playerID);
+        virtual EventPropagation leftPressed (const int playerID);
+
     };
 }
 

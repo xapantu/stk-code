@@ -18,23 +18,26 @@
 
 #include "guiengine/widgets/player_kart_widget.hpp"
 
+#include "audio/sfx_manager.hpp"
 #include "config/player_manager.hpp"
 #include "config/user_config.hpp"
+#include <ge_render_info.hpp>
 #include "guiengine/widgets/kart_stats_widget.hpp"
 #include "guiengine/widgets/model_view_widget.hpp"
-#include "guiengine/widgets/player_name_spinner.hpp"
 #include "input/input_device.hpp"
+#include "karts/kart_model.hpp"
 #include "karts/kart_properties.hpp"
 #include "karts/kart_properties_manager.hpp"
-#include "network/network_player_profile.hpp"
 #include "states_screens/kart_selection.hpp"
+#include "utils/string_utils.hpp"
+#include "utils/translation.hpp"
+
 #include <IGUIEnvironment.h>
 
 using namespace GUIEngine;
 
 PlayerKartWidget::PlayerKartWidget(KartSelectionScreen* parent,
                                    StateManager::ActivePlayer* associated_player,
-                                   NetworkPlayerProfile* associated_user,
                                    core::recti area, const int player_id,
                                    std::string kart_group,
                                    const int irrlicht_widget_id) : Widget(WTYPE_DIV)
@@ -46,15 +49,12 @@ PlayerKartWidget::PlayerKartWidget(KartSelectionScreen* parent,
 #endif
     m_ready_text = NULL;
     m_parent_screen = parent;
+    m_left_arrow_width = 0;
 
-    m_associated_user = associated_user;
     m_associated_player = associated_player;
-    x_speed = 1.0f;
-    y_speed = 1.0f;
-    w_speed = 1.0f;
-    h_speed = 1.0f;
+    x_speed = y_speed = w_speed = h_speed = 1.0f;
     m_ready = false;
-    m_handicapped = false;
+    m_handicap = HANDICAP_NONE;
     m_not_updated_yet = true;
 
     m_irrlicht_widget_id = irrlicht_widget_id;
@@ -70,13 +70,24 @@ PlayerKartWidget::PlayerKartWidget(KartSelectionScreen* parent,
     target_h = m_h;
 
     // ---- Player identity spinner
-    m_player_ident_spinner = NULL;
-
-    m_player_ident_spinner = new PlayerNameSpinner(parent, m_player_id);
+    m_player_ident_spinner = new SpinnerWidget();
+    m_player_ident_spinner->setUseBackgroundColor();
+    m_player_ident_spinner->setSpinnerWidgetPlayerID(m_player_id);
+    
     m_player_ident_spinner->m_x = player_name_x;
     m_player_ident_spinner->m_y = player_name_y;
     m_player_ident_spinner->m_w = player_name_w;
     m_player_ident_spinner->m_h = player_name_h;
+
+    // --- Crown icon (Only for the game master)
+    m_crown_icon = new IconButtonWidget(IconButtonWidget::SCALE_MODE_KEEP_CUSTOM_ASPECT_RATIO, false, false, IconButtonWidget::ICON_PATH_TYPE_ABSOLUTE);
+    m_crown_icon->setImage(file_manager->getAsset(FileManager::GUI_ICON, "crown.png"), IconButtonWidget::ICON_PATH_TYPE_ABSOLUTE);
+    
+    m_crown_icon->m_x = m_crown_icon_x;
+    m_crown_icon->m_y = m_crown_icon_y;
+    m_crown_icon->m_w = m_crown_icon_w;
+    m_crown_icon->m_h = m_crown_icon_h;
+    m_children.push_back(m_crown_icon);
 
     // ---- KartStatsWidget
     m_kart_stats = NULL;
@@ -106,22 +117,9 @@ PlayerKartWidget::PlayerKartWidget(KartSelectionScreen* parent,
     if (parent->m_multiplayer && associated_player)
     {
         if (associated_player->getDevice()->getType() == DT_KEYBOARD)
-        {
             m_player_ident_spinner->setBadge(KEYBOARD_BADGE);
-        }
         else if (associated_player->getDevice()->getType() == DT_GAMEPAD)
-        {
             m_player_ident_spinner->setBadge(GAMEPAD_BADGE);
-        }
-    }
-    else if (m_associated_user) // online user, FIXME is that useful ?
-    {
-        m_player_ident_spinner->setBadge(OK_BADGE);
-    }
-
-    if (irrlicht_widget_id == -1)
-    {
-        m_player_ident_spinner->m_tab_down_root = g_root_id;
     }
 
     spinnerID = StringUtils::insertValues("@p%i_spinner", m_player_id);
@@ -182,7 +180,7 @@ PlayerKartWidget::PlayerKartWidget(KartSelectionScreen* parent,
                        "kart '%s' nor any other kart.",
                        default_kart.c_str());
     }
-    m_kartInternalName = props->getIdent();
+    m_kart_internal_name = props->getIdent();
 
     const KartModel &kart_model = props->getMasterKartModel();
     
@@ -193,26 +191,60 @@ PlayerKartWidget::PlayerKartWidget(KartSelectionScreen* parent,
         scale = 30.0f;
     }
 
-    m_model_view->addModel( kart_model.getModel(), Vec3(0,0,0),
-                            Vec3(scale, scale, scale),
-                            kart_model.getBaseFrame() );
-    m_model_view->addModel( kart_model.getWheelModel(0),
-                            kart_model.getWheelGraphicsPosition(0) );
-    m_model_view->addModel( kart_model.getWheelModel(1),
-                            kart_model.getWheelGraphicsPosition(1) );
-    m_model_view->addModel( kart_model.getWheelModel(2),
-                            kart_model.getWheelGraphicsPosition(2) );
-    m_model_view->addModel( kart_model.getWheelModel(3),
-                            kart_model.getWheelGraphicsPosition(3) );
-    for(size_t i=0 ; i < kart_model.getSpeedWeightedObjectsCount() ; i++)
+    core::matrix4 model_location;
+    model_location.setScale(core::vector3df(scale, scale, scale));
+    const bool has_win_anime =
+        UserConfigParams::m_animated_characters &&
+        (((kart_model.getFrame(KartModel::AF_WIN_LOOP_START) > -1 ||
+        kart_model.getFrame(KartModel::AF_WIN_START) > -1) &&
+        kart_model.getFrame(KartModel::AF_WIN_END) > -1) ||
+        (kart_model.getFrame(KartModel::AF_SELECTION_START) > -1 &&
+        kart_model.getFrame(KartModel::AF_SELECTION_END) > -1));
+    m_model_view->addModel( kart_model.getModel(), model_location,
+        has_win_anime ?
+        kart_model.getFrame(KartModel::AF_SELECTION_START) > -1 ?
+        kart_model.getFrame(KartModel::AF_SELECTION_START) :
+        kart_model.getFrame(KartModel::AF_WIN_LOOP_START) > -1 ?
+        kart_model.getFrame(KartModel::AF_WIN_LOOP_START) :
+        kart_model.getFrame(KartModel::AF_WIN_START) :
+        kart_model.getBaseFrame(),
+        has_win_anime ?
+        kart_model.getFrame(KartModel::AF_SELECTION_END) > -1 ?
+        kart_model.getFrame(KartModel::AF_SELECTION_END) :
+        kart_model.getFrame(KartModel::AF_WIN_END) :
+        kart_model.getBaseFrame(),
+        kart_model.getAnimationSpeed());
+    m_model_view->getModelViewRenderInfo()->setHue(
+        m_associated_player->getConstProfile()->getDefaultKartColor());
+    model_location.setScale(core::vector3df(1.0f, 1.0f, 1.0f));
+    for (unsigned i = 0; i < 4; i++)
     {
-        const SpeedWeightedObject& obj = kart_model.getSpeedWeightedObject((int)i);
-        m_model_view->addModel(obj.m_model, obj.m_position);
+        model_location.setTranslation(kart_model
+            .getWheelGraphicsPosition(i).toIrrVector());
+        m_model_view->addModel(kart_model.getWheelModel(i), model_location);
+    }
+
+    for (unsigned i = 0; i < kart_model.getSpeedWeightedObjectsCount(); i++)
+    {
+        const SpeedWeightedObject& obj = kart_model.getSpeedWeightedObject(i);
+        core::matrix4 swol = obj.m_location;
+        if (!obj.m_bone_name.empty())
+        {
+            core::matrix4 inv =
+                kart_model.getInverseBoneMatrix(obj.m_bone_name);
+            swol = inv * obj.m_location;
+        }
+        m_model_view->addModel(obj.m_model, swol, -1, -1, 0.0f,
+            obj.m_bone_name);
     }
     m_model_view->setRotateContinuously( 35.0f );
 
     // ---- Kart name label
-    m_kart_name = new LabelWidget(false, true);
+    m_kart_name = new LabelWidget(
+        m_parent_screen->m_multiplayer ?
+        LabelWidget::TINY_TITLE:
+        LabelWidget::SMALL_TITLE);
+    
     m_kart_name->setText(props->getName(), false);
     m_kart_name->m_properties[PROP_TEXT_ALIGN] = "center";
     m_kart_name->m_properties[PROP_ID] =
@@ -247,7 +279,12 @@ PlayerKartWidget::~PlayerKartWidget()
 
     if (m_kart_name->getIrrlichtElement() != NULL)
         m_kart_name->getIrrlichtElement()->remove();
-    getCurrentScreen()->manualRemoveWidget(this);
+
+    if (m_crown_icon->getIrrlichtElement() != NULL)
+        m_crown_icon->getIrrlichtElement()->remove();
+        
+    if (getCurrentScreen() != NULL)
+        getCurrentScreen()->manualRemoveWidget(this);
 
 #ifdef DEBUG
     m_magic_number = 0xDEADBEEF;
@@ -278,14 +315,14 @@ void PlayerKartWidget::setPlayerID(const int newPlayerID)
     // Change the player ID
     m_player_id = newPlayerID;
     if (!m_ready)
-        m_player_ident_spinner->setID(m_player_id);
-    m_kart_stats->setDisplayText(m_player_id == 0);
+        m_player_ident_spinner->setSpinnerWidgetPlayerID(m_player_id);
+    m_kart_stats->setDisplayIcons(m_player_id == 0);
     // restore previous focus, but with new player ID
     if (focus != NULL) focus->setFocusForPlayer(m_player_id);
 
     if (m_player_ident_spinner != NULL)
     {
-        m_player_ident_spinner->setID(m_player_id);
+        m_player_ident_spinner->setSpinnerWidgetPlayerID(m_player_id);
     }
 }   // setPlayerID
 
@@ -305,14 +342,13 @@ void PlayerKartWidget::add()
 
     assert(KartSelectionScreen::getRunningInstance()
            ->m_kart_widgets.contains(this));
+#ifdef DEBUG
     if (m_associated_player) // if player is local
     {
         bool mineInList = false;
         for (unsigned int p=0; p<StateManager::get()->activePlayerCount(); p++)
         {
-#ifdef DEBUG
             assert(StateManager::get()->getActivePlayer(p)->ok());
-#endif
             if (StateManager::get()->getActivePlayer(p) == m_associated_player)
             {
                 mineInList = true;
@@ -320,7 +356,7 @@ void PlayerKartWidget::add()
         }
         assert(mineInList);
     }
-
+#endif
     // the first player will have an ID of its own to allow for keyboard
     // navigation despite this widget being added last
     if (m_irrlicht_widget_id != -1)
@@ -334,6 +370,7 @@ void PlayerKartWidget::add()
     m_kart_stats->add();
     m_model_view->add();
     m_kart_name->add();
+    m_crown_icon->add();
 
     m_model_view->update(0);
 
@@ -342,17 +379,15 @@ void PlayerKartWidget::add()
     irr::core::stringw name; // name of the player
     if (m_associated_player)
         name = m_associated_player->getProfile()->getName();
-    if (m_associated_user)
-        name = m_associated_user->getName();
-    core::stringw label = translations->fribidize(name);
+    core::stringw label = name;
 
     if (m_parent_screen->m_multiplayer)
     {
         const int player_amount = PlayerManager::get()->getNumPlayers();
-        for (int n=0; n<player_amount; n++)
+        for (int n = 0; n < player_amount; n++)
         {
             core::stringw name = PlayerManager::get()->getPlayer(n)->getName();
-            core::stringw label = translations->fribidize(name);
+            core::stringw label = name;
             m_player_ident_spinner->addLabel(label);
             if (UserConfigParams::m_per_player_difficulty)
             {
@@ -365,11 +400,17 @@ void PlayerKartWidget::add()
 
         // select the right player profile in the spinner
         m_player_ident_spinner->setValue(label);
+
+        if (m_associated_player->getID() != PLAYER_ID_GAME_MASTER)
+        {
+            m_crown_icon->setVisible(false);
+        }
     }
     else
     {
         m_player_ident_spinner->addLabel(label);
         m_player_ident_spinner->setVisible(false);
+        m_crown_icon->setVisible(false);
     }
 
     assert(m_player_ident_spinner->getStringValue() == label);
@@ -409,13 +450,19 @@ void PlayerKartWidget::markAsReady()
 
     m_ready = true;
 
+    // Correctly reposition the game master icon as
+    // the spinner arrow is no longer there (the player is ready)
+    m_crown_icon_x += m_left_arrow_width;
+    m_crown_icon->move(m_crown_icon_x,
+        m_crown_icon_y,
+        m_crown_icon_w,
+        m_crown_icon_h);
+
     stringw playerNameString = m_player_ident_spinner->getStringValue();
     core::rect<s32> rect(core::position2di(m_player_ident_spinner->m_x,
                                            m_player_ident_spinner->m_y),
                          core::dimension2di(m_player_ident_spinner->m_w,
                                             m_player_ident_spinner->m_h));
-    // 'playerNameString' is already fribidize, so we need to use
-    // 'insertValues' and not _("...", a) so it's not flipped again
     m_ready_text =
         GUIEngine::getGUIEnv()->addStaticText(_("%s is ready", playerNameString),
             rect);
@@ -446,12 +493,12 @@ bool PlayerKartWidget::isReady()
 }   // isReady
 
 // ------------------------------------------------------------------------
-/** \return Whether this player is handicapped or not */
-bool PlayerKartWidget::isHandicapped()
+/** \return Handicap */
+HandicapLevel PlayerKartWidget::getHandicap()
 {
     assert(m_magic_number == 0x33445566);
-    return m_handicapped;
-}   // isHandicapped
+    return m_handicap;
+}   // getHandicap
 
 // -------------------------------------------------------------------------
 /** Updates the animation (moving/shrinking/etc.) */
@@ -518,14 +565,26 @@ void PlayerKartWidget::onUpdate(float delta)
         if (m_h < target_h) m_h = target_h;
     }
 
+    updateSize();
+    // When coming from the overworld, we must rebuild the preview scene at
+    // least once, since the scene is being cleared by leaving the overworld
+    if (m_not_updated_yet)
+    {
+        m_model_view->clearRttProvider();
+        m_not_updated_yet = false;
+    }
+}   // onUpdate
+
+// -------------------------------------------------------------------------
+void PlayerKartWidget::updateSize()
+{
     setSize(m_x, m_y, m_w, m_h);
 
     if (m_player_ident_spinner != NULL)
     {
-        m_player_ident_spinner->move(player_name_x,
-                                     player_name_y,
-                                     player_name_w,
-                                     player_name_h );
+        m_player_ident_spinner->move(player_name_x, player_name_y,
+                                     player_name_w, player_name_h );
+        m_left_arrow_width = m_player_ident_spinner->getLeftArrow().getWidth();
     }
     if (m_ready_text != NULL)
     {
@@ -535,10 +594,8 @@ void PlayerKartWidget::onUpdate(float delta)
     }
     if (!m_parent_screen->m_multiplayer)
     {
-        m_kart_stats->move(m_kart_stats_x,
-                           m_kart_stats_y,
-                           m_kart_stats_w,
-                           m_kart_stats_h);
+        m_kart_stats->move(m_kart_stats_x, m_kart_stats_y,
+                           m_kart_stats_w, m_kart_stats_h);
     }
     else
     {
@@ -546,25 +603,13 @@ void PlayerKartWidget::onUpdate(float delta)
                            m_w, m_h/2);
     }
 
-
-    m_model_view->move(model_x,
-                       model_y,
-                       model_w,
-                       model_h);
-
-    m_kart_name->move(kart_name_x,
-                      kart_name_y,
-                      kart_name_w,
-                      kart_name_h);
-
-    // When coming from the overworld, we must rebuild the preview scene at
-    // least once, since the scene is being cleared by leaving the overworld
-    if (m_not_updated_yet)
-    {
-        m_model_view->clearRttProvider();
-        m_not_updated_yet = false;
-    }
-}   // onUpdate
+    m_model_view->move(model_x, model_y,
+                       model_w, model_h);
+    m_kart_name->move(kart_name_x, kart_name_y,
+                      kart_name_w, kart_name_h);
+    m_crown_icon->move(m_crown_icon_x, m_crown_icon_y,
+                       m_crown_icon_w, m_crown_icon_h);
+}   // updateSize
 
 // -------------------------------------------------------------------------
 /** Event callback */
@@ -604,14 +649,22 @@ GUIEngine::EventPropagation PlayerKartWidget::transmitEvent(Widget* w,
             m_associated_player->setPlayerProfile(profile);
             if(UserConfigParams::m_per_player_difficulty && spinner_value % 2 != 0)
             {
-                m_handicapped = true;
+                m_handicap = HANDICAP_MEDIUM;
                 m_model_view->setBadge(ANCHOR_BADGE);
+                m_kart_stats->setValues(
+                    kart_properties_manager->getKart(m_kart_internal_name),
+                    HANDICAP_MEDIUM);
             }
             else
             {
-                m_handicapped = false;
+                m_handicap = HANDICAP_NONE;
                 m_model_view->unsetBadge(ANCHOR_BADGE);
+                m_kart_stats->setValues(
+                    kart_properties_manager->getKart(m_kart_internal_name),
+                    HANDICAP_NONE);
             }
+            m_model_view->getModelViewRenderInfo()->setHue(
+                m_associated_player->getConstProfile()->getDefaultKartColor());
         }
     }
 
@@ -630,15 +683,18 @@ void PlayerKartWidget::setSize(const int x, const int y, const int w, const int 
     m_h = h;
 
     // -- sizes
-    player_name_h = 40;
+    player_name_h = GUIEngine::getFontHeight();
     // Set it a bit higher so there's space for "(handicapped)"
     if(UserConfigParams::m_per_player_difficulty)
-        player_name_w = std::min(500, w);
+        player_name_w = std::min(GUIEngine::getFontHeight() * 12, w);
     else
-        player_name_w = std::min(400, w);
+        player_name_w = std::min(GUIEngine::getFontHeight() * 10, w);
+
+    m_crown_icon_w = w;
+    m_crown_icon_h = GUIEngine::getFontHeight();
 
     kart_name_w = w;
-    kart_name_h = 25;
+    kart_name_h = GUIEngine::getFontHeight();
 
     // for shrinking effect
     if (h < 175)
@@ -651,6 +707,15 @@ void PlayerKartWidget::setSize(const int x, const int y, const int w, const int 
     // --- layout
     player_name_x = x + w/2 - player_name_w/2;
     player_name_y = y;
+
+    m_crown_icon_x = x + w / 2 - (player_name_w / 2) - (m_crown_icon_w / 2);
+
+    if (!m_ready && m_left_arrow_width > 0)
+        m_crown_icon_x -= m_left_arrow_width / 2;
+    else
+        m_crown_icon_x += m_left_arrow_width / 2;
+
+    m_crown_icon_y = player_name_y;
 
     if (m_parent_screen->m_multiplayer)
     {
@@ -670,7 +735,7 @@ void PlayerKartWidget::setSize(const int x, const int y, const int w, const int 
     else
     {
         const int modelMaxHeight = h - kart_name_h - player_name_h;
-        const int modelMaxWidth =  w;
+        const int modelMaxWidth =  w / 2;
         const int bestSize = std::min(modelMaxWidth, modelMaxHeight);
         const int modelY = y + player_name_h;
         model_x = x + w/4 - (int)(bestSize/2);
@@ -694,7 +759,7 @@ void PlayerKartWidget::setSize(const int x, const int y, const int w, const int 
 void PlayerKartWidget::setKartInternalName(const std::string& whichKart)
 {
     assert(m_magic_number == 0x33445566);
-    m_kartInternalName = whichKart;
+    m_kart_internal_name = whichKart;
 }   // setKartInternalName
 
 // -------------------------------------------------------------------------
@@ -702,7 +767,7 @@ void PlayerKartWidget::setKartInternalName(const std::string& whichKart)
 const std::string& PlayerKartWidget::getKartInternalName() const
 {
     assert(m_magic_number == 0x33445566);
-    return m_kartInternalName;
+    return m_kart_internal_name;
 }   // getKartInternalName
 
 // -------------------------------------------------------------------------
@@ -710,7 +775,20 @@ const std::string& PlayerKartWidget::getKartInternalName() const
 /** \brief Event callback from ISpinnerConfirmListener */
 EventPropagation PlayerKartWidget::onSpinnerConfirmed()
 {
-    KartSelectionScreen::getRunningInstance()->playerConfirm(m_player_id);
-    return EVENT_BLOCK;
+    //KartSelectionScreen::getRunningInstance()->playerConfirm(m_player_id);
+    //return EVENT_BLOCK;
+    return EVENT_LET;
 }   // onSpinnerConfirmed
 
+// -------------------------------------------------------------------------
+void PlayerKartWidget::enableHandicapForNetwork()
+{
+    m_handicap = HANDICAP_MEDIUM;
+    m_model_view->setBadge(ANCHOR_BADGE);
+    m_kart_stats->setValues(
+        kart_properties_manager->getKart(m_kart_internal_name),
+        HANDICAP_MEDIUM);
+    core::stringw label = _("%s (handicapped)",
+        m_player_ident_spinner->getCustomText());
+    m_player_ident_spinner->setCustomText(label);
+}   // enableHandicapForNetwork

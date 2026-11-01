@@ -1,6 +1,6 @@
 /*
    AngelCode Scripting Library
-   Copyright (c) 2003-2013 Andreas Jonsson
+   Copyright (c) 2003-2025 Andreas Jonsson
 
    This software is provided 'as-is', without any express or implied 
    warranty. In no event will the authors be held liable for any 
@@ -55,6 +55,7 @@ public:
 	// Miscellaneous
 	asIScriptEngine   *GetEngine() const;
 	asIScriptFunction *GetFunction() const;
+	void              *GetAuxiliary() const;
 
 	// Object
 	void   *GetObject();
@@ -100,6 +101,35 @@ public:
 	void *objectRegister;
 
 	asQWORD returnVal;
+};
+
+class asCGenericVariadic : public asCGeneric
+{
+public:
+	asCGenericVariadic(asCScriptEngine* engine, asCScriptFunction* sysFunction, void* currentObject, asDWORD* stackPointer, asDWORD stackArgCount);
+
+	int     GetArgCount() const;
+	int     GetArgTypeId(asUINT arg, asDWORD* flags = 0) const;
+	asBYTE  GetArgByte(asUINT arg);
+	asWORD  GetArgWord(asUINT arg);
+	asDWORD GetArgDWord(asUINT arg);
+	asQWORD GetArgQWord(asUINT arg);
+	float   GetArgFloat(asUINT arg);
+	double  GetArgDouble(asUINT arg);
+	void*   GetArgAddress(asUINT arg);
+	void*   GetArgObject(asUINT arg);
+	void*   GetAddressOfArg(asUINT arg);
+
+	int     SetReturnObject(void* obj);
+	void*   GetAddressOfReturnLocation();
+
+//------------------------
+// internal
+//-------------------------
+	asDWORD argCount;
+
+	asCDataType* GetArgDataType(asUINT arg) const;
+	int GetArgOffsetOnStack(asUINT arg) const;
 };
 
 END_AS_NAMESPACE

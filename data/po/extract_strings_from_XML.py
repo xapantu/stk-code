@@ -3,7 +3,7 @@ import sys
 import codecs
 
 f = open('./data/po/gui_strings.h', 'w')
-f.write( codecs.BOM_UTF8 )
+f.write(codecs.BOM_UTF8.decode('utf-8'))
 
 def traverse(file, node, isChallenge, isGP, isKart, isTrack, isAchievements, level=0):
   
@@ -25,7 +25,7 @@ def traverse(file, node, isChallenge, isGP, isKart, isTrack, isAchievements, lev
                else:
                    line += "//I18N: Cutscene subtitle from " + file + "\n//I18N: " + comment + "\n_(\"" + e.getAttribute("text") + "\");\n\n"
                
-               f.write( line.encode( "utf-8" ) )
+               f.write(line)
         
         if isChallenge or isGP or isKart or isTrack or isAchievements:
            if isTrack and e.hasAttribute("internal") and e.getAttribute("internal") == "Y": continue
@@ -37,7 +37,7 @@ def traverse(file, node, isChallenge, isGP, isKart, isTrack, isAchievements, lev
                else:
                    line += "//I18N: File : " + file + "\n//I18N: " + comment + "\n_(\"" + e.getAttribute("name") + "\");\n\n"
                
-               f.write( line.encode( "utf-8" ) )
+               f.write(line)
            
            # challenges and GPs can have a description file; karts don't
            if e.hasAttribute("description") and len(e.getAttribute("description")) > 0:
@@ -48,17 +48,19 @@ def traverse(file, node, isChallenge, isGP, isKart, isTrack, isAchievements, lev
                else:
                    line += "//I18N: File : " + file + "\n//I18N: " + comment + "\n_(\"" + e.getAttribute("description") + "\");\n\n"
                
-               f.write( line.encode( "utf-8" ) )
+               f.write(line)
         else:
-           if e.hasAttribute("text") and len(e.getAttribute("text")) > 0:
+           if e.nodeName == "string" and e.hasAttribute("name") and e.getAttribute("name").startswith("po_") and e.firstChild is not None:
+               line = "//I18N: In Android UI, " + e.getAttribute("name") + "\n_(\"" + e.firstChild.nodeValue  + "\")\n\n"
+               f.write(line)
+           elif e.hasAttribute("text") and len(e.getAttribute("text")) > 0:
                # print "Label=", e.getAttribute("text"), " Comment=", comment
                line = ""
                if comment == None:
-                   line += "//I18N: " + file + "\n_(\"" + e.getAttribute("text") + "\")\n\n"
+                   line += "//I18N: " + file + "\n_(\"" + e.getAttribute("text").replace("\"", "\\\"") + "\")\n\n"
                else:
                    line += "//I18N: " + file + "\n//I18N: " + comment + "\n_(\"" + e.getAttribute("text") + "\");\n\n"
-               
-               f.write( line.encode( "utf-8" ) )
+               f.write(line)
 
         # don't recurse in children nodes for karts, they can contain sounds, etc. that should not be translated
         if not isKart:
@@ -88,9 +90,9 @@ for file in filenames:
     try:
         doc = xml.dom.minidom.parse(file)
     except Exception as ex:
-        print "============================================"
-        print "/!\\ Expat doesn't like ", file, "! Error=", type(ex), " (", ex.args, ")"
-        print "============================================"
+        print("============================================")
+        print("/!\\ Expat doesn't like ", file, "! Error=", type(ex), " (", ex.args, ")")
+        print("============================================")
 
     traverse(file, doc, isChallenge, isGP, isKart, isTrack, isAchievements)
     

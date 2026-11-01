@@ -22,11 +22,13 @@
 #include "modes/world_with_rank.hpp"
 #include "states_screens/race_gui_base.hpp"
 
-#include <IMesh.h>
+namespace irr
+{
+    namespace scene { class ICameraSceneNode; }
+}
+
 
 #include <string>
-#include <ICameraSceneNode.h>
-
 
 class TrackObject;
 
@@ -36,7 +38,7 @@ class TrackObject;
  */
 class CutsceneWorld : public World
 {
-    scene::ICameraSceneNode* m_camera;
+    irr::scene::ICameraSceneNode* m_camera;
 
     std::map<float, std::vector<TrackObject*> > m_sounds_to_trigger;
     std::map<float, std::vector<TrackObject*> > m_sounds_to_stop;
@@ -44,6 +46,7 @@ class CutsceneWorld : public World
 
     double m_duration;
     bool m_aborted;
+    bool m_cleared_cutscene;
 
     float m_fade_duration;
 
@@ -58,6 +61,7 @@ class CutsceneWorld : public World
 
     std::vector<std::string> m_parts;
 
+    void clearCutscene();
 public:
 
     CutsceneWorld();
@@ -65,12 +69,14 @@ public:
 
     virtual void init() OVERRIDE;
 
+    virtual void reset(bool restart=false) OVERRIDE;
+
     // clock events
     virtual bool isRaceOver() OVERRIDE;
 
     virtual const std::string& getIdent() const OVERRIDE;
 
-    virtual void update(float dt) OVERRIDE;
+    virtual void update(int ticks) OVERRIDE;
 
     virtual void createRaceGUI() OVERRIDE;
 
@@ -109,11 +115,7 @@ public:
     // ------------------------------------------------------------------------
     static void setUseDuration(bool use_duration) { s_use_duration = use_duration; }
     // ------------------------------------------------------------------------
-    void abortCutscene()
-    {
-        if (m_time < m_duration - m_fade_duration) m_duration = m_time + m_fade_duration;
-        m_aborted = true;
-    }
+    void abortCutscene() { m_aborted = true; }
 
 };   // CutsceneWorld
 

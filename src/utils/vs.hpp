@@ -26,19 +26,31 @@
 #if defined(WIN32) && defined(_MSC_VER) && _MSC_VER < 1800
 #  include <math.h>
 
-#  define isnan _isnan
 #  define roundf(x) (floorf(x + 0.5f))
 #  define round(x)  (floorf(x + 0.5))
 #endif
 
 #ifdef __MINGW32__
-	#include <cmath>
-	using std::isnan;
+    #include <cmath>
+    using std::isnan;
 #endif
 
 #if defined(WIN32) && defined(DEBUG)
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
+#endif
+
+#if (defined(__linux__) && defined(__GLIBC__) && defined(__GLIBC_MINOR__)) || defined(__NetBSD__) || defined(__APPLE__) || defined(__sun)
+#  include <pthread.h>
+#endif
+
+#if defined(__FreeBSD__) || defined(__DragonFly__) || defined(__OpenBSD__)
+#  include <pthread.h>
+#  include <pthread_np.h>
+#endif
+
+#if defined(__HAIKU__)
+#  include <kernel/scheduler.h>
 #endif
 
 namespace VS
@@ -82,7 +94,22 @@ namespace VS
 #else
     static void setThreadName(const char* name)
     {
-    }
+#if defined(__linux__) && defined(__GLIBC__) && defined(__GLIBC_MINOR__)
+#if __GLIBC__ > 2 || __GLIBC_MINOR__ > 11 || defined(__sun)
+        pthread_setname_np(pthread_self(), name);
+#endif
+#elif defined(__FreeBSD__) || defined(__DragonFly__)
+        pthread_set_name_np(pthread_self(), name);
+#elif defined(__NetBSD__)
+        pthread_setname_np(pthread_self(), "%s", const_cast<char *>(name));
+#elif defined(__OpenBSD__)
+        pthread_set_name_np(pthread_self(), const_cast<char *>(name));
+#elif defined(__APPLE__)
+        pthread_setname_np(name);
+#elif defined(__HAIKU__)
+        rename_thread(find_thread(nullptr), name);
+#endif
+    }   // setThreadName
 #endif
 
 }   // namespace VS

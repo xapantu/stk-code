@@ -23,8 +23,7 @@
 #include <irrString.h>
 #include <string>
 #include <vector>
-
-#include "utils/translation.hpp"
+#include "utils/types.hpp"
 
 using irr::core::stringw;
 
@@ -36,6 +35,12 @@ class Track;
   */
 class GrandPrixData
 {
+protected:
+    /** The ident of the tracks in this grand prix in their right order, ident
+     *  means the filename of the .track file without .track extension
+     *  (ie. 'volcano'). */
+    std::vector<std::string> m_tracks;
+
 public:
     /** Used to classify GPs into groups */
     enum GPGroupType
@@ -57,16 +62,12 @@ private:
     /** Original filename, only for error handling needed. */
     std::string m_filename;
 
-    /** The ident of the tracks in this grand prix in their right order, ident
-     *  means the filename of the .track file without .track extension
-     *  (ie. 'volcano'). */
-    std::vector<std::string> m_tracks;
-
     /** The number of laps that each track will be raced, in the right order */
     std::vector<int> m_laps;
 
     /** Whether the track in question should be done in reverse mode */
-    std::vector<bool> m_reversed;
+   // This is uint8_t instead of bool because of GitHub issue #5053
+   std::vector<uint8_t> m_reversed;
 
     /** Wether the user can edit this grand prix or not */
     bool m_editable;
@@ -105,7 +106,16 @@ public:
     GrandPrixData(const std::string& filename, enum GPGroupType group);
 
     /** Needed for simple creation of an instance of GrandPrixData */
-    GrandPrixData() {};
+    GrandPrixData()
+    {
+        m_editable = false;
+        m_group = GP_NONE;
+        m_reverse_type = GP_NO_REVERSE;
+    }
+
+    virtual ~GrandPrixData() {}
+    virtual std::vector<std::string> getTrackNames(const bool includeLocked=false) const;
+    virtual unsigned int getNumberOfTracks(const bool includeLocked=false) const;
 
     void changeTrackNumber(const unsigned int number_of_tracks,
                            const std::string& track_group);
@@ -128,13 +138,12 @@ public:
     bool writeToFile();
 
     bool                     checkConsistency(bool log_error=true) const;
-    std::vector<std::string> getTrackNames(const bool includeLocked=false) const;
     std::vector<int>         getLaps(const bool includeLocked=false) const;
-    std::vector<bool>        getReverse(const bool includeLocked=false) const;
+    std::vector<uint8_t>        getReverse(const bool includeLocked=false) const;
     bool                     isEditable() const;
-    unsigned int             getNumberOfTracks(const bool includeLocked=false) const;
     const std::string&       getTrackId(const unsigned int track) const;
     irr::core::stringw       getTrackName(const unsigned int track) const;
+    bool                     containsUnavailableTracks() const;
     unsigned int             getLaps(const unsigned int track) const;
     bool                     getReverse(const unsigned int track) const;
     void                     moveUp(const unsigned int track);
@@ -146,9 +155,7 @@ public:
     void                     remove(const unsigned int track);
 
     // -------------------------------------------------------------------------
-    /** @return the (potentially translated) user-visible name of the Grand
-     *  Prix (apply fribidi as needed) */
-    irr::core::stringw getName()      const { return m_editable ? m_name.c_str() : _LTR(m_name.c_str());   }
+    irr::core::stringw getName() const;
 
     // -------------------------------------------------------------------------
     /** @return the internal indentifier of the Grand Prix (not translated) */
@@ -168,7 +175,8 @@ public:
     enum GPReverseType getReverseType()
                                       const { return m_reverse_type;           }
     static const char*        getRandomGPID()   { return "random";             }
-    static irr::core::stringw getRandomGPName() { return _LTR("Random Grand Prix"); }
+    static irr::core::stringw getRandomGPName();
+    static irr::core::stringw reverseTypeToString(GPReverseType reverse_type);
 };   // GrandPrixData
 
 #endif

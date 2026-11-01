@@ -26,11 +26,13 @@
 #include "io/utf_writer.hpp"
 #include "race/race_manager.hpp"
 #include "utils/constants.hpp"
+#include "utils/file_utils.hpp"
+#include "utils/log.hpp"
 #include "utils/string_utils.hpp"
 #include "utils/translation.hpp"
 
 HighscoreManager* highscore_manager=0;
-const unsigned int HighscoreManager::CURRENT_HSCORE_FILE_VERSION = 3;
+const unsigned int HighscoreManager::CURRENT_HSCORE_FILE_VERSION = 4;
 
 HighscoreManager::HighscoreManager()
 {
@@ -43,9 +45,8 @@ HighscoreManager::HighscoreManager()
 HighscoreManager::~HighscoreManager()
 {
     saveHighscores();
-    for(type_all_scores::iterator i  = m_all_scores.begin();
-                                  i != m_all_scores.end();  i++)
-        delete *i;
+    clearHighscores();
+
 }   // ~HighscoreManager
 
 // -----------------------------------------------------------------------------
@@ -123,7 +124,7 @@ void HighscoreManager::loadHighscores()
                 Log::error("Highscore Manager", "Invalid highscore entry will be skipped : %s\n", e.what());
                 continue;
             }
-            m_all_scores.push_back(highscores);
+            m_all_scores.push_back(std::unique_ptr<Highscores>(highscores));
         }   // next entry
 
         if(UserConfigParams::logMisc())
@@ -150,21 +151,24 @@ void HighscoreManager::saveHighscores()
 
     try
     {
-        UTFWriter highscore_file(m_filename.c_str());
-        highscore_file << L"<?xml version=\"1.0\"?>\n";
-        highscore_file << L"<highscores version=\"" << CURRENT_HSCORE_FILE_VERSION << "\">\n";
+        // Save to a new file and rename later to avoid disk space problem, see #4709
+        UTFWriter highscore_file((m_filename + "new").c_str(), false);
+        highscore_file << "<?xml version=\"1.0\"?>\n";
+        highscore_file << "<highscores version=\"" << CURRENT_HSCORE_FILE_VERSION << "\">\n";
 
         for(unsigned int i=0; i<m_all_scores.size(); i++)
         {
             m_all_scores[i]->writeEntry(highscore_file);
         }
-        highscore_file << L"</highscores>\n";
+        highscore_file << "</highscores>\n";
         highscore_file.close();
+        file_manager->removeFile(m_filename);
+        FileUtils::renameU8Path(m_filename + "new", m_filename);
     }
     catch(std::exception &e)
     {
-        Log::error("Highscore Manager","Problems saving highscores in '%s'\n", m_filename.c_str());
-        puts(e.what());
+        Log::error("Highscore Manager","Problems saving highscores in '%s' because %s",
+            m_filename.c_str(), e.what());
         m_can_write=false;
     }
 
@@ -185,20 +189,45 @@ Highscores* HighscoreManager::getHighscores(const Highscores::HighscoreType &hig
     Highscores *highscores = 0;
 
     // See if we already have a record for this type
-    for(type_all_scores::iterator i  = m_all_scores.begin();
-                                  i != m_all_scores.end();  i++)
+    for (auto& hs : m_all_scores)
     {
-        if((*i)->matches(highscore_type, num_karts, difficulty, trackName,
+        if (hs->matches(highscore_type, num_karts, difficulty, trackName,
                          number_of_laps, reverse) )
         {
             // we found one entry for this kind of race, return it
-            return (*i);
+            return hs.get();
         }
     }   // for i in m_all_scores
 
     // we don't have an entry for such a race currently. Create one.
     highscores = new Highscores(highscore_type, num_karts, difficulty,
                                 trackName, number_of_laps, reverse);
-    m_all_scores.push_back(highscores);
+    m_all_scores.push_back(std::unique_ptr<Highscores>(highscores));
     return highscores;
 }   // getHighscores
+// -----------------------------------------------------------------------------
+Highscores* HighscoreManager::getGPHighscores(int num_karts,
+                                              const RaceManager::Difficulty difficulty,
+                                              const std::string &trackName,
+                                              const int target,
+                                              GrandPrixData::GPReverseType reverse_type,
+                                              RaceManager::MinorRaceModeType minor_mode)
+{
+    Highscores *highscores = 0;
+
+    // See if we already have a record for this type
+    for (auto& hs : m_all_scores)
+    {
+        if (hs->matches(num_karts, difficulty, trackName, target, reverse_type, minor_mode))
+        {
+            // we found one entry for this kind of race, return it
+            return hs.get();
+        }
+    }   // for i in m_all_scores
+
+    // we don't have an entry for such a race currently. Create one.
+    highscores = new Highscores(num_karts, difficulty,
+                                trackName, target, reverse_type, minor_mode);
+    m_all_scores.push_back(std::unique_ptr<Highscores>(highscores));
+    return highscores;
+} // getGPHighscores

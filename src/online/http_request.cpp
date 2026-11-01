@@ -17,18 +17,16 @@
 #include "online/http_request.hpp"
 
 #include "config/user_config.hpp"
+#include "config/stk_config.hpp"
+#include "io/file_manager.hpp"
 #include "online/request_manager.hpp"
 #include "utils/constants.hpp"
-#include "utils/translation.hpp"
+#include "utils/log.hpp"
 
-#ifdef WIN32
-#  include <winsock2.h>
-#endif
-
-#ifndef NO_CURL
-#  include <curl/curl.h>
-#endif
-#include <assert.h>
+#include <functional>
+#include <iostream>
+#include <iomanip>
+#include <sstream>
 
 namespace Online
 {
@@ -37,28 +35,23 @@ namespace Online
 
     /** Creates a HTTP(S) request that will have a raw string as result. (Can
      *  of course be used if the result doesn't matter.)
-     *  \param manage_memory whether or not the RequestManager should take care of
-     *         deleting the object after all callbacks have been done.
      *  \param priority by what priority should the RequestManager take care of
      *         this request.
      */
-    HTTPRequest::HTTPRequest(bool manage_memory, int priority)
-               : Request(manage_memory, priority, 0)
+    HTTPRequest::HTTPRequest(int priority)
+               : Request(priority, 0)
     {
         init();
     }   // HTTPRequest
 
     // ------------------------------------------------------------------------
-    /** This constructor configures this request to save the data in a flie.
+    /** This constructor configures this request to save the data in a file.
      *  \param filename Name of the file to save the data to.
-     *  \param manage_memory whether or not the RequestManager should take care of
-     *         deleting the object after all callbacks have been done.
      *  \param priority by what priority should the RequestManager take care of
      *         this request.
      */
-    HTTPRequest::HTTPRequest(const std::string &filename, bool manage_memory,
-                                       int priority)
-               : Request(manage_memory, priority, 0)
+    HTTPRequest::HTTPRequest(const std::string &filename, int priority)
+               : Request(priority, 0)
     {
         // A http request should not even be created when internet is disabled
         assert(UserConfigParams::m_internet_status ==
@@ -73,9 +66,8 @@ namespace Online
     /** Char * needs a separate constructor, otherwise it will be considered
      *  to be the no-filename constructor (char* -> bool).
      */
-    HTTPRequest::HTTPRequest(const char* const filename, bool manage_memory,
-                                       int priority)
-               : Request(manage_memory, priority, 0)
+    HTTPRequest::HTTPRequest(const char* const filename, int priority)
+               : Request(priority, 0)
     {
         // A http request should not even be created when internet is disabled
         assert(UserConfigParams::m_internet_status ==
@@ -90,14 +82,15 @@ namespace Online
      */
     void HTTPRequest::init()
     {
-        m_url           = "";
+        m_url = "";
         m_string_buffer = "";
-        m_filename      = "";
-        m_parameters    = "";
-#ifndef NO_CURL
-        m_curl_code     = CURLE_OK;
-#endif
-        m_progress.setAtomic(0);
+        m_filename = "";
+        m_parameters = "";
+        m_result_code = 0;
+        m_progress.store(0.0f);
+        m_total_size.store(-1.0);
+        m_disable_sending_log = false;
+        m_download_assets_request = false;
     }   // init
 
     // ------------------------------------------------------------------------
@@ -111,25 +104,25 @@ namespace Online
                                 const std::string &action)
     {
         // Old (0.8.1) API: send to client-user.php, and add action as a parameter
-        if(UserConfigParams::m_server_version==1)
+        if (stk_config->m_server_api_version == 1)
         {
-            setURL( (std::string)UserConfigParams::m_server_multiplayer +
-                    "client-user.php"                                      );
-            if(action=="change-password")
+            const std::string final_url = stk_config->m_server_api + "client-user.php";
+            setURL(final_url);
+            if (action == "change-password")
                 addParameter("action", "change_password");
-            else if(action=="recover")
+            else if (action == "recover")
                 addParameter("action", "recovery");
             else
                 addParameter("action", action);
         }
         else
         {
-            setURL(
-                   (std::string)UserConfigParams::m_server_multiplayer +
-                   +"v"+StringUtils::toString(UserConfigParams::m_server_version)
-                   + "/" + path +               // eg: /user/, /server/
-                   action + "/"         // eg: connect/, pool/, get-server-list/
-                   );
+            const std::string final_url = stk_config->m_server_api +
+                + "v" + StringUtils::toString(stk_config->m_server_api_version)
+                + "/" + path // eg: /user/, /server/
+                + action + "/"; // eg: connect/, pool/, get-server-list/
+
+            setURL(final_url);
         }
     }   // setServerURL
 
@@ -140,7 +133,7 @@ namespace Online
      */
      void HTTPRequest::setAddonsURL(const std::string& path)
      {
-        setURL((std::string)UserConfigParams::m_server_addons + "/" + path);
+        setURL(stk_config->m_server_addons + "/" + path);
      }   // set AddonsURL
 
      // ------------------------------------------------------------------------
@@ -153,253 +146,57 @@ namespace Online
     }   // isAllowedToAdd
 
     // ------------------------------------------------------------------------
-    /** Sets up the curl data structures.
-     */
-    void HTTPRequest::prepareOperation()
+    void HTTPRequest::logMessage()
     {
-#ifndef NO_CURL
-        m_curl_session = curl_easy_init();
-        if (!m_curl_session)
-        {
-            Log::error("HTTPRequest::prepareOperation",
-                       "LibCurl session not initialized.");
-            return;
-        }
+        // Avoid printing the password or token, just replace them with *s
+        std::string param = m_parameters;
 
-        curl_easy_setopt(m_curl_session, CURLOPT_URL, m_url.c_str());
-        curl_easy_setopt(m_curl_session, CURLOPT_FOLLOWLOCATION, 1);
-        curl_easy_setopt(m_curl_session, CURLOPT_NOPROGRESS, 0);
-        curl_easy_setopt(m_curl_session, CURLOPT_PROGRESSDATA, this);
-        curl_easy_setopt(m_curl_session, CURLOPT_PROGRESSFUNCTION,
-                                         &HTTPRequest::progressDownload);
-        curl_easy_setopt(m_curl_session, CURLOPT_CONNECTTIMEOUT, 20);
-        curl_easy_setopt(m_curl_session, CURLOPT_LOW_SPEED_LIMIT, 10);
-        curl_easy_setopt(m_curl_session, CURLOPT_LOW_SPEED_TIME, 20);
-        //curl_easy_setopt(m_curl_session, CURLOPT_VERBOSE, 1L);
-        if (m_url.substr(0, 8) == "https://")
+        // List of strings whose values should not be printed. "" is the
+        // end indicator.
+        static std::string dont_print[] = { "&password=", "&token=", "&current=",
+                                            "&new1=", "&new2=", "&password_confirm=",
+                                            "&aes-key=", "&iv=", ""};
+        unsigned int j = 0;
+        while (dont_print[j].size() > 0)
         {
-            // https, load certificate info
-            struct curl_slist *chunk = NULL;
-            chunk = curl_slist_append(chunk, "Host: addons.supertuxkart.net");
-            curl_easy_setopt(m_curl_session, CURLOPT_HTTPHEADER, chunk);
-            CURLcode error = curl_easy_setopt(m_curl_session, CURLOPT_CAINFO,
-                       file_manager->getAsset("addons.supertuxkart.net.pem").c_str());
-            if (error != CURLE_OK)
+            // Get the string that should be replaced.
+            std::size_t pos = param.find(dont_print[j]);
+            if (pos != std::string::npos)
             {
-                Log::error("HTTPRequest", "Error setting CAINFO to '%s'",
-                      file_manager->getAsset("addons.supertuxkart.net.pem").c_str());
-                Log::error("HTTPRequest", "Error %d: '%s'.", error,
-                           curl_easy_strerror(error));
-            }
-            curl_easy_setopt(m_curl_session, CURLOPT_SSL_VERIFYPEER, 1L);
-#ifdef __APPLE__
-            curl_easy_setopt(m_curl_session, CURLOPT_SSL_VERIFYHOST, 0L);
-#else
-            curl_easy_setopt(m_curl_session, CURLOPT_SSL_VERIFYHOST, 1L);
-#endif
-        }
-#endif
-    }   // prepareOperation
+                pos += dont_print[j].size();
+                while (pos < param.size() && param[pos] != '&')
+                {
+                    param[pos] = '*';
+                    pos++;
+                }   // while not end
+            }   // if string found
+            j++;
+        }   // while dont_print[j].size()>0
+
+        Log::info("HTTPRequest", "Sending %s to %s", param.c_str(), m_url.c_str());
+    }   // logMessage
 
     // ------------------------------------------------------------------------
-    /** The actual curl download happens here.
-     */
-    void HTTPRequest::operation()
+    std::string HTTPRequest::urlEncode(const std::string& value)
     {
-#ifndef NO_CURL
-        if (!m_curl_session)
-            return;
-
-        FILE *fout = NULL;
-        if (m_filename.size() > 0)
+        auto unreserved = [](unsigned char c)->bool
         {
-            fout = fopen((m_filename+".part").c_str(), "wb");
+            // RFC 3986 unreserved characters: ALPHA / DIGIT / "-" / "." / "_" / "~"
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))
+                return true;
+            return (c == '-' || c == '.' || c == '_' || c == '~');
+        };
 
-            if (!fout)
-            {
-                Log::error("HTTPRequest",
-                           "Can't open '%s' for writing, ignored.",
-                           (m_filename+".part").c_str());
-                return;
-            }
-            curl_easy_setopt(m_curl_session,  CURLOPT_WRITEDATA,     fout  );
-            curl_easy_setopt(m_curl_session,  CURLOPT_WRITEFUNCTION, fwrite);
+        std::ostringstream escaped;
+        escaped << std::hex << std::uppercase << std::setfill('0');
+        for (unsigned char c : value)
+        {
+            if (unreserved(c))
+                escaped << c;
+            else
+                escaped << '%' << std::setw(2) << static_cast<int>(c);
         }
-        else
-        {
-            curl_easy_setopt(m_curl_session, CURLOPT_WRITEDATA,
-                             &m_string_buffer);
-            curl_easy_setopt(m_curl_session, CURLOPT_WRITEFUNCTION,
-                             &HTTPRequest::writeCallback);
-        }
-
-        // All parameters added have a '&' added
-        if (m_parameters.size() > 0)
-        {
-            m_parameters.erase(m_parameters.size()-1);
-        }
-
-        if (m_parameters.size() == 0)
-        {
-            Log::info("HTTPRequest", "Downloading %s", m_url.c_str());
-        }
-        else if (Log::getLogLevel() <= Log::LL_INFO)
-        {
-            // Avoid printing the password or token, just replace them with *s
-            std::string param = m_parameters;
-
-            // List of strings whose values should not be printed. "" is the
-            // end indicator.
-            static std::string dont_print[] = { "&password=", "&token=", "&current=",
-                                                "&new1=", "&new2=", "&password_confirm=", ""};
-            unsigned int j = 0;
-            while (dont_print[j].size() > 0)
-            {
-                // Get the string that should be replaced.
-                std::size_t pos = param.find(dont_print[j]);
-                if (pos != std::string::npos)
-                {
-                    pos += dont_print[j].size();
-                    while (pos < param.size() && param[pos] != '&')
-                    {
-                        param[pos] = '*';
-                        pos++;
-                    }   // while not end
-                }   // if string found
-                j++;
-            }   // while dont_print[j].size()>0
-
-            Log::info("HTTPRequest", "Sending %s to %s", param.c_str(), m_url.c_str());
-        } // end log http request
-
-        curl_easy_setopt(m_curl_session, CURLOPT_POSTFIELDS, m_parameters.c_str());
-        std::string uagent( std::string("SuperTuxKart/") + STK_VERSION );
-            #ifdef WIN32
-                    uagent += (std::string)" (Windows)";
-            #elif defined(__APPLE__)
-                    uagent += (std::string)" (Macintosh)";
-            #elif defined(__FreeBSD__)
-                    uagent += (std::string)" (FreeBSD)";
-            #elif defined(linux)
-                    uagent += (std::string)" (Linux)";
-            #else
-                    // Unknown system type
-            #endif
-        curl_easy_setopt(m_curl_session, CURLOPT_USERAGENT, uagent.c_str());
-
-        m_curl_code = curl_easy_perform(m_curl_session);
-        Request::operation();
-
-        if (fout)
-        {
-            fclose(fout);
-            if (m_curl_code == CURLE_OK)
-            {
-                if(UserConfigParams::logAddons())
-                    Log::info("HTTPRequest", "Download successful.");
-
-                // The behaviour of rename is unspecified if the target
-                // file should already exist - so remove it.
-                bool ok = file_manager->removeFile(m_filename);
-                if (!ok)
-                {
-                    Log::error("addons",
-                               "Could not removed existing addons.xml file.");
-                    m_curl_code = CURLE_WRITE_ERROR;
-                }
-                int ret = rename((m_filename+".part").c_str(),
-                                 m_filename.c_str()           );
-
-                // In case of an error, set the status to indicate this
-                if (ret != 0)
-                {
-                    Log::error("addons",
-                               "Could not rename downloaded addons.xml file!");
-                    m_curl_code = CURLE_WRITE_ERROR;
-                }
-            }   // m_curl_code ==CURLE_OK
-        }   // if fout
-#endif
-    }   // operation
-
-    // ------------------------------------------------------------------------
-    /** Cleanup once the download is finished. The value of progress is
-     *  guaranteed to be >=0 and <1 while the download is in progress, and
-     *  will only be set to 1 on a successfull finish here.
-     */
-    void HTTPRequest::afterOperation()
-    {
-#ifndef NO_CURL
-        if (m_curl_code == CURLE_OK)
-            setProgress(1.0f);
-        else
-            setProgress(-1.0f);
-
-        Request::afterOperation();
-        curl_easy_cleanup(m_curl_session);
-#endif
-    }   // afterOperation
-
-    // ------------------------------------------------------------------------
-    /** Callback from curl. This stores the data received by curl in the
-     *  buffer of this request.
-     *  \param content Pointer to the data received by curl.
-     *  \param size Size of one block.
-     *  \param nmemb Number of blocks received.
-     *  \param userp Pointer to the user buffer.
-     */
-    size_t HTTPRequest::writeCallback(void *contents, size_t size,
-                                      size_t nmemb, void *userp)
-    {
-        ((std::string*)userp)->append((char*)contents, size * nmemb);
-        return size * nmemb;
-    }   // writeCallback
-
-    // ----------------------------------------------------------------------------
-    /** Callback function from curl: inform about progress. It makes sure that
-     *  the value reported by getProgress () is <1 while the download is still
-     *  in progress.
-     *  \param clientp
-     *  \param download_total Total size of data to download.
-     *  \param download_now   How much has been downloaded so far.
-     *  \param upload_total   Total amount of upload.
-     *  \param upload_now     How muc has been uploaded so far.
-     */
-    int HTTPRequest::progressDownload(void *clientp,
-                                      double download_total, double download_now,
-                                      double upload_total,   double upload_now)
-    {
-        HTTPRequest *request = (HTTPRequest *)clientp;
-
-        // Check if we are asked to abort the download. If so, signal this
-        // back to libcurl by returning a non-zero status.
-        if ((RequestManager::get()->getAbort() || request->isCancelled()) &&
-             request->isAbortable()                                     )
-        {
-            // Indicates to abort the current download, which means that this
-            // thread will go back to the mainloop and handle the next request.
-            return 1;
-        }
-
-        float f;
-        if (download_now < download_total)
-        {
-            f = (float)download_now / (float)download_total;
-
-            // In case of floating point rouding errors make sure that
-            // 1.0 is only reached when downloadFileInternal is finished
-            if (f >= 1.0f)
-                f = 0.99f;
-        }
-        else
-        {
-            // Don't set progress to 1.0f; this is done in afterOperation()
-            // after checking curls return code!
-            f = (download_total == 0) ? 0 : 0.99f;
-        }
-        request->setProgress(f);
-
-        return 0;
-    }   // progressDownload
+        return escaped.str();
+    }   // urlEncode
 
 } // namespace Online

@@ -22,6 +22,7 @@
 #include "guiengine/screen.hpp"
 #include "guiengine/widgets/dynamic_ribbon_widget.hpp"
 #include "guiengine/widgets/player_kart_widget.hpp"
+#include "guiengine/widgets/text_box_widget.hpp"
 #include "states_screens/state_manager.hpp"
 
 namespace GUIEngine
@@ -37,6 +38,7 @@ namespace Online
 }
 
 class InputDevice;
+class PlayerProfile;
 class KartHoverListener;
 
 extern int g_root_id;
@@ -45,11 +47,10 @@ extern int g_root_id;
   * \brief screen where players can choose their kart
   * \ingroup states_screens
   */
-class KartSelectionScreen : public GUIEngine::Screen
+class KartSelectionScreen : public GUIEngine::Screen,
+                            public GUIEngine::ITextBoxWidgetListener
 {
     friend class KartHoverListener;
-    friend class PlayerNameSpinner;
-    friend class FocusDispatcher;
 protected:
     /** Contains the custom widget shown for every player. (ref only since
      *  we're adding them to a Screen, and the Screen will take ownership
@@ -76,13 +77,19 @@ protected:
 
     GUIEngine::PlayerKartWidget* m_removed_widget;
 
+    GUIEngine::TextBoxWidget *m_search_box;
+
     /** Message shown in multiplayer mode */
     GUIEngine::BubbleWidget* m_multiplayer_message;
 
     KartSelectionScreen(const char* filename);
 
     /** Called when all players selected their kart */
-    void allPlayersDone();
+    virtual void allPlayersDone();
+
+    /** When kart list has been changed, make sure all players have valid
+     *  focus */
+    void handleKartListFocus();
 
     /** Called when number/order of karts changed, so that all will keep
      *  an up-to-date ID */
@@ -102,7 +109,7 @@ protected:
     /** Fill the ribbon with the karts from the currently selected group */
     void setKartsFromCurrentGroup();
 
-    virtual void playerConfirm(const int playerID);
+    void playerConfirm(const int playerID);
 
     void updateKartStats(uint8_t widget_id,
                          const std::string& selection);
@@ -111,7 +118,8 @@ protected:
      *  user validates */
     void updateKartWidgetModel(int widget_id,
                 const std::string& selection,
-                const irr::core::stringw& selectionText);
+                const irr::core::stringw& selectionText,
+                float kart_color);
 
     /** Adds a message to the screen which indicates that players must press fire to join. */
     void addMultiplayerMessage();
@@ -119,8 +127,15 @@ protected:
     /** Remove the multiplayer message. */
     void removeMultiplayerMessage();
 
+    virtual bool isIgnored(const std::string& ident) const { return false; }
+
     /** Stores a pointer to the current selection screen */
     static KartSelectionScreen* m_instance_ptr;
+private:
+    PtrVector<const KartProperties, REF> getUsableKarts(
+        const std::string& selected_kart_group);
+    bool useContinueButton() const;
+    void configureChooseKarts(bool enable);
 public:
     /** Returns the current instance */
     static KartSelectionScreen* getRunningInstance();
@@ -137,14 +152,14 @@ public:
 
     /** \brief Called when a player hits 'fire'/'select' on his device to
      *  join the game */
-    bool joinPlayer(InputDevice* device);
+    bool joinPlayer(InputDevice* device, PlayerProfile* p);
 
     /**
       * \brief Called when a player hits 'rescue'/'cancel' on his device
       *  to leave the game
       * \return true if event was handled succesfully
       */
-    bool playerQuit(StateManager::ActivePlayer* player);
+    virtual bool playerQuit(StateManager::ActivePlayer* player);
 
      /** \brief implement callback from parent class GUIEngine::Screen */
     virtual void init() OVERRIDE;
@@ -161,48 +176,26 @@ public:
     /** \brief implement callback from parent class GUIEngine::Screen */
     virtual void onUpdate(float dt) OVERRIDE;
 
-    /** \brief implement optional callback from parent
-     *  class GUIEngine::Screen */
-    virtual void unloaded() OVERRIDE;
+    /** Rebuild the list of tracks based on search text */
+    virtual void onTextUpdated() OVERRIDE
+    {
+        setKartsFromCurrentGroup();
+        // After setKartsFromCurrentGroup the m_search_box may be unfocused
+        m_search_box->focused(PLAYER_ID_GAME_MASTER);
+
+        handleKartListFocus();
+    }
+
+    virtual void onFocusChanged(GUIEngine::Widget* previous,
+                                GUIEngine::Widget* focus, int playerID) OVERRIDE;
 
     /** \brief implement optional callback from parent
      *  class GUIEngine::Screen */
     virtual bool onEscapePressed() OVERRIDE;
 
+    virtual void onResize() OVERRIDE;
+
 };   // KartSelectionScreen
-
-//!----------------------------------------------------------------------------
-//! FocusDispatcher :
-/** Currently, navigation for multiple players at the same time is implemented
-    in a somewhat clunky way. An invisible "dispatcher" widget is added above
-    kart icons. When a player moves up, he focuses the dispatcher, which in
-    turn moves the selection to the appropriate spinner. "tabbing roots" are
-    used to make navigation back down possible. (FIXME: maybe find a cleaner
-    way?) */
-class FocusDispatcher : public GUIEngine::Widget
-{
-protected:
-    KartSelectionScreen* m_parent;
-    int m_reserved_id;
-
-    bool m_is_initialised;
-
-public:
-
-    LEAK_CHECK()
-
-    // ------------------------------------------------------------------------
-    FocusDispatcher(KartSelectionScreen* parent);
-    // ------------------------------------------------------------------------
-    void setRootID(const int reservedID);
-
-    // ------------------------------------------------------------------------
-    virtual void add();
-
-    // ------------------------------------------------------------------------
-
-    virtual GUIEngine::EventPropagation focused(const int playerID);
-};   // FocusDispatcher
 
 //!----------------------------------------------------------------------------
 //! KartHoverListener :
@@ -225,4 +218,3 @@ public:
 };   // KartHoverListener
 
 #endif
-

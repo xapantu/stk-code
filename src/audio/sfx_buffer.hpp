@@ -19,12 +19,9 @@
 #ifndef HEADER_SFX_BUFFER_HPP
 #define HEADER_SFX_BUFFER_HPP
 
-#if HAVE_OGGVORBIS
-#  ifdef __APPLE__
-#    include <OpenAL/al.h>
-#  else
-#    include <AL/al.h>
-#  endif
+#ifdef ENABLE_SOUND
+#  include <AL/al.h>
+#  include <AL/alc.h>
 #else
 typedef unsigned int ALuint;
 #endif
@@ -34,6 +31,7 @@ typedef unsigned int ALuint;
 #include "utils/leak_check.hpp"
 
 #include <string>
+#include <memory>
 
 class SFXBase;
 class XMLNode;
@@ -73,6 +71,9 @@ private:
     float    m_duration;
 
     bool loadVorbisBuffer(const std::string &name, ALuint buffer);
+#ifdef HAVE_OPUS
+    bool loadOpusBuffer(const std::string &name, ALuint buffer);
+#endif
 
 public:
 

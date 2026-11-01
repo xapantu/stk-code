@@ -33,32 +33,23 @@ GamePadDevice::GamePadDevice(const int irr_index, const std::string &name,
                              GamepadConfig *configuration)
 {
     m_type                  = DT_GAMEPAD;
-    m_prev_axis_directions  = NULL;
     m_configuration         = configuration;
     GamepadConfig *config = static_cast<GamepadConfig*>(m_configuration);
     if(m_configuration->getNumberOfButtons()<button_count)
     {
         config->setNumberOfButtons(button_count);
     }
-    if(m_configuration->getNumberOfAxes()<axis_count)
-    {
-        config->setNumberOfAxis(axis_count);
-    }
-    m_prev_axis_directions  = new Input::AxisDirection[axis_count];
-    m_prev_axis_value       = new int[axis_count];
-    m_axis_ok               = new bool[axis_count];
+
+    m_prev_axis_directions.resize(axis_count);
     m_irr_index             = irr_index;
     m_name                  = name;
 
     for (int i = 0; i < axis_count; i++)
-    {
         m_prev_axis_directions[i] = Input::AD_NEUTRAL;
-        m_prev_axis_value[i] = -1;
-        m_axis_ok[i] = false;
-    }
 
-    for(int n=0; n<SEvent::SJoystickEvent::NUMBER_OF_BUTTONS; n++)
-        m_buttonPressed[n] = false;
+    m_button_pressed.resize(button_count);
+    for(int n=0; n<button_count; n++)
+        m_button_pressed[n] = false;
 }   // GamePadDevice
 
 // ----------------------------------------------------------------------------
@@ -66,11 +57,6 @@ GamePadDevice::GamePadDevice(const int irr_index, const std::string &name,
  */
 GamePadDevice::~GamePadDevice()
 {
-    delete[] m_prev_axis_directions;
-    delete[] m_prev_axis_value;
-    delete[] m_axis_ok;
-
-    // FIXME - any need to close devices?
 }   // ~GamePadDevice
 
 // ----------------------------------------------------------------------------
@@ -91,14 +77,18 @@ int GamePadDevice::getNumberOfButtons() const
 // ----------------------------------------------------------------------------
 bool GamePadDevice::isButtonPressed(const int i)
 {
-    return m_buttonPressed[i];
+    if (i < (int)m_button_pressed.size())
+        return m_button_pressed[i];
+    else
+        return false;
 }   // isButtonPressed
 
 // ----------------------------------------------------------------------------
 
 void GamePadDevice::setButtonPressed(const int i, bool isButtonPressed)
 {
-    m_buttonPressed[i] = isButtonPressed;
+    if (i < (int)m_button_pressed.size())
+        m_button_pressed[i] = isButtonPressed;
 }   // setButtonPressed
 
 // ----------------------------------------------------------------------------
@@ -156,11 +146,11 @@ bool GamePadDevice::processAndMapInput(Input::InputType type, const int id,
 {
     if (!m_configuration->isEnabled()) return false;
 
-    // A digital input value is 32767 or -32768 (which then triggers 
+    // A digital input value is 32767 or -32768 (which then triggers
     // time-full-steer to be used to adjust actual steering values.
     // To prevent this delay for analog gamesticks, make sure that
     // 32767/-32768 are never used.
-    if(m_configuration->isAnalog())
+    if(m_configuration->isAnalog(type, id))
     {
         if(*value==32767)
             *value = 32766;
@@ -180,7 +170,8 @@ bool GamePadDevice::processAndMapInput(Input::InputType type, const int id,
     }
 
     bool success = false;
-    if(m_prev_axis_directions == NULL) return false; // device not open
+    if (type == Input::IT_STICKMOTION &&
+        m_prev_axis_directions.size() == 0) return false; // device not open
 
     if (type == Input::IT_STICKMOTION)
     {
@@ -206,20 +197,6 @@ bool GamePadDevice::processAndMapInput(Input::InputType type, const int id,
 
         if     (*value > 0) m_prev_axis_directions[id] = Input::AD_POSITIVE;
         else if(*value < 0) m_prev_axis_directions[id] = Input::AD_NEGATIVE;
-
-        if (!m_axis_ok[id])
-        {
-            if (m_prev_axis_value[id] == -1)
-            {
-                // first value we get from this axis
-                m_prev_axis_value[id] = *value;
-            }
-            else if (m_prev_axis_value[id] != *value)
-            {
-                // second different value we get from this axis, consider it OK
-                m_axis_ok[id] = true;
-            }
-        }
 
         int dz = static_cast<GamepadConfig*>(m_configuration)->getDeadzone();
         // check if within deadzone
@@ -247,9 +224,6 @@ bool GamePadDevice::processAndMapInput(Input::InputType type, const int id,
 
             return false;
         }
-
-        // If axis did not send proper values yet, ignore it.
-        if (!m_axis_ok[id]) return false;
     }
 
 
@@ -268,3 +242,13 @@ bool GamePadDevice::processAndMapInput(Input::InputType type, const int id,
 }   // processAndMapInput
 
 // ----------------------------------------------------------------------------
+bool GamePadDevice::useForceFeedback() const
+{
+    return static_cast<GamepadConfig*>(m_configuration)->useForceFeedback();
+}   // useForceFeedback
+
+// ----------------------------------------------------------------------------
+int GamePadDevice::getAutoCenterStrength() const
+{
+    return static_cast<GamepadConfig*>(m_configuration)->getAutoCenterStrength();
+}   // shouldAutoCenter

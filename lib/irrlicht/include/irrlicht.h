@@ -130,8 +130,6 @@
 #include "ISceneManager.h"
 #include "ISceneNode.h"
 #include "ISceneNodeAnimator.h"
-#include "ISceneNodeAnimatorCameraFPS.h"
-#include "ISceneNodeAnimatorCameraMaya.h"
 #include "ISceneNodeAnimatorCollisionResponse.h"
 #include "ISceneNodeAnimatorFactory.h"
 #include "ISceneNodeFactory.h"
@@ -308,8 +306,7 @@ namespace irr
 	\param stencilbuffer: Specifies if the stencil buffer should be enabled. Set this to true,
 	if you want the engine be able to draw stencil buffer shadows. Note that not all
 	devices are able to use the stencil buffer. If they don't no shadows will be drawn.
-	\param vsync: Specifies vertical syncronisation: If set to true, the driver will wait
-	for the vertical retrace period, otherwise not.
+	\param swapInterval: Specifies vertical syncronisation: 0 = disabled, 1 = full, 2 = half
 	\param receiver: A user created event receiver.
 	\return Returns pointer to the created IrrlichtDevice or null if the
 	device could not be created.
@@ -321,7 +318,7 @@ namespace irr
 		u32 bits = 16,
 		bool fullscreen = false,
 		bool stencilbuffer = false,
-		bool vsync = false,
+		int swapInterval = 0,
 		IEventReceiver* receiver = 0,
         io::IFileSystem *file_system = NULL);
 
@@ -332,7 +329,7 @@ namespace irr
 			u32 bits,
 			bool fullscreen,
 			bool stencilbuffer,
-			bool vsync,
+			int swapInterval,
 			IEventReceiver* receiver);
 
 

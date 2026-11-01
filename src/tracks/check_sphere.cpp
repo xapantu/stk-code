@@ -38,7 +38,7 @@ CheckSphere::CheckSphere(const XMLNode &node, unsigned int index)
     node.get("radius", &m_radius2);
     m_radius2 *= m_radius2;
     node.get("xyz", &m_center_point);
-    unsigned int num_karts = race_manager->getNumberOfKarts();
+    unsigned int num_karts = RaceManager::get()->getNumberOfKarts();
     m_is_inside.resize(num_karts);
     m_distance2.resize(num_karts);
     for(unsigned int i=0; i< num_karts; i++)
@@ -53,12 +53,15 @@ CheckSphere::CheckSphere(const XMLNode &node, unsigned int index)
  *  updates the flag about which karts are inside
  *  \param old_pos  Position in previous frame.
  *  \param new_pos  Position in current frame.
- *  \param kart_id     Index of the kart, can be used to store kart specific
+ *  \param kart_id  Index of the kart, can be used to store kart specific
  *                  additional data.
  */
 bool CheckSphere::isTriggered(const Vec3 &old_pos, const Vec3 &new_pos,
-                              unsigned int kart_id)
+                              int kart_id)
 {
+    // kart_id will be -1 if called by CheckManager::getChecklineTriggering
+    if (kart_id < 0 || kart_id >= (int)m_is_inside.size())
+        return false;
     float old_dist2   = (old_pos-m_center_point).length2();
     float new_dist2   = (new_pos-m_center_point).length2();
     m_is_inside[kart_id] = new_dist2<m_radius2;

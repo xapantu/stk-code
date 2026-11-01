@@ -39,23 +39,19 @@ using namespace irr;
 #include "guiengine/event_handler.hpp"
 #include "guiengine/widget.hpp"
 #include "input/input.hpp"
+#include "utils/leak_check.hpp"
 #include "utils/ptr_vector.hpp"
 
-#include "utils/leak_check.hpp"
+#include <functional>
 
 /**
  * \ingroup guiengine
  */
 namespace GUIEngine
 {
-#define DEFINE_SCREEN_SINGLETON( ClassName )  \
-    template<> ClassName* GUIEngine::ScreenSingleton< ClassName >::singleton = NULL
-
     /**
      * \brief Declares a class to be a singleton.
      * Normally, all screens will be singletons.
-     * Note that you need to use the 'DEFINE_SCREEN_SINGLETON' macro in a .
-     * cpp file to actually define the instance (as this can't be done in a .h)
      * \ingroup guiengine
      */
     template<typename SCREEN>
@@ -63,7 +59,6 @@ namespace GUIEngine
     {
     protected:
         static SCREEN* singleton;
-
     public:
 
         ~ScreenSingleton()
@@ -81,8 +76,9 @@ namespace GUIEngine
 
             return singleton;
         }
-
     };
+    template <typename SCREEN> SCREEN*
+        ScreenSingleton<SCREEN>::singleton = nullptr;
 
     /**
      * \brief Represents a single GUI screen.
@@ -102,23 +98,28 @@ namespace GUIEngine
          *  running while it is being shown. */
         bool m_pause_race;
 
-        friend class Skin;
-
         bool m_loaded;
-
-        std::string m_filename;
 
         /** Will be called to determine if the 3D scene must be rendered when
          *  at this screen.
          */
         bool m_render_3d;
 
+        /** When set to true it updates the screen even if modal dialog is
+         *  opened
+         */
+        bool m_update_in_background;
+
         /** to catch errors as early as possible, for debugging purposes only */
         unsigned int m_magic_number;
 
-    protected:
-        bool m_throttle_FPS;
+        unsigned m_width, m_height;
 
+        friend class Skin;
+
+        std::string m_filename;
+        /** For runtime screen reloading without template */
+        std::function<Screen*()> m_screen_func;
     public:
 
         LEAK_CHECK()
@@ -135,7 +136,6 @@ namespace GUIEngine
                                        PtrVector<Widget>& append_to,
                                        irr::gui::IGUIElement* parent = NULL);
 
-
         Screen(bool pause_race=true);
 
         Screen(const char* filename, bool pause_race=true);
@@ -149,8 +149,6 @@ namespace GUIEngine
         /** \return whether this screen is currently loaded */
         bool isLoaded() const { return m_loaded; }
 
-        bool throttleFPS() const { return m_throttle_FPS; }
-
         void addWidgets();
 
         void calculateLayout();
@@ -158,6 +156,12 @@ namespace GUIEngine
         void manualAddWidget(Widget* w);
 
         void manualRemoveWidget(Widget* w);
+        
+        /** When set to true it updates the screen even if modal dialog is
+         *  opened
+         */
+        void setUpdateInBackground(bool value) {m_update_in_background = value;}
+        bool getUpdateInBackground() {return m_update_in_background;}
 
         /** \return the name of this menu (which is the name of the file) */
         const std::string& getName() const { return m_filename; }
@@ -228,7 +232,7 @@ namespace GUIEngine
           */
         virtual void init();
 
-        /** Displays this screen bu pushing it onto the stack of screen 
+        /** Displays this screen bu pushing it onto the stack of screen
          *  in the state manager. */
         void push();
 
@@ -267,6 +271,16 @@ namespace GUIEngine
         virtual void onUpdate(float dt) { };
 
         /**
+         * \brief optional callback you can override to be notified at every frame.
+         */
+        virtual void onDraw(float dt) { };
+
+        /**
+         * \brief optional callback you can override to be notified at every resize.
+         */
+        virtual void onResize();
+
+        /**
          * \return which music to play at this screen
          */
         virtual MusicInformation* getMusic() const { return stk_config->m_title_music; }
@@ -276,9 +290,9 @@ namespace GUIEngine
          */
         virtual MusicInformation* getInGameMenuMusic() const { return NULL; }
 
-        virtual int getWidth();
+        virtual int getWidth() { return m_width; }
 
-        virtual int getHeight();
+        virtual int getHeight() { return m_height; }
 
         /**
          * \brief Override this if you need to be notified of player actions
@@ -302,10 +316,13 @@ namespace GUIEngine
          *        subclasses.
          */
         virtual void filterInput(Input::InputType type,
-                                 int deviceID,
-                                 int btnID,
-                                 int axisDir,
-                                 int value) {}
+                                 int deviceID, int btnID,
+                                 int axisDir, int value) {}
+
+        /**
+         * \brief Override this to handle page up/down in a subclass outside of lists
+         */
+        virtual void handlePaging(bool page_up) {}
 
         /** Callback that gets called when a dialog is closed.
          *  Can be used to set focus for instance.
@@ -322,7 +339,6 @@ namespace GUIEngine
         CutsceneScreen(const char* name) : Screen(name, false)
         {
             setNeeds3D(true);
-            m_throttle_FPS = false;
         }
 
         virtual void onCutsceneEnd() = 0;

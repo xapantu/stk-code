@@ -5,13 +5,15 @@
 #ifndef __E_MATERIAL_TYPES_H_INCLUDED__
 #define __E_MATERIAL_TYPES_H_INCLUDED__
 
+#include <cstdint>
+
 namespace irr
 {
 namespace video
 {
 
 	//! Abstracted and easy to use fixed function/programmable pipeline material modes.
-	enum E_MATERIAL_TYPE
+	enum E_MATERIAL_TYPE : uint32_t
 	{
 		//! Standard solid material.
 		/** Only first texture is used, which is supposed to be the
@@ -61,7 +63,7 @@ namespace video
 		/** The first texture is diffuse color map, the second is added
 		to this and usually displayed with a bigger scale value so that
 		it adds more detail. The detail map is added to the diffuse map
-		using ADD_SIGNED, so that it is possible to add and substract
+		using ADD_SIGNED, so that it is possible to add and subtract
 		color from the diffuse map. For example a value of
 		(127,127,127) will not change the appearance of the diffuse map
 		at all. Often used for terrain rendering. */
@@ -192,8 +194,11 @@ namespace video
 		/** Using only first texture. Generic blending method. */
 		EMT_ONETEXTURE_BLEND,
 
-		//! This value is not used. It only forces this enumeration to compile to 32 bit.
-		EMT_FORCE_32BIT = 0x7fffffff
+		//! Alphatest material for grass without using vertex color in stk.
+		EMT_STK_GRASS,
+
+		//! This value is used in GEMaterialManager to save the default GEMaterial map.
+		EMT_MATERIAL_COUNT
 	};
 
 	//! Array holding the built in material type names
@@ -223,6 +228,7 @@ namespace video
 		"parallaxmap_trans_add",
 		"parallaxmap_trans_vertexalpha",
 		"onetexture_blend",
+		"stk_grass",
 		0
 	};
 

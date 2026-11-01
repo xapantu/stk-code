@@ -15,22 +15,30 @@
 //  along with this program; if not, write to the Free Software
 //  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA
 
-#include "post_processing.hpp"
+#ifndef SERVER_ONLY
+
+#include "graphics/post_processing.hpp"
 
 #include "config/user_config.hpp"
-#include "graphics/callbacks.hpp"
-#include "graphics/camera.hpp"
+#include "graphics/camera/camera.hpp"
 #include "graphics/central_settings.hpp"
-#include "graphics/glwrap.hpp"
-#include "graphics/gl_headers.hpp"
+#include "graphics/frame_buffer.hpp"
+#include "graphics/graphics_restrictions.hpp"
 #include "graphics/irr_driver.hpp"
 #include "graphics/mlaa_areamap.hpp"
-#include "graphics/shaders.hpp"
+#include "graphics/glwrap.hpp"
+#include "graphics/rtts.hpp"
 #include "graphics/shared_gpu_objects.hpp"
-#include "graphics/stk_mesh_scene_node.hpp"
+#include "graphics/stk_tex_manager.hpp"
+#include "graphics/texture_shader.hpp"
 #include "graphics/weather.hpp"
+#include "graphics/sp/sp_dynamic_draw_call.hpp"
+#include "graphics/sp/sp_shader.hpp"
+#include "graphics/sp/sp_uniform_assigner.hpp"
+#include "graphics/speed_streaks.hpp"
 #include "io/file_manager.hpp"
 #include "karts/abstract_kart.hpp"
+#include "karts/kart.hpp"
 #include "karts/kart_model.hpp"
 #include "modes/world.hpp"
 #include "physics/physics.hpp"
@@ -40,7 +48,11 @@
 #include "utils/profiler.hpp"
 #include "utils/cpp2011.hpp"
 
+#include <IrrlichtDevice.h>
+#include <IFileSystem.h>
+#include <ISceneManager.h>
 #include <SViewFrustum.h>
+#include <ge_texture.hpp>
 
 using namespace video;
 using namespace scene;
@@ -66,24 +78,6 @@ public:
         drawFullScreenEffect(core::vector2df(inv_width, inv_height));
     }   // render
 };   // Gaussian3HBlurShader
-
-// ============================================================================
-class ComputeShadowBlurVShader : public TextureShader<ComputeShadowBlurVShader, 1,
-                                               core::vector2df,
-                                               std::vector<float> >
-{
-public:
-    GLuint m_dest_tu;
-    ComputeShadowBlurVShader()
-    {
-        loadProgram(OBJECT, GL_COMPUTE_SHADER, "blurshadowV.comp");
-        m_dest_tu = 1;
-        assignUniforms("pixel", "weights");
-        assignSamplerNames(0, "source", ST_NEARED_CLAMPED_FILTERED);
-        assignTextureUnit(m_dest_tu, "dest");
-    }   // ComputeShadowBlurVShader
-
-};   // ComputeShadowBlurVShader
 
 // ============================================================================
 class Gaussian6VBlurShader : public TextureShader<Gaussian6VBlurShader, 1,
@@ -129,57 +123,6 @@ public:
 };   // Gaussian3VBlurShader
 
 // ============================================================================
-class ComputeGaussian6VBlurShader : public TextureShader<ComputeGaussian6VBlurShader, 1,
-                                                  core::vector2df,
-                                                  std::vector<float> >
-{
-public:
-    GLuint m_dest_tu;
-    ComputeGaussian6VBlurShader()
-    {
-        loadProgram(OBJECT, GL_COMPUTE_SHADER, "gaussian6v.comp");
-        m_dest_tu = 1;
-        assignUniforms("pixel", "weights");
-        assignSamplerNames(0, "source", ST_BILINEAR_CLAMPED_FILTERED);
-        assignTextureUnit(m_dest_tu, "dest");
-    }   // ComputeGaussian6VBlurShader
-};   // ComputeGaussian6VBlurShader
-
-// ============================================================================
-class ComputeGaussian6HBlurShader : public TextureShader<ComputeGaussian6HBlurShader, 1,
-                                                  core::vector2df, 
-                                                  std::vector<float> >
-{
-public:
-    GLuint m_dest_tu;
-    ComputeGaussian6HBlurShader()
-    {
-        loadProgram(OBJECT, GL_COMPUTE_SHADER, "gaussian6h.comp");
-        m_dest_tu = 1;
-        assignUniforms("pixel", "weights");
-        assignSamplerNames(0, "source",  ST_BILINEAR_CLAMPED_FILTERED);
-        assignTextureUnit(m_dest_tu, "dest");
-    }   // ComputeGaussian6HBlurShader
-};   // ComputeGaussian6HBlurShader
-
-// ============================================================================
-class ComputeShadowBlurHShader : public TextureShader<ComputeShadowBlurHShader, 1,
-                                               core::vector2df,
-                                               std::vector<float> >
-{
-public:
-    GLuint m_dest_tu;
-    ComputeShadowBlurHShader()
-    {
-        loadProgram(OBJECT, GL_COMPUTE_SHADER, "blurshadowH.comp");
-        m_dest_tu = 1;
-        assignUniforms("pixel", "weights");
-        assignSamplerNames(0, "source", ST_NEARED_CLAMPED_FILTERED);
-        assignTextureUnit(m_dest_tu, "dest");
-    }   // ComputeShadowBlurHShader
-};   // ComputeShadowBlurHShader
-
-// ============================================================================
 class Gaussian6HBlurShader : public TextureShader<Gaussian6HBlurShader, 1,
                                                  core::vector2df, float>
 {
@@ -204,65 +147,71 @@ public:
 };   // Gaussian6HBlurShader
 
 // ============================================================================
-class Gaussian17TapHShader : public TextureShader<Gaussian17TapHShader, 2,
+class Gaussian9TapHShader : public TextureShader<Gaussian9TapHShader, 2,
                                            core::vector2df>
 {
 public:
-    Gaussian17TapHShader()
+    Gaussian9TapHShader()
     {
         loadProgram(OBJECT, GL_VERTEX_SHADER, "screenquad.vert",
                             GL_FRAGMENT_SHADER, "bilateralH.frag");
         assignUniforms("pixel");
         assignSamplerNames(0, "tex", ST_BILINEAR_CLAMPED_FILTERED,
                            1, "depth", ST_BILINEAR_CLAMPED_FILTERED);
-    }   // Gaussian17TapHShader
+    }   // Gaussian9TapHShader
     // ------------------------------------------------------------------------
-    void render(const FrameBuffer &fb, int width, int height)
+    void render(const FrameBuffer &fb, const FrameBuffer &linear_depth,
+                int width, int height)
     {
         setTextureUnits(fb.getRTT()[0],
-                        irr_driver->getFBO(FBO_LINEAR_DEPTH).getRTT()[0] );
+                        linear_depth.getRTT()[0] );
         drawFullScreenEffect(core::vector2df(1.0f/width, 1.0f/height));
 
     }   // render
-};   // Gaussian17TapHShader
+};   // Gaussian9TapHShader
 
 // ============================================================================
-class ComputeGaussian17TapHShader : public TextureShader<ComputeGaussian17TapHShader, 2,
+class ComputeGaussian9TapHShader : public TextureShader<ComputeGaussian9TapHShader, 2,
                                                   core::vector2df>
 {
 public:
     GLuint m_dest_tu;
-    ComputeGaussian17TapHShader()
+    ComputeGaussian9TapHShader()
     {
+#if !defined(USE_GLES2)
         loadProgram(OBJECT,  GL_COMPUTE_SHADER, "bilateralH.comp");
         m_dest_tu = 2;
         assignUniforms("pixel");
-        assignSamplerNames(0, "source", ST_NEARED_CLAMPED_FILTERED,
-                           1, "depth", ST_NEARED_CLAMPED_FILTERED);
+        assignSamplerNames(0, "source", ST_NEAREST_CLAMPED_FILTERED,
+                           1, "depth", ST_NEAREST_CLAMPED_FILTERED);
         assignTextureUnit(m_dest_tu, "dest");
-    }   // ComputeGaussian17TapHShader
+#endif
+    }   // ComputeGaussian9TapHShader
     // ------------------------------------------------------------------------
     void render(const FrameBuffer &fb, const FrameBuffer &auxiliary,
+                const FrameBuffer &linear_depth,
                 int width, int height)
     {
+#if !defined(USE_GLES2)
         use();
         glBindSampler(m_dest_tu, 0);
         setTextureUnits(fb.getRTT()[0],
-                        irr_driver->getFBO(FBO_LINEAR_DEPTH).getRTT()[0]);
+                        linear_depth.getRTT()[0]);
         glBindImageTexture(m_dest_tu, auxiliary.getRTT()[0], 0, false,
                            0, GL_WRITE_ONLY, GL_R16F);
         setUniforms(core::vector2df(1.0f/width, 1.0f/height));
-        glDispatchCompute((int)width / 8 + 1, (int)height / 8 + 1, 1);
+        glDispatchCompute((int)width / 4 + 1, (int)height / 4 + 1, 1);
+#endif
     }   // render
-};   // ComputeGaussian17TapHShader
+};   // ComputeGaussian9TapHShader
 
 
 // ============================================================================
-class Gaussian17TapVShader : public TextureShader<Gaussian17TapVShader, 2,
+class Gaussian9TapVShader : public TextureShader<Gaussian9TapVShader, 2,
                                            core::vector2df>
 {
 public:
-    Gaussian17TapVShader()
+    Gaussian9TapVShader()
     {
         loadProgram(OBJECT, GL_VERTEX_SHADER, "screenquad.vert",
                             GL_FRAGMENT_SHADER, "bilateralV.frag");
@@ -270,80 +219,85 @@ public:
 
         assignSamplerNames(0, "tex", ST_BILINEAR_CLAMPED_FILTERED,
                            1, "depth", ST_BILINEAR_CLAMPED_FILTERED);
-    }   // Gaussian17TapVShader
+    }   // Gaussian9TapVShader
     // ------------------------------------------------------------------------
-    void render(const FrameBuffer &auxiliary, int width, int height)
+    void render(const FrameBuffer &auxiliary, const FrameBuffer &linear_depth,
+                int width, int height)
     {
         setTextureUnits(auxiliary.getRTT()[0],
-                        irr_driver->getFBO(FBO_LINEAR_DEPTH).getRTT()[0]);
+                        linear_depth.getRTT()[0]);
         drawFullScreenEffect(core::vector2df(1.0f/width, 1.0f/height));
 
     }   // render
-};   // Gaussian17TapVShader
+};   // Gaussian9TapVShader
 
 // ============================================================================
-class ComputeGaussian17TapVShader : public TextureShader<ComputeGaussian17TapVShader, 2, 
+class ComputeGaussian9TapVShader : public TextureShader<ComputeGaussian9TapVShader, 2,
                                                   core::vector2df>
 {
 public:
     GLuint m_dest_tu;
 
-    ComputeGaussian17TapVShader()
+    ComputeGaussian9TapVShader()
     {
+#if !defined(USE_GLES2)
         loadProgram(OBJECT, GL_COMPUTE_SHADER, "bilateralV.comp");
         m_dest_tu = 2;
         assignUniforms("pixel");
-        assignSamplerNames(0, "source", ST_NEARED_CLAMPED_FILTERED,
-                           1, "depth", ST_NEARED_CLAMPED_FILTERED);
+        assignSamplerNames(0, "source", ST_NEAREST_CLAMPED_FILTERED,
+                           1, "depth", ST_NEAREST_CLAMPED_FILTERED);
         assignTextureUnit(m_dest_tu, "dest");
-    }   // ComputeGaussian17TapVShader
+#endif
+    }   // ComputeGaussian9TapVShader
     // ------------------------------------------------------------------------
-    void render(const FrameBuffer &auxiliary, const FrameBuffer &fb, 
+    void render(const FrameBuffer &auxiliary, const FrameBuffer &fb,
+                const FrameBuffer &linear_depth,
                 int width, int height)
     {
+#if !defined(USE_GLES2)
+
         use();
         glBindSampler(m_dest_tu, 0);
         setTextureUnits(auxiliary.getRTT()[0],
-                        irr_driver->getFBO(FBO_LINEAR_DEPTH).getRTT()[0]);
+                        linear_depth.getRTT()[0]);
         glBindImageTexture(m_dest_tu, fb.getRTT()[0], 0, false, 0,
                            GL_WRITE_ONLY, GL_R16F);
         setUniforms(core::vector2df(1.0f/width, 1.0f/height));
-        glDispatchCompute((int)fb.getWidth()  / 8 + 1,
-                          (int)fb.getHeight() / 8 + 1, 1);
+        glDispatchCompute((int)fb.getWidth()  / 4 + 1,
+                          (int)fb.getHeight() / 4 + 1, 1);
+#endif
     }   // render
-};   // ComputeGaussian17TapVShader
+};   // ComputeGaussian9TapVShader
 
 // ============================================================================
-class BloomShader : public TextureShader<BloomShader, 1>
+class BloomShader : public TextureShader<BloomShader, 1, float>
 {
 public:
     BloomShader()
     {
         loadProgram(OBJECT, GL_VERTEX_SHADER, "screenquad.vert",
-                            GL_FRAGMENT_SHADER, "utils/getCIEXYZ.frag",
-                            GL_FRAGMENT_SHADER, "utils/getRGBfromCIEXxy.frag",
                             GL_FRAGMENT_SHADER, "bloom.frag");
-        assignUniforms();
+        assignUniforms("scale");
         assignSamplerNames(0, "tex", ST_NEAREST_FILTERED);
     }   // BloomShader
     // ------------------------------------------------------------------------
     void render(GLuint in)
     {
         BloomShader::getInstance()->setTextureUnits(in);
-        drawFullScreenEffect();
+        drawFullScreenEffect(UserConfigParams::m_scale_rtts_factor);
     }   // render
 };   // BloomShader
-
-static video::ITexture *lensDustTex = 0;
 
 // ============================================================================
 class BloomBlendShader : public TextureShader<BloomBlendShader, 4>
 {
+private:
+    video::ITexture* m_lens_dust_tex;
 public:
     BloomBlendShader()
     {
-		if (!lensDustTex)
-			lensDustTex = irr_driver->getTexture(FileManager::TEXTURE, "gfx_lensDust_a.png");
+        m_lens_dust_tex =
+            irr_driver->getTexture(FileManager::TEXTURE, "gfx_lensDust_a.png");
 
         loadProgram(OBJECT, GL_VERTEX_SHADER, "screenquad.vert",
                             GL_FRAGMENT_SHADER, "bloomblend.frag");
@@ -351,15 +305,17 @@ public:
         assignSamplerNames(0, "tex_128", ST_BILINEAR_FILTERED,
                            1, "tex_256", ST_BILINEAR_FILTERED,
                            2, "tex_512", ST_BILINEAR_FILTERED,
-						   3, "tex_dust", ST_BILINEAR_FILTERED);
+                           3, "tex_dust", ST_BILINEAR_FILTERED);
     }   // BloomBlendShader
     // ------------------------------------------------------------------------
-    void render()
+    void render(GLuint render_target_bloom_128,
+                GLuint render_target_bloom_256,
+                GLuint render_target_bloom_512)
     {
-        setTextureUnits(irr_driver->getRenderTargetTexture(RTT_BLOOM_128),
-                        irr_driver->getRenderTargetTexture(RTT_BLOOM_256),
-                        irr_driver->getRenderTargetTexture(RTT_BLOOM_512),
-						getTextureGLuint(lensDustTex));
+        setTextureUnits(render_target_bloom_128,
+                        render_target_bloom_256,
+                        render_target_bloom_512,
+                        m_lens_dust_tex->getTextureHandler());
         drawFullScreenEffect();
     }   // render
 };   // BloomBlendShader
@@ -379,11 +335,13 @@ public:
                            2, "tex_512", ST_BILINEAR_FILTERED);
     }   // LensBlendShader
     // ------------------------------------------------------------------------
-    void render()
+    void render(GLuint render_target_lens_128,
+                GLuint render_target_lens_256,
+                GLuint render_target_lens_512)
     {
-        setTextureUnits(irr_driver->getRenderTargetTexture(RTT_LENS_128),
-                        irr_driver->getRenderTargetTexture(RTT_LENS_256),
-                        irr_driver->getRenderTargetTexture(RTT_LENS_512));
+        setTextureUnits(render_target_lens_128,
+                        render_target_lens_256,
+                        render_target_lens_512);
         drawFullScreenEffect();
 
     }   // render
@@ -397,8 +355,6 @@ public:
     ToneMapShader()
     {
         loadProgram(OBJECT, GL_VERTEX_SHADER, "screenquad.vert",
-                            GL_FRAGMENT_SHADER, "utils/getRGBfromCIEXxy.frag",
-                            GL_FRAGMENT_SHADER, "utils/getCIEXYZ.frag",
                             GL_FRAGMENT_SHADER, "tonemap.frag");
         assignUniforms("vignette_weight");
         assignSamplerNames(0, "text", ST_NEAREST_FILTERED);
@@ -407,123 +363,36 @@ public:
     void render(const FrameBuffer &fbo, GLuint rtt, float vignette_weight)
     {
         fbo.bind();
+        glClear(GL_COLOR_BUFFER_BIT);
         setTextureUnits(rtt);
         drawFullScreenEffect(vignette_weight);
     }   // render
 };   // ToneMapShader
 
 // ============================================================================
-class DepthOfFieldShader : public TextureShader<DepthOfFieldShader, 2>
+// The Shader template doesn't explicitly handles bool uniforms,
+// but it works out-of-the-box via int promotion.
+class DepthOfFieldShader : public TextureShader<DepthOfFieldShader, 2,
+                                                float, float, bool>
 {
 public:
     DepthOfFieldShader()
     {
         loadProgram(OBJECT, GL_VERTEX_SHADER, "screenquad.vert",
                             GL_FRAGMENT_SHADER, "dof.frag");
-
-        assignUniforms();
-        assignSamplerNames(0, "tex", ST_BILINEAR_FILTERED,
-                           1, "dtex", ST_NEAREST_FILTERED);
+        assignUniforms("focalDepth", "range", "blurForeground"); 
+        assignSamplerNames(0, "tex", ST_BILINEAR_CLAMPED_FILTERED,
+                           1, "dtex", ST_NEAREST_CLAMPED_FILTERED);
     }   // DepthOfFieldShader
     // ------------------------------------------------------------------------
-    void render(const FrameBuffer &fb, GLuint rtt)
+    void render(const FrameBuffer &framebuffer, GLuint color_texture, GLuint depth_stencil_texture,
+        float focalDepth, float extraRange, bool foregroundBlur)
     {
-        fb.bind();
-        setTextureUnits(rtt, irr_driver->getDepthStencilTexture());
-        drawFullScreenEffect();
-
+        framebuffer.bind();
+        setTextureUnits(color_texture, depth_stencil_texture);
+        drawFullScreenEffect(focalDepth, extraRange, foregroundBlur);
     }   // render
 };   // DepthOfFieldShader
-
-// ============================================================================
-class IBLShader : public TextureShader<IBLShader, 3>
-{
-public:
-    IBLShader()
-    {
-        loadProgram(OBJECT, GL_VERTEX_SHADER, "screenquad.vert",
-                            GL_FRAGMENT_SHADER, "utils/decodeNormal.frag",
-                            GL_FRAGMENT_SHADER, "utils/getPosFromUVDepth.frag",
-                            GL_FRAGMENT_SHADER, "utils/DiffuseIBL.frag",
-                            GL_FRAGMENT_SHADER, "utils/SpecularIBL.frag",
-                            GL_FRAGMENT_SHADER, "IBL.frag");
-        assignUniforms();
-        assignSamplerNames(0, "ntex",  ST_NEAREST_FILTERED,
-                           1, "dtex",  ST_NEAREST_FILTERED,
-                           2, "probe", ST_TRILINEAR_CUBEMAP);
-    }   // IBLShader
-};   // IBLShader
-
-// ============================================================================
-class DegradedIBLShader : public TextureShader<DegradedIBLShader, 1>
-{
-public:
-    DegradedIBLShader()
-    {
-        loadProgram(OBJECT, GL_VERTEX_SHADER, "screenquad.vert",
-                            GL_FRAGMENT_SHADER, "utils/decodeNormal.frag",
-                            GL_FRAGMENT_SHADER, "utils/getPosFromUVDepth.frag",
-                            GL_FRAGMENT_SHADER, "utils/DiffuseIBL.frag",
-                            GL_FRAGMENT_SHADER, "utils/SpecularIBL.frag",
-                            GL_FRAGMENT_SHADER, "degraded_ibl.frag");
-        assignUniforms();
-        assignSamplerNames(0, "ntex", ST_NEAREST_FILTERED);
-    }   // DegradedIBLShader
-};   // DegradedIBLShader
-
-// ============================================================================
-class RHDebug : public Shader<RHDebug, core::matrix4, core::vector3df>
-{
-public:
-    GLuint m_tu_shr, m_tu_shg, m_tu_shb;
-
-    RHDebug()
-    {
-        loadProgram(OBJECT, GL_VERTEX_SHADER, "rhdebug.vert",
-                            GL_FRAGMENT_SHADER, "rhdebug.frag");
-        assignUniforms("rh_matrix", "extents");
-        m_tu_shr = 0;
-        m_tu_shg = 1;
-        m_tu_shb = 2;
-        assignTextureUnit(m_tu_shr, "SHR",  m_tu_shg, "SHG", 
-                          m_tu_shb, "SHB");
-    }   // RHDebug
-};   // RHDebug
-
-// ============================================================================
-class GlobalIlluminationReconstructionShader 
-    : public TextureShader<GlobalIlluminationReconstructionShader, 5,
-                           core::matrix4, core::matrix4, core::vector3df >
-{
-public:
-    GlobalIlluminationReconstructionShader()
-    {
-        loadProgram(OBJECT, GL_VERTEX_SHADER, "screenquad.vert",
-                            GL_FRAGMENT_SHADER, "utils/decodeNormal.frag",
-                            GL_FRAGMENT_SHADER, "utils/getPosFromUVDepth.frag",
-                            GL_FRAGMENT_SHADER, "gi.frag");
-
-        assignUniforms("rh_matrix", "inv_rh_matrix", "extents");
-        assignSamplerNames(0, "ntex", ST_NEAREST_FILTERED,
-                           1, "dtex", ST_NEAREST_FILTERED,
-                           2, "SHR", ST_VOLUME_LINEAR_FILTERED,
-                           3, "SHG", ST_VOLUME_LINEAR_FILTERED,
-                           4, "SHB", ST_VOLUME_LINEAR_FILTERED);
-    }   // GlobalIlluminationReconstructionShader
-
-    // ------------------------------------------------------------------------
-    void render(const core::matrix4 &rh_matrix,
-                const core::vector3df &rh_extend, const FrameBuffer &fb)
-    {
-        core::matrix4 inv_rh_matrix;
-        rh_matrix.getInverse(inv_rh_matrix);
-        glDisable(GL_DEPTH_TEST);
-        setTextureUnits(irr_driver->getRenderTargetTexture(RTT_NORMAL_AND_DEPTH),
-                        irr_driver->getDepthStencilTexture(),
-                        fb.getRTT()[0], fb.getRTT()[1], fb.getRTT()[2]);
-        drawFullScreenEffect(rh_matrix, inv_rh_matrix, rh_extend);
-    }   // render
-};   // GlobalIlluminationReconstructionShader
 
 // ============================================================================
 class PassThroughShader : public TextureShader<PassThroughShader, 1, int, int>
@@ -587,9 +456,9 @@ public:
         assignSamplerNames(0, "texture", ST_BILINEAR_FILTERED);
     }   // LinearizeDepthShader
     // ------------------------------------------------------------------------
-    void render()
+    void render(GLuint depth_stencil_texture)
     {
-        setTextureUnits(irr_driver->getDepthStencilTexture());
+        setTextureUnits(depth_stencil_texture);
         scene::ICameraSceneNode *c = irr_driver->getSceneManager()->getActiveCamera();
         drawFullScreenEffect(c->getNearValue(), c->getFarValue()  );
 
@@ -629,17 +498,15 @@ public:
     SSAOShader()
     {
         loadProgram(OBJECT, GL_VERTEX_SHADER, "screenquad.vert",
-                            GL_FRAGMENT_SHADER, "utils/decodeNormal.frag",
-                            GL_FRAGMENT_SHADER, "utils/getPosFromUVDepth.frag",
                             GL_FRAGMENT_SHADER, "ssao.frag");
 
         assignUniforms("radius", "k", "sigma");
         assignSamplerNames(0, "dtex", ST_SEMI_TRILINEAR);
     }   // SSAOShader
     // ------------------------------------------------------------------------
-    void render()
+    void render(GLuint render_target_linear_depth)
     {
-        setTextureUnits(irr_driver->getRenderTargetTexture(RTT_LINEAR_DEPTH));
+        setTextureUnits(render_target_linear_depth);
         glGenerateMipmap(GL_TEXTURE_2D);
 
         drawFullScreenEffect(irr_driver->getSSAORadius(),
@@ -658,7 +525,6 @@ public:
     MotionBlurShader()
     {
         loadProgram(OBJECT, GL_VERTEX_SHADER, "screenquad.vert",
-                            GL_FRAGMENT_SHADER, "utils/getPosFromUVDepth.frag",
                             GL_FRAGMENT_SHADER, "motion_blur.frag");
         assignUniforms("previous_viewproj", "center", "boost_amount",
                         "mask_radius");
@@ -666,9 +532,9 @@ public:
                            1, "dtex", ST_NEAREST_FILTERED);
     }    // MotionBlurShader
     // ------------------------------------------------------------------------
-    void render(const FrameBuffer &fb, float boost_time)
+    void render(const FrameBuffer &fb, float boost_time, GLuint depth_stencil_texture)
     {
-        setTextureUnits(fb.getRTT()[0],  irr_driver->getDepthStencilTexture());
+        setTextureUnits(fb.getRTT()[0],  depth_stencil_texture);
         Camera *cam = Camera::getActiveCamera();
         // Todo : use a previousPVMatrix per cam, not global
         drawFullScreenEffect(cam->getPreviousPVMatrix(),
@@ -677,6 +543,23 @@ public:
                              0.15f);
     }   // render
 };   // MotionBlurShader
+
+class SpeedStreaksShader : public TextureShader<SpeedStreaksShader, 1, float, float, float>
+{
+public:
+    SpeedStreaksShader()
+    {
+        loadProgram(OBJECT, GL_VERTEX_SHADER, "screenquad.vert",
+                            GL_FRAGMENT_SHADER, "speed_streaks.frag");
+        assignUniforms("u_intensity", "u_radial_scroll_offset", "u_time");
+        assignSamplerNames(0, "noise_texture", ST_BILINEAR_FILTERED);
+    }   //SpeedStreaksShader
+    void render(GLuint noise_texture, float intensity, float radial_scroll_offset, float time)
+    {
+        setTextureUnits(noise_texture);
+        drawFullScreenEffect(intensity, radial_scroll_offset, time);
+    }   // render
+};  // SpeedStreaksShader
 
 // ============================================================================
 class GodFadeShader : public TextureShader<GodFadeShader, 1, video::SColorf>
@@ -718,7 +601,7 @@ public:
 };   // GodRayShader
 
 // ============================================================================
-class MLAAColorEdgeDetectionSHader 
+class MLAAColorEdgeDetectionSHader
     : public TextureShader<MLAAColorEdgeDetectionSHader, 1, core::vector2df>
 {
 public:
@@ -730,10 +613,10 @@ public:
         assignSamplerNames(0, "colorMapG", ST_NEAREST_FILTERED);
     }   // MLAAColorEdgeDetectionSHader
     // ------------------------------------------------------------------------
-    void render(const core::vector2df &pixel_size)
+    void render(const core::vector2df &pixel_size, GLuint rtt_mlaa_colors)
     {
         use();
-        setTextureUnits(irr_driver->getRenderTargetTexture(RTT_MLAA_COLORS));
+        setTextureUnits(rtt_mlaa_colors);
         drawFullScreenEffect(pixel_size);
     }   // render
 };   // MLAAColorEdgeDetectionSHader
@@ -753,11 +636,12 @@ public:
                            1, "areaMap", ST_NEAREST_FILTERED);
     }   // MLAABlendWeightSHader
     // ------------------------------------------------------------------------
-    void render(video::ITexture *area_map, const core::vector2df &pixel_size)
+    void render(video::ITexture *area_map,
+                const core::vector2df &pixel_size,
+                GLuint rtt_mlaa_tmp)
     {
         use();
-        setTextureUnits(irr_driver->getRenderTargetTexture(RTT_MLAA_TMP),
-                        getTextureGLuint(area_map));
+        setTextureUnits(rtt_mlaa_tmp, area_map->getTextureHandler());
         drawFullScreenEffect(pixel_size);
 
     }   // render
@@ -777,51 +661,20 @@ public:
                            1, "colorMap", ST_NEAREST_FILTERED);
     }   // MLAAGatherSHader
     // ------------------------------------------------------------------------
-    void render(const core::vector2df &pixel_size)
+    void render(const core::vector2df &pixel_size,
+                GLuint rtt_mlaa_blend,
+                GLuint rtt_mlaa_tmp)
     {
         use();
-        setTextureUnits(irr_driver->getRenderTargetTexture(RTT_MLAA_BLEND),
-                        irr_driver->getRenderTargetTexture(RTT_MLAA_TMP));
+        setTextureUnits(rtt_mlaa_blend,
+                        rtt_mlaa_tmp);
         drawFullScreenEffect(pixel_size);
 
     }   // render
 };   // MLAAGatherSHader
 
 // ============================================================================
-class SunLightShader : public TextureShader<SunLightShader, 2,
-                                            core::vector3df, video::SColorf>
-{
-public:
-    SunLightShader()
-    {
-        loadProgram(OBJECT, GL_VERTEX_SHADER, "screenquad.vert",
-                            GL_FRAGMENT_SHADER, "utils/decodeNormal.frag",
-                            GL_FRAGMENT_SHADER, "utils/SpecularBRDF.frag",
-                            GL_FRAGMENT_SHADER, "utils/DiffuseBRDF.frag",
-                            GL_FRAGMENT_SHADER, "utils/getPosFromUVDepth.frag",
-                            GL_FRAGMENT_SHADER, "utils/SunMRP.frag",
-                            GL_FRAGMENT_SHADER, "sunlight.frag");
-
-        assignSamplerNames(0, "ntex", ST_NEAREST_FILTERED,
-                           1, "dtex", ST_NEAREST_FILTERED);
-        assignUniforms("direction", "col");
-    }   // SunLightShader
-    // ------------------------------------------------------------------------
-    void render(const core::vector3df &direction, const video::SColorf &col)
-    {
-        glEnable(GL_BLEND);
-        glDisable(GL_DEPTH_TEST);
-        glBlendFunc(GL_ONE, GL_ONE);
-        glBlendEquation(GL_FUNC_ADD);
-
-        setTextureUnits(irr_driver->getRenderTargetTexture(RTT_NORMAL_AND_DEPTH),
-                        irr_driver->getDepthStencilTexture());
-        drawFullScreenEffect(direction, col);
-    }   // render
-};   // SunLightShader
-
-// ============================================================================
-class LightningShader : public TextureShader<LightningShader, 1, 
+class LightningShader : public TextureShader<LightningShader, 1,
                                              core::vector3df>
 {
 public:
@@ -840,40 +693,41 @@ public:
 
 // ============================================================================
 
-PostProcessing::PostProcessing(IVideoDriver* video_driver)
+PostProcessing::PostProcessing()
 {
-    // Initialization
-    m_material.Wireframe = false;
-    m_material.Lighting = false;
-    m_material.ZWriteEnable = false;
-    m_material.ZBuffer = ECFN_ALWAYS;
-    m_material.setFlag(EMF_TRILINEAR_FILTER, true);
-
-    for (u32 i = 0; i < MATERIAL_MAX_TEXTURES; ++i)
-    {
-        m_material.TextureLayer[i].TextureWrapU =
-        m_material.TextureLayer[i].TextureWrapV = ETC_CLAMP_TO_EDGE;
-        }
-
     // Load the MLAA area map
     io::IReadFile *areamap = irr_driver->getDevice()->getFileSystem()->
                          createMemoryReadFile((void *) AreaMap33, sizeof(AreaMap33),
                          "AreaMap33", false);
-    if (!areamap)
+    video::IImage* img = irr_driver->getVideoDriver()->createImageFromFile(areamap);
+    m_areamap = GE::createTexture(img, "AreaMap33");
+    if (m_areamap->getTextureHandler() == 0)
     {
         Log::fatal("postprocessing", "Failed to load the areamap");
         return;
     }
-    m_areamap = irr_driver->getVideoDriver()->getTexture(areamap);
+    STKTexManager::getInstance()->addTexture(m_areamap);
     areamap->drop();
 
-}   // PostProcessing
+    // Load the simplex noise texture
+    const std::string noiseTexturePath = file_manager->getAsset(
+        FileManager::AssetType::TEXTURE,
+        "stk_noise_simplex.png");
 
-// ----------------------------------------------------------------------------
-PostProcessing::~PostProcessing()
-{
-    // TODO: do we have to delete/drop anything?
-}   // ~PostProcessing
+    //TODO: implement single_channel path, currently loads rgba even though noise_texture is single channel only.
+    m_noise_texture = GE::createTexture(noiseTexturePath); 
+    if (!m_noise_texture || m_noise_texture->getTextureHandler() == 0)
+    {
+        Log::fatal("postprocessing", "Failed to load %s", noiseTexturePath.c_str());
+        return;
+    }
+    STKTexManager::getInstance()->addTexture(m_noise_texture);
+
+    // For preloading shaders
+    MotionBlurShader::getInstance();
+    LightningShader::getInstance();
+    SpeedStreaksShader::getInstance();
+}   // PostProcessing
 
 // ----------------------------------------------------------------------------
 /** Initialises post processing at the (re-)start of a race. This sets up
@@ -881,91 +735,12 @@ PostProcessing::~PostProcessing()
  */
 void PostProcessing::reset()
 {
-    const u32 n = Camera::getNumCameras();
-    m_boost_time.resize(n);
-    m_vertices.resize(n);
-    m_center.resize(n);
-    m_direction.resize(n);
-
-    MotionBlurProvider * const cb = 
-        (MotionBlurProvider *) Shaders::getCallback(ES_MOTIONBLUR);
-
-    for(unsigned int i=0; i<n; i++)
+    m_boost_time.resize(Camera::getNumCameras());
+    for (unsigned int i = 0; i < Camera::getNumCameras(); i++)
     {
         m_boost_time[i] = 0.0f;
-
-        const core::recti &vp = Camera::getCamera(i)->getViewport();
-        // Map viewport to [-1,1] x [-1,1]. First define the coordinates
-        // left, right, top, bottom:
-        float right = vp.LowerRightCorner.X < (int)irr_driver->getActualScreenSize().Width
-                     ? 0.0f : 1.0f;
-        float left   = vp.UpperLeftCorner.X  > 0.0f ? 0.0f : -1.0f;
-        float top    = vp.UpperLeftCorner.Y  > 0.0f ? 0.0f : 1.0f;
-        float bottom = vp.LowerRightCorner.Y < (int)irr_driver->getActualScreenSize().Height
-                     ? 0.0f : -1.0f;
-
-        // Use left etc to define 4 vertices on which the rendered screen
-        // will be displayed:
-        m_vertices[i].v0.Pos = core::vector3df(left,  bottom, 0);
-        m_vertices[i].v1.Pos = core::vector3df(left,  top,    0);
-        m_vertices[i].v2.Pos = core::vector3df(right, top,    0);
-        m_vertices[i].v3.Pos = core::vector3df(right, bottom, 0);
-        // Define the texture coordinates of each vertex, which must
-        // be in [0,1]x[0,1]
-        m_vertices[i].v0.TCoords  = core::vector2df(left  ==-1.0f ? 0.0f : 0.5f,
-                                                    bottom==-1.0f ? 0.0f : 0.5f);
-        m_vertices[i].v1.TCoords  = core::vector2df(left  ==-1.0f ? 0.0f : 0.5f,
-                                                    top   == 1.0f ? 1.0f : 0.5f);
-        m_vertices[i].v2.TCoords  = core::vector2df(right == 0.0f ? 0.5f : 1.0f,
-                                                    top   == 1.0f ? 1.0f : 0.5f);
-        m_vertices[i].v3.TCoords  = core::vector2df(right == 0.0f ? 0.5f : 1.0f,
-                                                    bottom==-1.0f ? 0.0f : 0.5f);
-        // Set normal and color:
-        core::vector3df normal(0,0,1);
-        m_vertices[i].v0.Normal = m_vertices[i].v1.Normal =
-        m_vertices[i].v2.Normal = m_vertices[i].v3.Normal = normal;
-        SColor white(0xFF, 0xFF, 0xFF, 0xFF);
-        m_vertices[i].v0.Color  = m_vertices[i].v1.Color  =
-        m_vertices[i].v2.Color  = m_vertices[i].v3.Color  = white;
-
-        m_center[i].X=(m_vertices[i].v0.TCoords.X
-                      +m_vertices[i].v2.TCoords.X) * 0.5f;
-
-        // Center is around 20 percent from bottom of screen:
-        const float tex_height = m_vertices[i].v1.TCoords.Y
-                         - m_vertices[i].v0.TCoords.Y;
-        m_direction[i].X = m_center[i].X;
-        m_direction[i].Y = m_vertices[i].v0.TCoords.Y + 0.7f*tex_height;
-
-        setMotionBlurCenterY(i, 0.2f);
-
-        cb->setDirection(i, m_direction[i].X, m_direction[i].Y);
-        cb->setMaxHeight(i, m_vertices[i].v1.TCoords.Y);
     }  // for i <number of cameras
 }   // reset
-
-// ----------------------------------------------------------------------------
-void PostProcessing::setMotionBlurCenterY(const u32 num, const float y)
-{
-    MotionBlurProvider * const cb = 
-        (MotionBlurProvider *) Shaders::getCallback(ES_MOTIONBLUR);
-
-    const float tex_height =
-                m_vertices[num].v1.TCoords.Y - m_vertices[num].v0.TCoords.Y;
-    m_center[num].Y = m_vertices[num].v0.TCoords.Y + y * tex_height;
-
-    cb->setCenter(num, m_center[num].X, m_center[num].Y);
-}   // setMotionBlurCenterY
-
-// ----------------------------------------------------------------------------
-/** Setup some PP data.
-  */
-void PostProcessing::begin()
-{
-    m_any_boost = false;
-    for (u32 i = 0; i < m_boost_time.size(); i++)
-        m_any_boost |= m_boost_time[i] > 0.01f;
-}   // begin
 
 // ----------------------------------------------------------------------------
 /** Set the boost amount according to the speed of the camera */
@@ -973,11 +748,7 @@ void PostProcessing::giveBoost(unsigned int camera_index)
 {
     if (CVS->isGLSL())
     {
-        m_boost_time[camera_index] = 0.75f;
-
-        MotionBlurProvider * const cb =
-            (MotionBlurProvider *)Shaders::getCallback(ES_MOTIONBLUR);
-        cb->setBoostTime(camera_index, m_boost_time[camera_index]);
+        m_boost_time.at(camera_index) = 0.75f;
     }
 }   // giveBoost
 
@@ -989,12 +760,6 @@ void PostProcessing::update(float dt)
 {
     if (!CVS->isGLSL())
         return;
-
-    MotionBlurProvider* const cb =
-        (MotionBlurProvider*) Shaders::getCallback(ES_MOTIONBLUR);
-
-    if (cb == NULL) return;
-
     for (unsigned int i=0; i<m_boost_time.size(); i++)
     {
         if (m_boost_time[i] > 0.0f)
@@ -1002,323 +767,143 @@ void PostProcessing::update(float dt)
             m_boost_time[i] -= dt;
             if (m_boost_time[i] < 0.0f) m_boost_time[i] = 0.0f;
         }
-
-        cb->setBoostTime(i, m_boost_time[i]);
     }
 }   // update
 
 // ----------------------------------------------------------------------------
-static void renderBloom(GLuint in)
+void PostProcessing::renderBloom(GLuint in)
 {
     BloomShader::getInstance()->render(in);
 }   // renderBloom
 
 // ----------------------------------------------------------------------------
-void PostProcessing::renderEnvMap(GLuint skybox)
+void PostProcessing::renderGaussian3Blur(const FrameBuffer &in_fbo,
+                                         const FrameBuffer &auxiliary) const
 {
-    glDisable(GL_DEPTH_TEST);
-    glEnable(GL_BLEND);
-    glBlendEquation(GL_FUNC_ADD);
-    glBlendFunc(GL_ONE, GL_ONE);
-
-    if (UserConfigParams::m_degraded_IBL)
-    {
-        DegradedIBLShader::getInstance()->use();
-        glBindVertexArray(SharedGPUObjects::getFullScreenQuadVAO());
-
-        DegradedIBLShader::getInstance()
-            ->setTextureUnits(irr_driver
-                              ->getRenderTargetTexture(RTT_NORMAL_AND_DEPTH));
-        DegradedIBLShader::getInstance()->setUniforms();
-    }
-    else
-    {
-        IBLShader::getInstance()->use();
-        glBindVertexArray(SharedGPUObjects::getFullScreenQuadVAO());
-
-        IBLShader::getInstance()->setTextureUnits(
-            irr_driver->getRenderTargetTexture(RTT_NORMAL_AND_DEPTH),
-            irr_driver->getDepthStencilTexture(), skybox);
-        IBLShader::getInstance()->setUniforms();
-    }
-
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-    glBindVertexArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-    glEnable(GL_DEPTH_TEST);
-    glDisable(GL_BLEND);
-}   // renderEnvMap
-
-// ----------------------------------------------------------------------------
-void PostProcessing::renderRHDebug(unsigned SHR, unsigned SHG, unsigned SHB,
-                                   const core::matrix4 &rh_matrix,
-                                   const core::vector3df &rh_extend)
-{
-#ifndef ANDROID
-    glEnable(GL_PROGRAM_POINT_SIZE);
-    RHDebug::getInstance()->use();
-    glActiveTexture(GL_TEXTURE0 + RHDebug::getInstance()->m_tu_shr);
-    glBindTexture(GL_TEXTURE_3D, SHR);
-    glActiveTexture(GL_TEXTURE0 + RHDebug::getInstance()->m_tu_shg);
-    glBindTexture(GL_TEXTURE_3D, SHG);
-    glActiveTexture(GL_TEXTURE0 + RHDebug::getInstance()->m_tu_shb);
-    glBindTexture(GL_TEXTURE_3D, SHB);
-    RHDebug::getInstance()->setUniforms(rh_matrix, rh_extend);
-    glDrawArrays(GL_POINTS, 0, 32 * 16 * 32);
-    glDisable(GL_PROGRAM_POINT_SIZE);
-#endif
-}   // renderRHDebug
-
-// ----------------------------------------------------------------------------
-void PostProcessing::renderGI(const core::matrix4 &rh_matrix,
-                              const core::vector3df &rh_extend,
-                              const FrameBuffer &fb)
-{
-    GlobalIlluminationReconstructionShader::getInstance()->render(rh_matrix,
-                                                                  rh_extend,
-                                                                  fb);
-}   // renderGI
-
-// ----------------------------------------------------------------------------
-void PostProcessing::renderSunlight(const core::vector3df &direction,
-                                    const video::SColorf &col)
-{
-    SunLightShader::getInstance()->render(direction, col);
-}   // renderSunlight
-
-// ----------------------------------------------------------------------------
-static std::vector<float> getGaussianWeight(float sigma, size_t count)
-{
-    float g0, g1, g2, total;
-
-    std::vector<float> weights;
-    g0 = 1.f / (sqrtf(2.f * 3.14f) * sigma);
-    g1 = exp(-.5f / (sigma * sigma));
-    g2 = g1 * g1;
-    total = g0;
-    for (unsigned i = 0; i < count; i++)
-    {
-        weights.push_back(g0);
-        g0 *= g1;
-        g1 *= g2;
-        total += 2 * g0;
-    }
-    for (float &weight : weights)
-        weight /= total;
-    return weights;
-}   // getGaussianWeight
-
-// ----------------------------------------------------------------------------
-void PostProcessing::renderGaussian3Blur(const FrameBuffer &in_fbo, 
-                                         const FrameBuffer &auxiliary)
-{
-    assert(in_fbo.getWidth() == auxiliary.getWidth() && 
+    assert(in_fbo.getWidth() == auxiliary.getWidth() &&
            in_fbo.getHeight() == auxiliary.getHeight());
     float inv_width  = 1.0f / in_fbo.getWidth();
     float inv_height = 1.0f / in_fbo.getHeight();
-    {
-        auxiliary.bind();
-        Gaussian3VBlurShader::getInstance()->render(in_fbo, inv_width,
-                                                    inv_height);
-    }
-    {
-        in_fbo.bind();
-        Gaussian3HBlurShader::getInstance()->render(auxiliary, inv_width,
-                                                    inv_height);
-    }
+    auxiliary.bind();
+    glClear(GL_COLOR_BUFFER_BIT);
+    Gaussian3VBlurShader::getInstance()->render(in_fbo, inv_width,
+                                                inv_height);
+    in_fbo.bind();
+    glClear(GL_COLOR_BUFFER_BIT);
+    Gaussian3HBlurShader::getInstance()->render(auxiliary, inv_width,
+                                                inv_height);
 }   // renderGaussian3Blur
-
-// ----------------------------------------------------------------------------
-void PostProcessing::renderGaussian6BlurLayer(FrameBuffer &in_fbo,
-                                              size_t layer, float sigma_h,
-                                              float sigma_v)
-{
-    GLuint layer_tex;
-    glGenTextures(1, &layer_tex);
-#ifndef ANDROID_DEVICE
-    glTextureView(layer_tex, GL_TEXTURE_2D, in_fbo.getRTT()[0],
-                  GL_R32F, 0, 1, layer, 1);
-#endif
-    if (!CVS->supportsComputeShadersFiltering())
-    {
-        // Used as temp
-        irr_driver->getFBO(FBO_SCALAR_1024).bind();
-        Gaussian6VBlurShader::getInstance()
-            ->render(layer_tex, UserConfigParams::m_shadows_resolution, 
-                     UserConfigParams::m_shadows_resolution, sigma_v);
-
-        in_fbo.bindLayer(layer);
-        Gaussian6HBlurShader::getInstance()
-            ->render(irr_driver->getFBO(FBO_SCALAR_1024),
-                     UserConfigParams::m_shadows_resolution, 
-                     UserConfigParams::m_shadows_resolution, sigma_h);
-    }
-    else
-    {
-        const std::vector<float> &weightsV = getGaussianWeight(sigma_v, 7);
-        glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);
-        ComputeShadowBlurVShader::getInstance()->use();
-        ComputeShadowBlurVShader::getInstance()->setTextureUnits(layer_tex);
-        glBindSampler(ComputeShadowBlurVShader::getInstance()->m_dest_tu, 0);
-        glBindImageTexture(ComputeShadowBlurVShader::getInstance()->m_dest_tu,
-                           irr_driver->getFBO(FBO_SCALAR_1024).getRTT()[0], 0,
-                           false, 0, GL_WRITE_ONLY, GL_R32F);
-        ComputeShadowBlurVShader::getInstance()->setUniforms
-            (core::vector2df(1.f / UserConfigParams::m_shadows_resolution,
-                             1.f / UserConfigParams::m_shadows_resolution),
-             weightsV);
-        glDispatchCompute((int)UserConfigParams::m_shadows_resolution / 8 + 1,
-                          (int)UserConfigParams::m_shadows_resolution / 8 + 1, 1);
-
-        const std::vector<float> &weightsH = getGaussianWeight(sigma_h, 7);
-        glMemoryBarrier(  GL_TEXTURE_FETCH_BARRIER_BIT 
-                        | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-        ComputeShadowBlurHShader::getInstance()->use();
-        ComputeShadowBlurHShader::getInstance()
-            ->setTextureUnits(irr_driver->getFBO(FBO_SCALAR_1024).getRTT()[0]);
-        glBindSampler(ComputeShadowBlurHShader::getInstance()->m_dest_tu, 0);
-        glBindImageTexture(ComputeShadowBlurHShader::getInstance()->m_dest_tu,
-                           layer_tex, 0, false, 0, GL_WRITE_ONLY, GL_R32F);
-        ComputeShadowBlurHShader::getInstance()->setUniforms
-            (core::vector2df(1.f / UserConfigParams::m_shadows_resolution,
-                            1.f / UserConfigParams::m_shadows_resolution),
-              weightsH);
-        glDispatchCompute((int)UserConfigParams::m_shadows_resolution / 8 + 1,
-                          (int)UserConfigParams::m_shadows_resolution / 8 + 1, 1);
-        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-    }
-    glDeleteTextures(1, &layer_tex);
-}   // renderGaussian6BlurLayer
 
 // ----------------------------------------------------------------------------
 void PostProcessing::renderGaussian6Blur(const FrameBuffer &in_fbo,
                                          const FrameBuffer &auxiliary, float sigma_v,
-                                         float sigma_h)
-{
-    assert(in_fbo.getWidth() == auxiliary.getWidth() && 
-           in_fbo.getHeight() == auxiliary.getHeight());
-    float inv_width = 1.0f / in_fbo.getWidth();
-    float inv_height = 1.0f / in_fbo.getHeight();
-
-    if (!CVS->supportsComputeShadersFiltering())
-    {
-        auxiliary.bind();
-        Gaussian6VBlurShader::getInstance()
-            ->render(in_fbo.getRTT()[0], in_fbo.getWidth(), in_fbo.getWidth(),
-                     sigma_v);
-
-        in_fbo.bind();
-        Gaussian6HBlurShader::getInstance()->setTextureUnits(auxiliary.getRTT()[0]);
-        Gaussian6HBlurShader::getInstance()->render(auxiliary, in_fbo.getWidth(),
-                                                   in_fbo.getHeight(), sigma_h);
-    }
-    else
-    {
-        const std::vector<float> &weightsV = getGaussianWeight(sigma_v, 7);
-        glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);
-        ComputeGaussian6VBlurShader::getInstance()->use();
-        ComputeGaussian6VBlurShader::getInstance()
-            ->setTextureUnits(in_fbo.getRTT()[0]);
-        glBindSampler(ComputeGaussian6VBlurShader::getInstance()->m_dest_tu, 0);
-        glBindImageTexture(ComputeGaussian6VBlurShader::getInstance()->m_dest_tu,
-                            auxiliary.getRTT()[0], 0, false, 0,
-                            GL_WRITE_ONLY, GL_RGBA16F);
-        ComputeGaussian6VBlurShader::getInstance()
-            ->setUniforms(core::vector2df(inv_width, inv_height), weightsV);
-        glDispatchCompute((int)in_fbo.getWidth() / 8 + 1, 
-                          (int)in_fbo.getHeight() / 8 + 1, 1);
-
-        const std::vector<float> &weightsH = getGaussianWeight(sigma_h, 7);
-        glMemoryBarrier(  GL_TEXTURE_FETCH_BARRIER_BIT 
-                        | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-        ComputeGaussian6HBlurShader::getInstance()->use();
-        ComputeGaussian6HBlurShader::getInstance()
-                         ->setTextureUnits(auxiliary.getRTT()[0]);
-        glBindSampler(ComputeGaussian6HBlurShader::getInstance()->m_dest_tu, 0);
-        glBindImageTexture(ComputeGaussian6HBlurShader::getInstance()->m_dest_tu,
-                           in_fbo.getRTT()[0], 0, false, 0,
-                           GL_WRITE_ONLY, GL_RGBA16F);
-        ComputeGaussian6HBlurShader::getInstance()
-                ->setUniforms(core::vector2df(inv_width, inv_height), weightsH);
-        glDispatchCompute((int)in_fbo.getWidth() / 8 + 1,
-                          (int)in_fbo.getHeight() / 8 + 1, 1);
-        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-    }
-
-}   // renderGaussian6Blur
-
-// ----------------------------------------------------------------------------
-void PostProcessing::renderHorizontalBlur(const FrameBuffer &in_fbo,
-                                          const FrameBuffer &auxiliary)
+                                         float sigma_h) const
 {
     assert(in_fbo.getWidth() == auxiliary.getWidth() &&
            in_fbo.getHeight() == auxiliary.getHeight());
 
     auxiliary.bind();
+    glClear(GL_COLOR_BUFFER_BIT);
+    Gaussian6VBlurShader::getInstance()
+        ->render(in_fbo.getRTT()[0], in_fbo.getWidth(), in_fbo.getHeight(),
+                 sigma_v);
+
+    in_fbo.bind();
+    glClear(GL_COLOR_BUFFER_BIT);
+    Gaussian6HBlurShader::getInstance()->setTextureUnits(auxiliary.getRTT()[0]);
+    Gaussian6HBlurShader::getInstance()->render(auxiliary, in_fbo.getWidth(),
+                                                in_fbo.getHeight(), sigma_h);
+}   // renderGaussian6Blur
+
+// ----------------------------------------------------------------------------
+void PostProcessing::renderHorizontalBlur(const FrameBuffer &in_fbo,
+                                          const FrameBuffer &auxiliary) const
+{
+    assert(in_fbo.getWidth() == auxiliary.getWidth() &&
+           in_fbo.getHeight() == auxiliary.getHeight());
+
+    auxiliary.bind();
+    glClear(GL_COLOR_BUFFER_BIT);
     Gaussian6HBlurShader::getInstance()->render(in_fbo, in_fbo.getWidth(),
                                                 in_fbo.getHeight(), 2.0f );
     in_fbo.bind();
+    glClear(GL_COLOR_BUFFER_BIT);
     Gaussian6HBlurShader::getInstance()->render(auxiliary, in_fbo.getWidth(),
                                                 in_fbo.getHeight(), 2.0f);
 }   // renderHorizontalBlur
 
 
 // ----------------------------------------------------------------------------
-void PostProcessing::renderGaussian17TapBlur(const FrameBuffer &in_fbo,
-                                             const FrameBuffer &auxiliary)
+void PostProcessing::renderGaussian9TapBlur(const FrameBuffer &in_fbo,
+                                             const FrameBuffer &auxiliary,
+                                             const FrameBuffer &linear_depth) const
 {
     assert(in_fbo.getWidth() == auxiliary.getWidth() &&
            in_fbo.getHeight() == auxiliary.getHeight());
+     
+#if !defined(USE_GLES2)
     if (CVS->supportsComputeShadersFiltering())
         glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT);
+#endif
+
     {
         if (!CVS->supportsComputeShadersFiltering())
         {
             auxiliary.bind();
-            Gaussian17TapHShader::getInstance()->render(in_fbo,
+            Gaussian9TapHShader::getInstance()->render(in_fbo,
+                                                        linear_depth,
                                                         in_fbo.getWidth(),
                                                         in_fbo.getHeight());
         }
         else
         {
-            ComputeGaussian17TapHShader::getInstance()->render(in_fbo,
+            ComputeGaussian9TapHShader::getInstance()->render(in_fbo,
                                                                auxiliary,
+                                                               linear_depth,
                                                                in_fbo.getWidth(),
                                                                in_fbo.getHeight());
         }
     }
+    
+#if !defined(USE_GLES2)
     if (CVS->supportsComputeShadersFiltering())
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+#endif
+        
     {
         if (!CVS->supportsComputeShadersFiltering())
         {
             in_fbo.bind();
-            Gaussian17TapVShader::getInstance()->render(auxiliary,
+            Gaussian9TapVShader::getInstance()->render(auxiliary,
+                                                        linear_depth,
                                                         in_fbo.getWidth(),
                                                         in_fbo.getHeight());
         }
         else
         {
-            ComputeGaussian17TapVShader::getInstance()->render(auxiliary,
-                                                               in_fbo, 
+            ComputeGaussian9TapVShader::getInstance()->render(auxiliary,
+                                                               in_fbo,
+                                                               linear_depth,
                                                                in_fbo.getWidth(),
                                                                in_fbo.getHeight());
         }
     }
+    
+#if !defined(USE_GLES2)
     if (CVS->supportsComputeShadersFiltering())
         glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);
-}   // renderGaussian17TapBlur
+#endif
+}   // renderGaussian9TapBlur
 
 // ----------------------------------------------------------------------------
 void PostProcessing::renderPassThrough(GLuint tex, unsigned width,
-                                       unsigned height)
+                                       unsigned height) const
 {
     PassThroughShader::getInstance()->render(tex, width, height);
 }   // renderPassThrough
 
 // ----------------------------------------------------------------------------
-void PostProcessing::renderTextureLayer(unsigned tex, unsigned layer)
+void PostProcessing::renderTextureLayer(unsigned tex, unsigned layer) const
 {
     LayerPassThroughShader::getInstance()->use();
     LayerPassThroughShader::getInstance()->bindVertexArray();
@@ -1332,100 +917,212 @@ void PostProcessing::renderTextureLayer(unsigned tex, unsigned layer)
 }   // renderTextureLayer
 
 // ----------------------------------------------------------------------------
-void PostProcessing::renderGlow(unsigned tex)
+void PostProcessing::renderGlow(const FrameBuffer& quarter_framebuffer) const
 {
-    GlowShader::getInstance()->render(tex);
+    glEnable(GL_BLEND);
+    glBlendEquation(GL_FUNC_ADD);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glStencilFunc(GL_EQUAL, 0, ~0);
+    glEnable(GL_STENCIL_TEST);
+    GlowShader::getInstance()->render(quarter_framebuffer.getRTT()[0]);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_BLEND);
 }   // renderGlow
 
 // ----------------------------------------------------------------------------
-void PostProcessing::renderSSAO()
+void PostProcessing::renderSSAO(const FrameBuffer& linear_depth_framebuffer,
+                                const FrameBuffer& ssao_framebuffer,
+                                GLuint depth_stencil_texture)
 {
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
 
     // Generate linear depth buffer
-    irr_driver->getFBO(FBO_LINEAR_DEPTH).bind();
-    LinearizeDepthShader::getInstance()->render();
-    irr_driver->getFBO(FBO_SSAO).bind();
-    SSAOShader::getInstance()->render();
+    linear_depth_framebuffer.bind();
+    LinearizeDepthShader::getInstance()->render(depth_stencil_texture);
+    ssao_framebuffer.bind();
+    SSAOShader::getInstance()->render(linear_depth_framebuffer.getRTT()[0]);
 }   // renderSSAO
 
 // ----------------------------------------------------------------------------
-void PostProcessing::renderMotionBlur(unsigned , const FrameBuffer &in_fbo,
-                                      FrameBuffer &out_fbo)
+void PostProcessing::renderMotionBlur(const FrameBuffer &in_fbo,
+                                      FrameBuffer &out_fbo,
+                                      GLuint depth_stencil_texture)
 {
-    MotionBlurProvider * const cb =
-                      (MotionBlurProvider *)Shaders::getCallback(ES_MOTIONBLUR);
     Camera *cam = Camera::getActiveCamera();
-    unsigned camID = cam->getIndex();
-
-    scene::ICameraSceneNode * const camnode = cam->getCameraSceneNode();
-
-    // Calculate the kart's Y position on screen
-    if (cam->getKart())
-    {
-        const core::vector3df pos = cam->getKart()->getNode()->getPosition();
-        float ndc[4];
-        core::matrix4 trans = camnode->getProjectionMatrix();
-        trans *= camnode->getViewMatrix();
-
-        trans.transformVect(ndc, pos);
-        const float karty = (ndc[1] / ndc[3]) * 0.5f + 0.5f;
-        setMotionBlurCenterY(camID, karty);
-    }
-    else
-        setMotionBlurCenterY(camID, 0.5f);
-
     out_fbo.bind();
     glClear(GL_COLOR_BUFFER_BIT);
 
-    float boost_time = cb->getBoostTime(cam->getIndex()) * 10;
-    MotionBlurShader::getInstance()->render(in_fbo, boost_time);
+    float boost_time = m_boost_time.at(cam->getIndex()) * 10.0f;
+    MotionBlurShader::getInstance()->render(in_fbo, boost_time, depth_stencil_texture);
 }   // renderMotionBlur
 
+// ----------------------------------------------------------------------------
+void PostProcessing::renderSpeedStreaks()
+{
+    World* world = World::getWorld();
+    Camera* cam  = Camera::getActiveCamera();
+    const Kart* kart = dynamic_cast<const Kart*>(cam->getKart());
+    SpeedStreaks* speed_streaks = kart ? kart->getSpeedStreaks() : nullptr;
+
+    const Camera::CameraType cam_type = cam->getType();
+    const Camera::Mode       cam_mode = cam->getMode();
+
+    const bool is_valid_cam_mode = cam_mode == Camera::CM_NORMAL      ||
+                                   cam_mode == Camera::CM_REVERSE     ||
+                                   cam_mode == Camera::CM_LEADER_MODE ||
+                                   cam_mode == Camera::CM_FALLING;
+
+    float radial_scroll_offset  =  0.0f;
+    float intensity             =  0.0f;
+
+    // Determine if we should display speed streaks based on camera type/mode
+    if (speed_streaks &&
+        cam_type == Camera::CM_TYPE_NORMAL &&
+        is_valid_cam_mode)
+    {
+        radial_scroll_offset = speed_streaks->getRadialScrollOffset();
+        intensity            = speed_streaks->getBoostIntensity();
+
+        // Change on screen direction of speedstreaks based on active camera mode
+        auto direction = SpeedStreaks::Direction::FORWARD;
+        if (cam_mode == Camera::CM_REVERSE ||
+            cam_mode == Camera::CM_LEADER_MODE)
+        {
+            direction = SpeedStreaks::Direction::REVERSE;
+        }
+        speed_streaks->setDirection(direction);
+    }
+
+    glEnable(GL_BLEND);
+    glBlendEquation(GL_FUNC_ADD);
+    glBlendFunc(GL_ONE, GL_ONE);
+
+    SpeedStreaksShader::getInstance()->render(m_noise_texture->getTextureHandler(), intensity, radial_scroll_offset, world->getTime());
+
+    glDisable(GL_BLEND);
+}
 
 // ----------------------------------------------------------------------------
-static void renderDoF(const FrameBuffer &fbo, GLuint rtt)
+void PostProcessing::renderDoF(const FrameBuffer &framebuffer, GLuint color_texture, GLuint depth_stencil_texture)
 {
-    DepthOfFieldShader::getInstance()->render(fbo, rtt);
+    // TODO: make it possible to use different parameters for cutscenes,
+    //       and to tweak the values from some config file to avoid the need for recompilation
+    DepthOfFieldShader::getInstance()->render(framebuffer, color_texture, depth_stencil_texture,
+        72.0 /* focal depth */, 360.0 /* extra range until max blur */, false /* foreground blurring */);
 }   // renderDoF
 
 // ----------------------------------------------------------------------------
-void PostProcessing::applyMLAA()
+void PostProcessing::renderGodRays(scene::ICameraSceneNode * const camnode,
+                                   const FrameBuffer &in_fbo,
+                                   const FrameBuffer &tmp_fbo,
+                                   const FrameBuffer &quarter1_fbo,
+                                   const FrameBuffer &quarter2_fbo)
+{
+    Track* track = Track::getCurrentTrack();
+
+    glEnable(GL_DEPTH_TEST);
+    // Grab the sky
+    tmp_fbo.bind();
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    // Set the sun's color
+    const SColor col = track->getGodRaysColor();
+
+    // The sun interposer
+    SP::SPDynamicDrawCall* sun_ = irr_driver->getSunInterposer();
+    // This will only do thing when you update the sun position
+    sun_->uploadInstanceData();
+    SP::SPShader* glow_shader = SP::getGlowShader();
+    glow_shader->use();
+    SP::SPUniformAssigner* glow_color_assigner = glow_shader
+        ->getUniformAssigner("col");
+    assert(glow_color_assigner != NULL);
+    video::SColorf cf(track->getGodRaysColor());
+    glow_color_assigner->setValue(core::vector3df(cf.r, cf.g, cf.b));
+    sun_->draw();
+    glow_shader->unuse();
+    glDisable(GL_DEPTH_TEST);
+
+    // Fade to quarter
+    quarter1_fbo.bind();
+    glClear(GL_COLOR_BUFFER_BIT);
+    GodFadeShader::getInstance()->render(tmp_fbo.getRTT()[0], col);
+
+    // Blur
+    renderGaussian3Blur(quarter1_fbo, quarter2_fbo);
+
+    // Calculate the sun's position in texcoords
+    const core::vector3df pos = track->getGodRaysPosition();
+    float ndc[4];
+    core::matrix4 trans = camnode->getProjectionMatrix();
+    trans *= camnode->getViewMatrix();
+
+    trans.transformVect(ndc, pos);
+    const float sunx = ((ndc[0] / ndc[3]) * 0.5f + 0.5f);
+    const float suny = ((ndc[1] / ndc[3]) * 0.5f + 0.5f);
+
+    // Rays please
+    quarter2_fbo.bind();
+    glClear(GL_COLOR_BUFFER_BIT);
+    GodRayShader::getInstance()
+        ->render(quarter1_fbo.getRTT()[0], core::vector2df(sunx, suny));
+
+    // Blur
+    renderGaussian3Blur(quarter2_fbo, quarter1_fbo);
+
+    // Blend
+    glEnable(GL_BLEND);
+    glBlendColor(0., 0., 0., track->getGodRaysOpacity());
+    glBlendFunc(GL_CONSTANT_ALPHA, GL_ONE);
+    glBlendEquation(GL_FUNC_ADD);
+
+    in_fbo.bind();
+    renderPassThrough(quarter2_fbo.getRTT()[0], in_fbo.getWidth(), in_fbo.getHeight());
+    glDisable(GL_BLEND);
+
+}
+
+
+// ----------------------------------------------------------------------------
+void PostProcessing::applyMLAA(const FrameBuffer& mlaa_color_in_framebuffer, // original scene color.
+                               const FrameBuffer& mlaa_blend_framebuffer,    // blend weights.
+                               const FrameBuffer& mlaa_results_framebuffer)  // reusable temp buffer AND final output.
 {
     const core::vector2df &PIXEL_SIZE =
                      core::vector2df(1.0f / UserConfigParams::m_width,
                                      1.0f / UserConfigParams::m_height);
 
-    irr_driver->getFBO(FBO_MLAA_TMP).bind();
-    glEnable(GL_STENCIL_TEST);
+    // Clear results buffer
+    mlaa_results_framebuffer.bind();
     glClearColor(0.0, 0.0, 0.0, 1.0);
-    glClear(GL_STENCIL_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
-    glStencilFunc(GL_ALWAYS, 1, ~0);
-    glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-
-    // Pass 1: color edge detection
-    MLAAColorEdgeDetectionSHader::getInstance()->render(PIXEL_SIZE);
-
-    glStencilFunc(GL_EQUAL, 1, ~0);
-    glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-
-    // Pass 2: blend weights
-    irr_driver->getFBO(FBO_MLAA_BLEND).bind();
     glClear(GL_COLOR_BUFFER_BIT);
 
-    MLAABlendWeightSHader::getInstance()->render(m_areamap, PIXEL_SIZE);
+    // Pass 1: color edge detection
+    // Detects geometric edges by looking for color discontinuities in the source image. (mlaa_color_in_framebuffer)
+    // This identifies which pixels lie on jagged edges that need MLAA smoothing.
+    MLAAColorEdgeDetectionSHader::getInstance()->render(PIXEL_SIZE, mlaa_color_in_framebuffer.getRTT()[0]);
 
-    // Blit in to tmp1
-    FrameBuffer::Blit(irr_driver->getFBO(FBO_MLAA_COLORS),
-                      irr_driver->getFBO(FBO_MLAA_TMP));
+    // Pass 2: blend weights
+    // Converts the edge map into per-pixel blend weights using the precomputed MLAA area lookup texture (m_areamap).
+    // These weights encode how to blend with neighboring pixels to smooth each edge.
+    mlaa_blend_framebuffer.bind();
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    MLAABlendWeightSHader::getInstance()->render(m_areamap, PIXEL_SIZE, mlaa_results_framebuffer.getRTT()[0]);
+
+    // Blit scene color buffer into tmp
+    FrameBuffer::blit(mlaa_color_in_framebuffer,
+                      mlaa_results_framebuffer);
 
     // Pass 3: gather
-    irr_driver->getFBO(FBO_MLAA_COLORS).bind();
-    MLAAGatherSHader::getInstance()->render(PIXEL_SIZE);
+    // Applies the blend weights(mlaa_blend_framebuffer) to the source color(mlaa_color_in_framebuffer)
+    // for each pixel near an edge, samples from appropriate neighbors and blends them according to the weights.
+    // Pixels away from edges are left essentially unchanged.
+    mlaa_results_framebuffer.bind();
+    MLAAGatherSHader::getInstance()
+        ->render(PIXEL_SIZE, mlaa_blend_framebuffer.getRTT()[0], mlaa_color_in_framebuffer.getRTT()[0]);
 
-    // Done.
-    glDisable(GL_STENCIL_TEST);
 }   // applyMLAA
 
 // ----------------------------------------------------------------------------
@@ -1434,123 +1131,76 @@ void PostProcessing::renderLightning(core::vector3df intensity)
     glEnable(GL_BLEND);
     glBlendFunc(GL_ONE, GL_ONE);
     glBlendEquation(GL_FUNC_ADD);
-       
+
     LightningShader::getInstance()->render(intensity);
-    
+
     glDisable(GL_BLEND);
 }
 
 // ----------------------------------------------------------------------------
 /** Render the post-processed scene */
 FrameBuffer *PostProcessing::render(scene::ICameraSceneNode * const camnode,
-                                    bool isRace)
+                                    bool isRace,
+                                    RTT *rtts)
 {
-    FrameBuffer *in_fbo = &irr_driver->getFBO(FBO_COLORS);
-    FrameBuffer *out_fbo = &irr_driver->getFBO(FBO_TMP1_WITH_DS);
-    // Each effect uses these as named, and sets them up for the next effect.
-    // This allows chaining effects where some may be disabled.
+    // Set of ping pong buffers to feed to the post processing passes.
+    //
+    // Ping-Ponging refers to the technique where we alternate between two texture buffers to
+    // perform the multiple passes of rendering here without causing data hazards. one buffer acts
+    // as the read-only source while the other serves as the write-only destination.
+    // After each rendering pass (that wrote to out_fbo), we swap the buffer pointers,
+    // turning the previous output into the next input.
+    //
+    // The general convention is for:
+    // - in_fbo to be the input buffer
+    // - out_fbo to be used as either: a temporary or the resulting output buffer.
+    //
+    // Two kinds of effect share this chain:
+    // - filters (DoF, motion blur, MLAA) derive a new image from the current one
+    //   after rendering we use std::swap to flip in/out around.
+    //   (i.e. the output of the last effect is now the input of the next effect.)
+    //
+    // - accumulators (god rays, bloom, lens flare, lightning) add a
+    //   contribution computed from something other than the image (the sun,
+    //   the bright pass, the weather): they bind *in_fbo and draw with
+    //   additive blending in place. (no need to swap).
+    //
+    // All effects are optional except the tonemapping stage.
+    FrameBuffer *in_fbo = &rtts->getFBO(FBO_COLORS);
+    FrameBuffer *out_fbo = &rtts->getFBO(FBO_TMP1_WITH_DS);
 
-    // As the original color shouldn't be touched, the first effect
-    // can't be disabled.
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
 
-    World *world = World::getWorld();
-    Physics *physics = world ? world->getPhysics() : NULL;
-
+    Physics *physics = Physics::get();
 
     if (isRace && UserConfigParams::m_dof && (physics == NULL || !physics->isDebug()))
     {
-        PROFILER_PUSH_CPU_MARKER("- DoF", 0xFF, 0x00, 0x00);
+        PROFILER_PUSH_CPU_MARKER("-- DoF", 0xFF, 0x00, 0x00);
         ScopedGPUTimer Timer(irr_driver->getGPUTimer(Q_DOF));
-        renderDoF(*out_fbo, in_fbo->getRTT()[0]);
+        renderDoF(*out_fbo, in_fbo->getRTT()[0], rtts->getDepthStencilTexture());
         std::swap(in_fbo, out_fbo);
         PROFILER_POP_CPU_MARKER();
     }
 
+    bool hasgodrays = false;
+    const Track * const track = Track::getCurrentTrack();
+    if (track)
+        hasgodrays = track->hasGodRays();
+
+    if (isRace && UserConfigParams::m_light_shaft && hasgodrays)
     {
-        PROFILER_PUSH_CPU_MARKER("- Godrays", 0xFF, 0x00, 0x00);
+        PROFILER_PUSH_CPU_MARKER("-- Godrays", 0xFF, 0x00, 0x00);
         ScopedGPUTimer Timer(irr_driver->getGPUTimer(Q_GODRAYS));
-        bool hasgodrays = false;
-        if (World::getWorld() != NULL)
-            hasgodrays = World::getWorld()->getTrack()->hasGodRays();
-
-        if (isRace && UserConfigParams::m_light_shaft && hasgodrays)
-        {
-            Track* track = World::getWorld()->getTrack();
-
-            glEnable(GL_DEPTH_TEST);
-            // Grab the sky
-            out_fbo->bind();
-            glClear(GL_COLOR_BUFFER_BIT);
-//            irr_driver->renderSkybox(camnode);
-
-            // Set the sun's color
-            const SColor col = track->getGodRaysColor();
-
-            // The sun interposer
-            STKMeshSceneNode *sun = irr_driver->getSunInterposer();
-            sun->setGlowColors(col);
-            sun->setPosition(track->getGodRaysPosition());
-            sun->updateAbsolutePosition();
-            irr_driver->setPhase(GLOW_PASS);
-            sun->render();
-            glDisable(GL_DEPTH_TEST);
-
-            // Fade to quarter
-            irr_driver->getFBO(FBO_QUARTER1).bind();
-            glViewport(0, 0, irr_driver->getActualScreenSize().Width / 4,
-                             irr_driver->getActualScreenSize().Height / 4);
-            GodFadeShader::getInstance()->render(out_fbo->getRTT()[0], col);
-
-            // Blur
-            renderGaussian3Blur(irr_driver->getFBO(FBO_QUARTER1),
-                                irr_driver->getFBO(FBO_QUARTER2));
-
-            // Calculate the sun's position in texcoords
-            const core::vector3df pos = track->getGodRaysPosition();
-            float ndc[4];
-            core::matrix4 trans = camnode->getProjectionMatrix();
-            trans *= camnode->getViewMatrix();
-
-            trans.transformVect(ndc, pos);
-
-            const float texh = 
-                m_vertices[0].v1.TCoords.Y - m_vertices[0].v0.TCoords.Y;
-            const float texw = 
-                m_vertices[0].v3.TCoords.X - m_vertices[0].v0.TCoords.X;
-
-            const float sunx = ((ndc[0] / ndc[3]) * 0.5f + 0.5f) * texw;
-            const float suny = ((ndc[1] / ndc[3]) * 0.5f + 0.5f) * texh;
-
-            // Rays please
-            irr_driver->getFBO(FBO_QUARTER2).bind();
-            GodRayShader::getInstance()
-                ->render(irr_driver->getRenderTargetTexture(RTT_QUARTER1),
-                       core::vector2df(sunx, suny)                       );
-
-            // Blur
-            renderGaussian3Blur(irr_driver->getFBO(FBO_QUARTER2),
-                                irr_driver->getFBO(FBO_QUARTER1));
-
-            // Blend
-            glEnable(GL_BLEND);
-            glBlendColor(0., 0., 0., track->getGodRaysOpacity());
-            glBlendFunc(GL_CONSTANT_ALPHA, GL_ONE);
-            glBlendEquation(GL_FUNC_ADD);
-
-            in_fbo->bind();
-            renderPassThrough(irr_driver->getRenderTargetTexture(RTT_QUARTER2),
-                              in_fbo->getWidth(), in_fbo->getHeight());
-            glDisable(GL_BLEND);
-        }
+        renderGodRays(camnode, *in_fbo, rtts->getFBO(FBO_RGBA_1),
+            rtts->getFBO(FBO_QUARTER1), rtts->getFBO(FBO_QUARTER2));
+        // additive blend, specifically no ping/pong std::swap
         PROFILER_POP_CPU_MARKER();
     }
 
     // Simulate camera defects from there
-
     {
-        PROFILER_PUSH_CPU_MARKER("- Bloom", 0xFF, 0x00, 0x00);
+        PROFILER_PUSH_CPU_MARKER("-- Bloom", 0xFF, 0x00, 0x00);
         ScopedGPUTimer Timer(irr_driver->getGPUTimer(Q_BLOOM));
 
         if (isRace && UserConfigParams::m_bloom && (physics == NULL || !physics->isDebug()))
@@ -1558,126 +1208,140 @@ FrameBuffer *PostProcessing::render(scene::ICameraSceneNode * const camnode,
             glClear(GL_STENCIL_BUFFER_BIT);
             glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE);
 
-            FrameBuffer::Blit(*in_fbo, irr_driver->getFBO(FBO_BLOOM_1024),
+            FrameBuffer::blit(*in_fbo, rtts->getFBO(FBO_BLOOM_1024),
                               GL_COLOR_BUFFER_BIT, GL_LINEAR);
 
-            irr_driver->getFBO(FBO_BLOOM_512).bind();
-            renderBloom(irr_driver->getRenderTargetTexture(RTT_BLOOM_1024));
+            rtts->getFBO(FBO_BLOOM_512).bind();
+            renderBloom(rtts->getRenderTarget(RTT_BLOOM_1024));
+
+
 
             // Downsample
-            FrameBuffer::Blit(irr_driver->getFBO(FBO_BLOOM_512),
-                              irr_driver->getFBO(FBO_BLOOM_256), 
+            FrameBuffer::blit(rtts->getFBO(FBO_BLOOM_512),
+                              rtts->getFBO(FBO_BLOOM_256),
                               GL_COLOR_BUFFER_BIT, GL_LINEAR);
-            FrameBuffer::Blit(irr_driver->getFBO(FBO_BLOOM_256),
-                              irr_driver->getFBO(FBO_BLOOM_128),
+            FrameBuffer::blit(rtts->getFBO(FBO_BLOOM_256),
+                              rtts->getFBO(FBO_BLOOM_128),
                               GL_COLOR_BUFFER_BIT, GL_LINEAR);
 
-			// Copy for lens flare
-			FrameBuffer::Blit(irr_driver->getFBO(FBO_BLOOM_512),
-                              irr_driver->getFBO(FBO_LENS_512), 
+            // Copy for lens flare
+            FrameBuffer::blit(rtts->getFBO(FBO_BLOOM_512),
+                              rtts->getFBO(FBO_LENS_512),
                               GL_COLOR_BUFFER_BIT, GL_LINEAR);
-			FrameBuffer::Blit(irr_driver->getFBO(FBO_BLOOM_256),
-                              irr_driver->getFBO(FBO_LENS_256),
+            FrameBuffer::blit(rtts->getFBO(FBO_BLOOM_256),
+                              rtts->getFBO(FBO_LENS_256),
                               GL_COLOR_BUFFER_BIT, GL_LINEAR);
-			FrameBuffer::Blit(irr_driver->getFBO(FBO_BLOOM_128),
-                              irr_driver->getFBO(FBO_LENS_128),
+            FrameBuffer::blit(rtts->getFBO(FBO_BLOOM_128),
+                              rtts->getFBO(FBO_LENS_128),
                               GL_COLOR_BUFFER_BIT, GL_LINEAR);
-			
+
 
             // Blur
-            renderGaussian6Blur(irr_driver->getFBO(FBO_BLOOM_512),
-                                irr_driver->getFBO(FBO_TMP_512), 1., 1.);
-            renderGaussian6Blur(irr_driver->getFBO(FBO_BLOOM_256),
-                                irr_driver->getFBO(FBO_TMP_256), 1., 1.);
-            renderGaussian6Blur(irr_driver->getFBO(FBO_BLOOM_128),
-                                irr_driver->getFBO(FBO_TMP_128), 1., 1.);
+            renderGaussian6Blur(rtts->getFBO(FBO_BLOOM_512),
+                                rtts->getFBO(FBO_TMP_512), 1., 1.);
+            renderGaussian6Blur(rtts->getFBO(FBO_BLOOM_256),
+                                rtts->getFBO(FBO_TMP_256), 1., 1.);
+            renderGaussian6Blur(rtts->getFBO(FBO_BLOOM_128),
+                                rtts->getFBO(FBO_TMP_128), 1., 1.);
 
-            renderHorizontalBlur(irr_driver->getFBO(FBO_LENS_512), 
-                                 irr_driver->getFBO(FBO_TMP_512));
-            renderHorizontalBlur(irr_driver->getFBO(FBO_LENS_256),
-                                 irr_driver->getFBO(FBO_TMP_256));
-            renderHorizontalBlur(irr_driver->getFBO(FBO_LENS_128), 
-                                 irr_driver->getFBO(FBO_TMP_128));
-            
+            renderHorizontalBlur(rtts->getFBO(FBO_LENS_512),
+                                 rtts->getFBO(FBO_TMP_512));
+            renderHorizontalBlur(rtts->getFBO(FBO_LENS_256),
+                                 rtts->getFBO(FBO_TMP_256));
+            renderHorizontalBlur(rtts->getFBO(FBO_LENS_128),
+                                 rtts->getFBO(FBO_TMP_128));
 
             // Additively blend on top of tmp1
             in_fbo->bind();
             glEnable(GL_BLEND);
             glBlendFunc(GL_ONE, GL_ONE);
             glBlendEquation(GL_FUNC_ADD);
-            
-            BloomBlendShader::getInstance()->render();
-            LensBlendShader::getInstance()->render();
+
+            BloomBlendShader::getInstance()
+                ->render(rtts->getRenderTarget(RTT_BLOOM_128),
+                         rtts->getRenderTarget(RTT_BLOOM_256),
+                         rtts->getRenderTarget(RTT_BLOOM_512));
+            LensBlendShader::getInstance()
+                ->render(rtts->getRenderTarget(RTT_LENS_128),
+                         rtts->getRenderTarget(RTT_LENS_256),
+                         rtts->getRenderTarget(RTT_LENS_512));
 
             glDisable(GL_BLEND);
             glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            // additive blend, specifically no ping/pong std::swap
         } // end if bloom
         PROFILER_POP_CPU_MARKER();
     }
 
-    //computeLogLuminance(in_rtt);
+    // Tonemap from HDR to SDR - switching from RGBA16 over to RGBA8 framebuffers afterwards.
     {
-        PROFILER_PUSH_CPU_MARKER("- Tonemap", 0xFF, 0x00, 0x00);
+        PROFILER_PUSH_CPU_MARKER("-- Tonemap", 0xFF, 0x00, 0x00);
         ScopedGPUTimer Timer(irr_driver->getGPUTimer(Q_TONEMAP));
-		// only enable vignette during race
-        ToneMapShader::getInstance()->render(*out_fbo, in_fbo->getRTT()[0],
-                                             isRace ? 1.0f : 0.0f);
-        std::swap(in_fbo, out_fbo);
+        // only enable vignette during race
+
+        ToneMapShader::getInstance()->render(
+            rtts->getFBO(FBO_RGBA_1),   //out
+            in_fbo->getRTT()[0],        //in
+            isRace ? 1.0f : 0.0f
+        );
+        PROFILER_POP_CPU_MARKER();
+    }
+
+    // Rest of post processing in SDR
+    in_fbo = &rtts->getFBO(FBO_RGBA_1);
+    out_fbo = &rtts->getFBO(FBO_RGBA_2);
+
+    {
+        PROFILER_PUSH_CPU_MARKER("-- Speed streaks", 0xFF, 0x00, 0x00);
+        ScopedGPUTimer Timer(irr_driver->getGPUTimer(Q_SPEEDSTREAKS));
+        if (isRace && World::getWorld() && UserConfigParams::m_speed_streaks)
+        {
+            in_fbo->bind();
+            renderSpeedStreaks();
+            // additive blend, specifically no ping/pong std::swap
+        }
         PROFILER_POP_CPU_MARKER();
     }
 
     {
-        PROFILER_PUSH_CPU_MARKER("- Motion blur", 0xFF, 0x00, 0x00);
+        PROFILER_PUSH_CPU_MARKER("-- Motion blur", 0xFF, 0x00, 0x00);
         ScopedGPUTimer Timer(irr_driver->getGPUTimer(Q_MOTIONBLUR));
-        MotionBlurProvider * const cb = 
-            (MotionBlurProvider *)Shaders::getCallback(ES_MOTIONBLUR);
 
         if (isRace && UserConfigParams::m_motionblur && World::getWorld() &&
-            cb->getBoostTime(Camera::getActiveCamera()->getIndex()) > 0.) // motion blur
+            m_boost_time.at(Camera::getActiveCamera()->getIndex()) > 0.0f) // motion blur
         {
-            renderMotionBlur(0, *in_fbo, *out_fbo);
+            renderMotionBlur(*in_fbo, *out_fbo, irr_driver->getDepthStencilTexture());
             std::swap(in_fbo, out_fbo);
         }
         PROFILER_POP_CPU_MARKER();
     }
-    
+
     // Handle lightning rendering
     {
-        PROFILER_PUSH_CPU_MARKER("- Lightning", 0xFF, 0x00, 0x00);
+        PROFILER_PUSH_CPU_MARKER("-- Lightning", 0xFF, 0x00, 0x00);
         ScopedGPUTimer Timer(irr_driver->getGPUTimer(Q_LIGHTNING));
-        if (World::getWorld() != NULL)
+        Weather* weather = Weather::getInstance();
+        if (weather && weather->shouldLightning())
         {
-            Weather* m_weather = World::getWorld()->getWeather();
-            
-            if (m_weather != NULL && m_weather->shouldLightning())
-            {
-                renderLightning(m_weather->getIntensity());
-            }
+            in_fbo->bind();
+            renderLightning(weather->getIntensity());
+            // additive blend, specifically no ping/pong std::swap
         }
         PROFILER_POP_CPU_MARKER();
     }
 
-    // Workaround a bug with srgb fbo on sandy bridge windows
-    if (!CVS->isARBUniformBufferObjectUsable())
-        return in_fbo;
-
-#ifndef ANDROID
-    glEnable(GL_FRAMEBUFFER_SRGB);
-    irr_driver->getFBO(FBO_MLAA_COLORS).bind();
-    renderPassThrough(in_fbo->getRTT()[0],
-                      irr_driver->getFBO(FBO_MLAA_COLORS).getWidth(),
-                      irr_driver->getFBO(FBO_MLAA_COLORS).getHeight());
-    out_fbo = &irr_driver->getFBO(FBO_MLAA_COLORS);
-
     if (UserConfigParams::m_mlaa) // MLAA. Must be the last pp filter.
     {
-        PROFILER_PUSH_CPU_MARKER("- MLAA", 0xFF, 0x00, 0x00);
+        PROFILER_PUSH_CPU_MARKER("-- MLAA", 0xFF, 0x00, 0x00);
         ScopedGPUTimer Timer(irr_driver->getGPUTimer(Q_MLAA));
-        applyMLAA();
+        applyMLAA(*in_fbo,
+                  rtts->getFBO(FBO_RGBA_3),
+                  *out_fbo);
+        std::swap(in_fbo, out_fbo);
         PROFILER_POP_CPU_MARKER();
     }
-    glDisable(GL_FRAMEBUFFER_SRGB);
-#endif
 
-    return out_fbo;
+    return in_fbo;
 }   // render
+
+#endif   // !SERVER_ONLY

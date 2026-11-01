@@ -71,11 +71,7 @@ namespace scene
 		//! Preforms a software skin on this mesh based of joint positions
 		virtual void skinMesh(f32 strength=1.f) = 0;
 
-		//! converts the vertex type of all meshbuffers to tangents.
-		/** E.g. used for bump mapping. */
-		virtual void convertMeshToTangents() = 0;
-
-		//! Allows to enable hardware skinning.
+		//! Allows one to enable hardware skinning.
 		/* This feature is not implementated in Irrlicht yet */
 		virtual bool setHardwareSkinning(bool on) = 0;
 
@@ -188,9 +184,6 @@ namespace scene
 
 		//! exposed for loaders: joints list
 		virtual const core::array<SJoint*>& getAllJoints() const = 0;
-
-		//! loaders should call this after populating the mesh
-		virtual void finalize() = 0;
 
 		//! Adds a new meshbuffer to the mesh, access it as last one
 		virtual SSkinMeshBuffer* addMeshBuffer() = 0;

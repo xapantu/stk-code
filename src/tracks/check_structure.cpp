@@ -23,9 +23,11 @@
 #include "karts/abstract_kart.hpp"
 #include "modes/linear_world.hpp"
 #include "modes/world.hpp"
+#include "network/network_string.hpp"
 #include "race/race_manager.hpp"
 #include "tracks/check_lap.hpp"
 #include "tracks/check_manager.hpp"
+#include "tracks/track.hpp"
 
 #include <algorithm>
 
@@ -73,6 +75,15 @@ CheckStructure::CheckStructure(const XMLNode &node, unsigned int index)
 }   // CheckStructure
 
 // ----------------------------------------------------------------------------
+CheckStructure::CheckStructure()
+              : m_active_at_reset(true),
+                m_index(Track::getCurrentTrack()->getCheckManager()
+                ->getCheckStructureCount()),
+                m_check_type(CT_TRIGGER)
+{
+}   // CheckStructure
+
+// ----------------------------------------------------------------------------
 /** Initialises the 'previous positions' of all karts with the start position
  *  defined for this track.
  *  \param track The track object defining the start positions.
@@ -100,6 +111,7 @@ void CheckStructure::reset(const Track &track)
 void CheckStructure::update(float dt)
 {
     World *world = World::getWorld();
+    LinearWorld* lw = dynamic_cast<LinearWorld*>(World::getWorld());
     for(unsigned int i=0; i<world->getNumKarts(); i++)
     {
         const Vec3 &xyz = world->getKart(i)->getFrontXYZ();
@@ -108,9 +120,13 @@ void CheckStructure::update(float dt)
         if(m_is_active[i] && isTriggered(m_previous_position[i], xyz, i))
         {
             if(UserConfigParams::m_check_debug)
-                Log::info("CheckStructure", "Check structure %d triggered for kart %s.",
-                          m_index, world->getKart(i)->getIdent().c_str());
+                Log::info("CheckStructure",
+                          "Check structure %d triggered for kart %s at %f.",
+                          m_index, world->getKart(i)->getIdent().c_str(),
+                          World::getWorld()->getTime());
             trigger(i);
+            if (triggeringCheckline() && lw)
+                lw->updateCheckLinesServer(getIndex(), i);
         }
         m_previous_position[i] = xyz;
     }   // for i<getNumKarts
@@ -128,14 +144,17 @@ void CheckStructure::changeStatus(const std::vector<int> &indices,
                                   int kart_index,
                                   ChangeState change_state)
 {
+    int player_kart_index = 0;
+    if (World::getWorld()->getPlayerKart(0))
+        player_kart_index = World::getWorld()->getPlayerKart(0)->getWorldKartId();
     bool update_debug_colors =
-        UserConfigParams::m_check_debug &&
-        kart_index == (int)World::getWorld()->getPlayerKart(0)->getWorldKartId();
+        UserConfigParams::m_check_debug && RaceManager::get()->getNumPlayers()>0 &&
+        kart_index == player_kart_index;
 
+    CheckManager* cm = Track::getCurrentTrack()->getCheckManager();
     for(unsigned int i=0; i<indices.size(); i++)
     {
-        CheckStructure *cs =
-            CheckManager::get()->getCheckStructure(indices[i]);
+        CheckStructure *cs = cm->getCheckStructure(indices[i]);
         if (cs == NULL) continue;
 
         switch(change_state)
@@ -181,9 +200,9 @@ void CheckStructure::changeStatus(const std::vector<int> &indices,
 
     /*
     printf("--------\n");
-    for (int n=0; n<CheckManager::get()->getCheckStructureCount(); n++)
+    for (int n=0; n<m->getCheckStructureCount(); n++)
     {
-        CheckStructure *cs = CheckManager::get()->getCheckStructure(n);
+        CheckStructure *cs = cm->getCheckStructure(n);
         if (dynamic_cast<CheckLap*>(cs) != NULL)
             printf("Checkline %i (LAP) : %i\n", n, (int)cs->m_is_active[kart_index]);
         else
@@ -226,3 +245,39 @@ void CheckStructure::trigger(unsigned int kart_index)
     }   // switch m_check_type
     changeStatus(m_same_group, kart_index, CS_DEACTIVATE);
 }   // trigger
+
+// ----------------------------------------------------------------------------
+void CheckStructure::saveCompleteState(BareNetworkString* bns)
+{
+    World* world = World::getWorld();
+    for (unsigned int i = 0; i < world->getNumKarts(); i++)
+        bns->add(m_previous_position[i]).addUInt8(m_is_active[i] ? 1 : 0);
+}   // saveCompleteState
+
+// ----------------------------------------------------------------------------
+void CheckStructure::restoreCompleteState(const BareNetworkString& b)
+{
+    m_previous_position.clear();
+    m_is_active.clear();
+    World* world = World::getWorld();
+    for (unsigned int i = 0; i < world->getNumKarts(); i++)
+    {
+        Vec3 xyz = b.getVec3();
+        bool is_active = b.getUInt8() == 1;
+        m_previous_position.push_back(xyz);
+        m_is_active.push_back(is_active);
+    }
+}   // restoreCompleteState
+
+// ----------------------------------------------------------------------------
+void CheckStructure::saveIsActive(int kart_id, BareNetworkString* bns)
+{
+    bns->addUInt8(m_is_active[kart_id] ? 1 : 0);
+}   // saveIsActive
+
+// ----------------------------------------------------------------------------
+void CheckStructure::restoreIsActive(int kart_id, const BareNetworkString& b)
+{
+    bool is_active = b.getUInt8() == 1;
+    m_is_active.at(kart_id) = is_active;
+}   // restoreIsActive

@@ -22,6 +22,7 @@
 
 #include "guiengine/screen.hpp"
 #include "race/grand_prix_data.hpp"
+#include "guiengine/CGUISpriteBank.hpp"
 
 #include <vector>
 
@@ -31,6 +32,7 @@ namespace GUIEngine
 {
     class IconButtonWidget;
     class SpinnerWidget;
+    class ListWidget;
 }
 
 /**
@@ -53,6 +55,12 @@ private:
     /** Spinner for number of AI karts. */
     GUIEngine::SpinnerWidget* m_ai_kart_spinner;
 
+    /** Spinner for time target in Lap Trial */
+    GUIEngine::SpinnerWidget* m_time_target_spinner;
+
+    /** List with last 5 highscores */
+    GUIEngine::ListWidget* m_highscore_list;
+
     /** The currently selected group name. */
     std::string m_group_name;
 
@@ -62,8 +70,15 @@ private:
     /** Number of available tracks */
     int m_max_num_tracks;
 
+    irr::gui::STKModifiedSpriteBank* m_icon_bank;
+    /** Icon for unknown kart in highscore list */
+    int m_unknown_kart_icon;
+
     /** Get number of available tracks for random GPs */
     int getMaxNumTracks(std::string group);
+
+    /** Load highscores for grandprix */
+    void updateHighscores();
 
 protected: // Necessary for RandomGPInfoScreen
     float m_curr_time;
@@ -96,6 +111,7 @@ public:
     virtual void onUpdate(float dt) OVERRIDE;
 
     void setGP(const std::string &gp_ident);
+    virtual void unloaded() OVERRIDE;
 };   // GPInfoScreen
 
 #endif

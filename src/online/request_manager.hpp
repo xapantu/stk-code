@@ -21,25 +21,18 @@
 #ifndef HEADER_REQUEST_MANAGER_HPP
 #define HEADER_REQUEST_MANAGER_HPP
 
-#include "io/xml_node.hpp"
 #include "online/request.hpp"
 #include "utils/can_be_deleted.hpp"
-#include "utils/string_utils.hpp"
 #include "utils/synchronised.hpp"
 
 #include <irrString.h>
 
 #include <string>
-#ifdef WIN32
-#  define WIN32_LEAN_AND_MEAN
-#  include <winsock2.h>
-#endif
-
-#ifndef NO_CURL
-#  include <curl/curl.h>
-#endif
+#include <atomic>
+#include <condition_variable>
+#include <memory>
 #include <queue>
-#include <pthread.h>
+#include <thread>
 
 namespace Online
 {
@@ -92,18 +85,22 @@ namespace Online
             IPERM_ALLOWED     = 1,
             IPERM_NOT_ALLOWED = 2
         };
+        static bool m_disable_polling;
     private:
             /** Time passed since the last poll request. */
             float                     m_time_since_poll;
 
             /** The current requested being worked on. */
-            Online::Request *         m_current_request;
+            std::shared_ptr<Online::Request> m_current_request;
 
             /** A conditional variable to wake up the main loop. */
-            pthread_cond_t            m_cond_request;
+            std::condition_variable   m_condition_variable;
 
             /** Signal an abort in case that a download is still happening. */
             Synchronised<bool>        m_abort;
+
+            /** Signal an pause before STK goes into background in iOS. */
+            std::atomic_bool m_paused;
 
             /** The polling interval while a game is running. */
             float m_game_polling_interval;
@@ -112,13 +109,13 @@ namespace Online
             float m_menu_polling_interval;
 
             /** Thread id of the thread running in this object. */
-            Synchronised<pthread_t *> m_thread_id;
+            std::thread m_thread;
 
             /** The list of pointers to all requests that still need to be
              *  handled. */
             Synchronised< std::priority_queue <
-                                                Online::Request*,
-                                                std::vector<Online::Request*>,
+                                                std::shared_ptr<Online::Request>,
+                                                std::vector<std::shared_ptr<Online::Request> >,
                                                 Online::Request::Compare
                                                >
                         >  m_request_queue;
@@ -126,12 +123,12 @@ namespace Online
             /** The list of pointers to all requests that are already executed
              *  by the networking thread, but still need to be processed by the
              *  main thread. */
-            Synchronised< std::queue<Online::Request*> >    m_result_queue;
+            Synchronised< std::queue<std::shared_ptr<Online::Request> > >    m_result_queue;
 
-            void addResult(Online::Request *request);
+            void addResult(std::shared_ptr<Online::Request> request);
             void handleResultQueue();
 
-            static void *mainLoop(void *obj);
+            static void mainLoop(void *obj);
 
             RequestManager(); //const std::string &url
             ~RequestManager();
@@ -157,11 +154,13 @@ namespace Online
             static void deallocate();
             static bool isRunning();
 
-            void addRequest(Online::Request *request);
+            void addRequest(std::shared_ptr<Online::Request> request);
             void startNetworkThread();
             void stopNetworkThread();
 
             bool getAbort() { return m_abort.getAtomic(); }
+            bool getPaused() { return m_paused.load(); }
+            void setPaused(bool val) { m_paused.store(val); }
             void update(float dt);
 
             // ----------------------------------------------------------------

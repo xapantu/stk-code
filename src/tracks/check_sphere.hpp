@@ -48,7 +48,7 @@ public:
                  CheckSphere(const XMLNode &node, unsigned int index);
     virtual     ~CheckSphere() {};
     virtual bool isTriggered(const Vec3 &old_pos, const Vec3 &new_pos,
-                             unsigned int kart_id);
+                             int kart_id);
     // ------------------------------------------------------------------------
     /** Returns if kart indx is currently inside of the sphere. */
     bool isInside(int index) const            { return m_is_inside[index]; }
@@ -59,6 +59,8 @@ public:
     // -------------------------------------------------------------------------
     /** Returns the square of the radius of this sphere. */
     float getRadius2() const { return m_radius2; }
+    // ------------------------------------------------------------------------
+    virtual CheckStructure* clone()          { return new CheckSphere(*this); }
 };   // CheckSphere
 
 #endif

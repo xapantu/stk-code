@@ -21,6 +21,7 @@
 #define HEADER_EXPLOSION_HPP
 
 #include "graphics/hit_sfx.hpp"
+#include "utils/cpp2011.hpp"
 #include "utils/no_copy.hpp"
 
 namespace irr
@@ -31,9 +32,10 @@ using namespace irr;
 
 class Vec3;
 class SFXBase;
-class ParticleEmitter;
 
-const float explosion_time = 2.0f;
+#ifndef SERVER_ONLY
+class ParticleEmitter;
+#endif
 
 /**
   * \ingroup graphics
@@ -41,15 +43,24 @@ const float explosion_time = 2.0f;
 class Explosion : public HitSFX
 {
 private:
-    float            m_remaining_time;
+    int              m_remaining_ticks;
     int              m_emission_frames;
+
+#ifndef SERVER_ONLY
     ParticleEmitter* m_emitter;
+#endif
+
+    int              m_explosion_ticks;
+
 
 public:
          Explosion(const Vec3& coord, const char* explosion_sound, const char * particle_file );
         ~Explosion();
-    bool updateAndDelete(float delta_t);
-    bool hasEnded () { return  m_remaining_time <= -explosion_time;  }
+    bool updateAndDelete(int ticks) OVERRIDE;
+    bool hasEnded ()
+    {
+        return  m_remaining_ticks <= -m_explosion_ticks;
+    }
 
 } ;
 

@@ -38,33 +38,49 @@
 #include "tracks/track.hpp"
 #include "tracks/track_object_manager.hpp"
 
+#ifdef ANDROID
+#include <SDL_system.h>
+#endif
+
 //-----------------------------------------------------------------------------
-OverWorld::OverWorld() : WorldWithRank()
+OverWorld::OverWorld() : World()
 {
     m_return_to_garage            = false;
     m_stop_music_when_dialog_open = false;
+    m_play_track_intro_sound      = false;
 }   // Overworld
 
 //-----------------------------------------------------------------------------
 OverWorld::~OverWorld()
 {
     Vec3 kart_xyz = getKart(0)->getXYZ();
-    race_manager->setKartLastPositionOnOverworld(kart_xyz);
+    RaceManager::get()->setKartLastPositionOnOverworld(kart_xyz);
 }   // ~OverWorld
 
 //-----------------------------------------------------------------------------
 /** Function to simplify the start process */
 void OverWorld::enterOverWorld()
 {
-    race_manager->setNumPlayers(1);
-    race_manager->setMajorMode (RaceManager::MAJOR_MODE_SINGLE);
-    race_manager->setMinorMode (RaceManager::MINOR_MODE_OVERWORLD);
-    race_manager->setNumKarts( 1 );
-    race_manager->setTrack( "overworld" );
-    race_manager->setDifficulty(RaceManager::DIFFICULTY_HARD);
+    // update point count and the list of locked/unlocked stuff
+    PlayerManager::getCurrentPlayer()->computeActive();
 
-    // Use keyboard 0 by default (FIXME: let player choose?)
-    InputDevice* device = input_manager->getDeviceManager()->getKeyboard(0);
+    RaceManager::get()->setNumPlayers(1);
+    RaceManager::get()->setMajorMode (RaceManager::MAJOR_MODE_SINGLE);
+    RaceManager::get()->setMinorMode (RaceManager::MINOR_MODE_OVERWORLD);
+    RaceManager::get()->setNumKarts( 1 );
+    RaceManager::get()->setTrack( "overworld" );
+
+    if (PlayerManager::getCurrentPlayer()->isLocked("difficulty_best"))
+    {
+        RaceManager::get()->setDifficulty(RaceManager::DIFFICULTY_HARD);
+    }
+    else
+    {
+        RaceManager::get()->setDifficulty(RaceManager::DIFFICULTY_BEST);
+    }
+
+    // Use the last used device
+    InputDevice* device = input_manager->getDeviceManager()->getLatestUsedDevice();
 
     // Create player and associate player with keyboard
     StateManager::get()->createActivePlayer(PlayerManager::getCurrentPlayer(),
@@ -78,7 +94,7 @@ void OverWorld::enterOverWorld()
 
         UserConfigParams::m_default_kart.revertToDefaults();
     }
-    race_manager->setPlayerKart(0, UserConfigParams::m_default_kart);
+    RaceManager::get()->setPlayerKart(0, UserConfigParams::m_default_kart);
 
     // ASSIGN should make sure that only input from assigned devices
     // is read.
@@ -87,11 +103,11 @@ void OverWorld::enterOverWorld()
         ->setSinglePlayer( StateManager::get()->getActivePlayer(0) );
 
     StateManager::get()->enterGameState();
-    race_manager->setupPlayerKartInfo();
-    race_manager->startNew(false);
-    if(race_manager->haveKartLastPositionOnOverworld()){
+    RaceManager::get()->setupPlayerKartInfo();
+    RaceManager::get()->startNew(false);
+    if(RaceManager::get()->haveKartLastPositionOnOverworld()){
             OverWorld *ow = (OverWorld*)World::getWorld();
-            ow->getKart(0)->setXYZ(race_manager->getKartLastPositionOnOverworld());
+            ow->getKart(0)->setXYZ(RaceManager::get()->getKartLastPositionOnOverworld());
             ow->moveKartAfterRescue(ow->getKart(0));
         }
     irr_driver->showPointer(); // User should be able to click on the minimap
@@ -100,9 +116,9 @@ void OverWorld::enterOverWorld()
 
 //-----------------------------------------------------------------------------
 /** General update function called once per frame.
- *  \param dt Time step size.
+ *  \param ticks Number of physics time steps - should be 1.
  */
-void OverWorld::update(float dt)
+void OverWorld::update(int ticks)
 {
     // Skip annoying waiting without a purpose
     // Make sure to do all things that would normally happen in the
@@ -112,14 +128,15 @@ void OverWorld::update(float dt)
         setPhase(RACE_PHASE);
         // Normally done in WorldStatus::update(), during phase SET_PHASE,
         // so we have to start music 'manually', since we skip all phases.
-        World::getWorld()->getTrack()->startMusic();
+        MusicInformation* mi = Track::getCurrentTrack()->getTrackMusic();
+        Track::getCurrentTrack()->startMusic();
 
         if (UserConfigParams::m_music)
-            music_manager->startMusic();
+            music_manager->startMusic(mi);
         m_karts[0]->startEngineSFX();
     }
-    WorldWithRank::update(dt);
-    WorldWithRank::updateTrack(dt);
+    World::update(ticks);
+    World::updateTrack(ticks);
     const unsigned int kart_amount  = (unsigned int)m_karts.size();
 
     // isn't it cool, on the overworld nitro is free!
@@ -151,7 +168,7 @@ void OverWorld::update(float dt)
     if (m_return_to_garage)
     {
         m_return_to_garage = false;
-        race_manager->exitRace();
+        RaceManager::get()->exitRace();
         KartSelectionScreen* s = OfflineKartSelectionScreen::getInstance();
         s->setMultiplayer(false);
         s->setFromOverworld(true);
@@ -212,7 +229,7 @@ void OverWorld::createRaceGUI()
 void OverWorld::onFirePressed(Controller* who)
 {
     const std::vector<OverworldChallenge>& challenges =
-                                                  m_track->getChallengeList();
+                                  Track::getCurrentTrack()->getChallengeList();
 
     AbstractKart* k = getKart(0);
     Vec3 kart_xyz = k->getXYZ();
@@ -229,6 +246,11 @@ void OverWorld::onFirePressed(Controller* who)
         {
             if (challenges[n].m_challenge_id == "tutorial")
             {
+#ifdef ANDROID
+                if (SDL_IsAndroidTV())
+                    return;
+#endif
+
                 scheduleTutorial();
                 return;
             }
@@ -243,11 +265,22 @@ void OverWorld::onFirePressed(Controller* who)
                 }
 
                 const unsigned int val = challenge->getNumTrophies();
-                bool unlocked = (PlayerManager::getCurrentPlayer()->getPoints() >= val);
+// Mobile STK may have less challenges available than the main version
+#ifdef MOBILE_STK
+                bool enough_challenges = true;
+#else
+                const unsigned int val2 = challenge->getNumChallenges();
+                bool enough_challenges = (PlayerManager::getCurrentPlayer()->getNumCompletedChallenges() >= val2);
+#endif
+                bool unlocked = enough_challenges && (PlayerManager::getCurrentPlayer()->getPoints() >= val);
+                
+                if (UserConfigParams::m_unlock_everything > 0)
+                    unlocked = true;
+
                 if (unlocked)
                 {
-                    race_manager->setKartLastPositionOnOverworld(kart_xyz);
-                    new SelectChallengeDialog(0.8f, 0.8f,
+                    RaceManager::get()->setKartLastPositionOnOverworld(kart_xyz);
+                    new SelectChallengeDialog(0.9f, 0.9f,
                         challenges[n].m_challenge_id);
                 }
             }
@@ -269,11 +302,11 @@ void OverWorld::onMouseClick(int x, int y)
     if(challenge)
     {
         // Use the 'get closest start point' rescue function
-        // from WorldWithRank by setting the kart's position to
+        // from World by setting the kart's position to
         // be the location of the challenge bubble.
         AbstractKart* kart = getKart(0);
         kart->setXYZ(challenge->m_position);
-        kart->getVehicle()->capSpeed(0);
+        kart->getVehicle()->setMaxSpeed(0);
 
         unsigned int index   = getRescuePositionIndex(kart);
         btTransform s        = getRescueTransform(index);

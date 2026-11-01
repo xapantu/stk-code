@@ -51,11 +51,6 @@ CDefaultSceneNodeFactory::CDefaultSceneNodeFactory(ISceneManager* mgr)
 	SupportedSceneNodeTypes.push_back(SSceneNodeTypePair(ESNT_PARTICLE_SYSTEM, "particleSystem"));
 	SupportedSceneNodeTypes.push_back(SSceneNodeTypePair(ESNT_VOLUME_LIGHT, "volumeLight"));
 	// SupportedSceneNodeTypes.push_back(SSceneNodeTypePair(ESNT_MD3_SCENE_NODE, "md3"));
-
-	// legacy, for version <= 1.4.x irr files
-	SupportedSceneNodeTypes.push_back(SSceneNodeTypePair(ESNT_CAMERA_MAYA, "cameraMaya"));
-	SupportedSceneNodeTypes.push_back(SSceneNodeTypePair(ESNT_CAMERA_FPS, "cameraFPS"));
-	SupportedSceneNodeTypes.push_back(SSceneNodeTypePair(ESNT_Q3SHADER_SCENE_NODE, "quake3Shader"));
 }
 
 
@@ -81,8 +76,6 @@ ISceneNode* CDefaultSceneNodeFactory::addSceneNode(ESCENE_NODE_TYPE type, IScene
 							4, ETPS_17, 0, true);
 	case ESNT_SKY_BOX:
 		return Manager->addSkyBoxSceneNode(0,0,0,0,0,0, parent);
-	case ESNT_SKY_DOME:
-		return Manager->addSkyDomeSceneNode(0, 16, 8, 0.9f, 2.0f, 1000.0f, parent);
 	case ESNT_SHADOW_VOLUME:
 		return 0;
 	case ESNT_OCTREE:
@@ -98,10 +91,6 @@ ISceneNode* CDefaultSceneNodeFactory::addSceneNode(ESCENE_NODE_TYPE type, IScene
 		return Manager->addDummyTransformationSceneNode(parent);
 	case ESNT_CAMERA:
 		return Manager->addCameraSceneNode(parent);
-	case ESNT_CAMERA_MAYA:
-		return Manager->addCameraSceneNodeMaya(parent);
-	case ESNT_CAMERA_FPS:
-		return Manager->addCameraSceneNodeFPS(parent);
 	case ESNT_BILLBOARD:
 		return Manager->addBillboardSceneNode(parent);
 	case ESNT_ANIMATED_MESH:

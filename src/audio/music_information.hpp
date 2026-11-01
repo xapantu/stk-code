@@ -19,6 +19,7 @@
 #ifndef HEADER_MUSIC_INFORMATION_HPP
 #define HEADER_MUSIC_INFORMATION_HPP
 
+#include <mutex>
 #include <string>
 #include <stdexcept>
 #include <vector>
@@ -52,23 +53,29 @@ private:
      *  was told not to start right away). */
     bool                    m_music_waiting;
 
-    /** If faster music is enabled at all (either separate file or using
-     *  the pitch shift approach). */
+    /** If faster music is enabled at all. */
     bool                     m_enable_fast;
 
     float                    m_gain;
 
-    /** Either time for fading faster music in, or time to change pitch. */
+    float                    m_normal_loop_start;
+    float                    m_fast_loop_start;
+    float                    m_normal_loop_end;
+    float                    m_fast_loop_end;
+
+    /** Time for fading faster music in. */
     float                    m_faster_time;
-    /** Maximum pitch for faster music. */
-    float                    m_max_pitch;
+
+    /* Avoid the temporary volume being forgotten */
+    float                    m_temporary_volume;
+
     static const int         LOOP_FOREVER=-1;
+    mutable std::mutex       m_music_mutex;
     Music                   *m_normal_music,
                             *m_fast_music;
     enum {SOUND_NORMAL,     //!< normal music is played
           SOUND_FADING,     //!< normal music fading out, faster fading in
-          SOUND_FASTER,     //!< change pitch of normal music
-          SOUND_FAST}       //!< playing faster music or max pitch reached
+          SOUND_FAST}       //!< playing faster music
                              m_mode;
     float                    m_time_since_faster;
 
@@ -76,7 +83,7 @@ private:
     // static create function must be used.
     MusicInformation (const XMLNode *root, const std::string &filename);
 
-    // Declare the following functions private, but allow the SFXManager 
+    // Declare the following functions private, but allow the SFXManager
     // to access them. This makes sure that only the sfx thread calls
     // openal/vorbis etc, and so makes it is all thread safe.
 private:
@@ -89,6 +96,8 @@ private:
     void   setDefaultVolume();
     void   switchToFastMusic();
     void   setTemporaryVolume(float volume);
+    // ------------------------------------------------------------------------
+    bool   preStart();
     // ------------------------------------------------------------------------
     /** Sets the music to be waiting, i.e. startMusic still needs to be
     *  called. Used to pre-load track music during track loading time. */
@@ -118,8 +127,6 @@ public:
     // ------------------------------------------------------------------------
     /** If available, returns the file name of the faster/last-lap music. */
     const std::string& getFastFilename() const { return m_fast_filename; }
-    // ------------------------------------------------------------------------
-    float getMaxPitch() const { return m_max_pitch; }
 
 };   // MusicInformation
 #endif

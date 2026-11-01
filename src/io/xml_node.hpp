@@ -36,6 +36,7 @@ using namespace irr;
 #include "utils/time.hpp"
 #include "utils/types.hpp"
 
+
 class InterpolationArray;
 class Vec3;
 
@@ -78,7 +79,9 @@ public:
     int get(const std::string &attribute, uint16_t *value) const;
     int get(const std::string &attribute, uint32_t *value) const;
     int get(const std::string &attribute, int64_t  *value) const;
+    int get(const std::string &attribute, uint64_t  *value) const;
     int get(const std::string &attribute, float *value) const;
+    int get(const std::string &attribute, double *value) const;
     int get(const std::string &attribute, bool *value) const;
     int get(const std::string &attribute, Vec3 *value) const;
     int get(const std::string &attribute, core::vector2df *value) const;
@@ -96,6 +99,7 @@ public:
     int getHPR(Vec3 *value) const;
 
     bool hasChildNamed(const char* name) const;
+    const std::string& getFilename() const { return m_file_name; }
 
     /** Handy functions to test the bit pattern returned by get(vector3df*).*/
     static bool hasX(int b) { return (b&1)==1; }

@@ -22,6 +22,7 @@
 #include "input/gamepad_config.hpp"
 #include "input/keyboard_config.hpp"
 #include "io/xml_node.hpp"
+#include "io/utf_writer.hpp"
 #include "utils/log.hpp"
 
 #include <SKeyMap.h>
@@ -49,7 +50,7 @@ DeviceConfig* DeviceConfig::create(const XMLNode *config)
     }
     else
     {
-        Log::error("DeviceConfig", "Incorrect type: '%s'.", 
+        Log::error("DeviceConfig", "Incorrect type: '%s'.",
                    config->getName().c_str());
         return NULL;
     }
@@ -68,6 +69,7 @@ DeviceConfig::DeviceConfig()
     m_name    = "";
     m_enabled = true;
     m_plugged = 0;
+    m_config_name= L"";
 }   // DeviceConfig
 
 // ------------------------------------------------------------------------
@@ -171,16 +173,15 @@ irr::core::stringw DeviceConfig::toString ()
  *  \param type Input type (stick button, stick motion, ...).
  *  \param id An id for this binding.
  *  \param direction In which direction the stick is moved.
- *  \param 
+ *  \param
  */
 void DeviceConfig::setBinding ( const PlayerAction      action,
                                 const Input::InputType  type,
                                 const int               id,
                                 Input::AxisDirection    direction,
-                                Input::AxisRange        range,
-                                wchar_t                 character)
+                                Input::AxisRange        range)
 {
-    m_bindings[action].set(type, id, direction, range, character);
+    m_bindings[action].set(type, id, direction, range);
 }   // setBinding
 
 //------------------------------------------------------------------------------
@@ -218,7 +219,7 @@ bool DeviceConfig::getMenuAction(Input::InputType    type,
 }   // getMenuAction
 
 //------------------------------------------------------------------------------
-/** internal helper method for DeviceConfig::getGameAction and 
+/** internal helper method for DeviceConfig::getGameAction and
  *  DeviceConfig::getMenuAction
  */
 bool DeviceConfig::doGetAction(Input::InputType    type,
@@ -286,7 +287,10 @@ bool DeviceConfig::doGetAction(Input::InputType    type,
 void DeviceConfig::save (std::ofstream& stream)
 {
     stream << "enabled=\""
-        << (m_enabled ? "true\">\n" : "false\">\n");
+        << (m_enabled ? "true\"" : "false\"")
+        << " configName=\""
+        << StringUtils::xmlEncode(m_config_name)
+        << "\">\n ";
 
     for(int n = 0; n < PA_COUNT; n++) // Start at 0?
     {
@@ -307,13 +311,14 @@ bool DeviceConfig::load(const XMLNode *config)
 {
     config->get("name", &m_name);
     config->get("enabled", &m_enabled);
+    config->getAndDecode("configName", &m_config_name);
     bool error = false;
     for(unsigned int i=0; i<config->getNumNodes(); i++)
     {
         const XMLNode *action = config->getNode(i);
         if(action->getName()!="action")
         {
-            Log::warn("DeviceConfig", "Invalid configuration '%s' - ignored.");
+            Log::warn("DeviceConfig", "Invalid configuration '%s' - ignored.", action->getName().c_str());
             continue;
         }
         std::string name;
@@ -346,5 +351,25 @@ bool DeviceConfig::load(const XMLNode *config)
     return !error;
 }   // load
 
-// ---------------------------------------------------------------------------
+
+//-----------------------------------------------------------------------------
+bool DeviceConfig::hasBindingFor(const int button_id) const
+{
+    for (int n=0; n<PA_COUNT; n++)
+    {
+        if (m_bindings[n].getId() == button_id) return true;
+    }
+    return false;
+}   // hasBindingFor
+
+//-----------------------------------------------------------------------------
+bool DeviceConfig::hasBindingFor(const int button_id, PlayerAction from,
+                                 PlayerAction to) const
+{
+    for (int n=from; n<=to; n++)
+    {
+        if (m_bindings[n].getId() == button_id) return true;
+    }
+    return false;
+}   // hasBindingFor
 

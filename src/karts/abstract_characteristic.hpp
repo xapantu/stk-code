@@ -84,6 +84,7 @@ public:
         STABILITY_CHASSIS_ANGULAR_DAMPING,
         STABILITY_DOWNWARD_IMPULSE_FACTOR,
         STABILITY_TRACK_CONNECTION_ACCEL,
+        STABILITY_ANGULAR_FACTOR,
         STABILITY_SMOOTH_FLYING_IMPULSE,
 
         // Turn
@@ -94,6 +95,7 @@ public:
         // Engine
         ENGINE_POWER,
         ENGINE_MAX_SPEED,
+        ENGINE_GENERIC_MAX_SPEED,
         ENGINE_BRAKE_FACTOR,
         ENGINE_BRAKE_TIME_INCREASE,
         ENGINE_MAX_SPEED_REVERSE_RATIO,
@@ -108,11 +110,6 @@ public:
         // Wheels
         WHEELS_DAMPING_RELAXATION,
         WHEELS_DAMPING_COMPRESSION,
-
-        // Camera
-        CAMERA_DISTANCE,
-        CAMERA_FORWARD_UP_ANGLE,
-        CAMERA_BACKWARD_UP_ANGLE,
 
         // Jump
         JUMP_ANIMATION_TIME,
@@ -130,9 +127,14 @@ public:
         PARACHUTE_FRICTION,
         PARACHUTE_DURATION,
         PARACHUTE_DURATION_OTHER,
+        PARACHUTE_DURATION_RANK_MULT,
+        PARACHUTE_DURATION_SPEED_MULT,
         PARACHUTE_LBOUND_FRACTION,
         PARACHUTE_UBOUND_FRACTION,
         PARACHUTE_MAX_SPEED,
+
+        // Friction
+        FRICTION_KART_FRICTION,
 
         // Bubblegum
         BUBBLEGUM_DURATION,
@@ -179,6 +181,7 @@ public:
         // Nitro
         NITRO_DURATION,
         NITRO_ENGINE_FORCE,
+        NITRO_ENGINE_MULT,
         NITRO_CONSUMPTION,
         NITRO_SMALL_CONTAINER,
         NITRO_BIG_CONTAINER,
@@ -187,11 +190,13 @@ public:
         NITRO_MAX,
 
         // Slipstream
-        SLIPSTREAM_DURATION,
+        SLIPSTREAM_DURATION_FACTOR,
+        SLIPSTREAM_BASE_SPEED,
         SLIPSTREAM_LENGTH,
         SLIPSTREAM_WIDTH,
-        SLIPSTREAM_COLLECT_TIME,
-        SLIPSTREAM_USE_TIME,
+        SLIPSTREAM_INNER_FACTOR,
+        SLIPSTREAM_MIN_COLLECT_TIME,
+        SLIPSTREAM_MAX_COLLECT_TIME,
         SLIPSTREAM_ADD_POWER,
         SLIPSTREAM_MIN_SPEED,
         SLIPSTREAM_MAX_SPEED_INCREASE,
@@ -227,6 +232,7 @@ public:
 public:
     AbstractCharacteristic();
     virtual ~AbstractCharacteristic() {}
+    virtual void copyFrom(const AbstractCharacteristic *other) = 0;
 
     /**
      * The process function is the core of this characteristics system.
@@ -263,6 +269,7 @@ public:
     float getStabilityChassisAngularDamping() const;
     float getStabilityDownwardImpulseFactor() const;
     float getStabilityTrackConnectionAccel() const;
+    std::vector<float> getStabilityAngularFactor() const;
     float getStabilitySmoothFlyingImpulse() const;
 
     InterpolationArray getTurnRadius() const;
@@ -271,6 +278,7 @@ public:
 
     float getEnginePower() const;
     float getEngineMaxSpeed() const;
+    float getEngineGenericMaxSpeed() const;
     float getEngineBrakeFactor() const;
     float getEngineBrakeTimeIncrease() const;
     float getEngineMaxSpeedReverseRatio() const;
@@ -282,10 +290,6 @@ public:
 
     float getWheelsDampingRelaxation() const;
     float getWheelsDampingCompression() const;
-
-    float getCameraDistance() const;
-    float getCameraForwardUpAngle() const;
-    float getCameraBackwardUpAngle() const;
 
     float getJumpAnimationTime() const;
 
@@ -299,9 +303,13 @@ public:
     float getParachuteFriction() const;
     float getParachuteDuration() const;
     float getParachuteDurationOther() const;
+    float getParachuteDurationRankMult() const;
+    float getParachuteDurationSpeedMult() const;
     float getParachuteLboundFraction() const;
     float getParachuteUboundFraction() const;
     float getParachuteMaxSpeed() const;
+
+    float getFrictionKartFriction() const;
 
     float getBubblegumDuration() const;
     float getBubblegumSpeedFraction() const;
@@ -340,6 +348,7 @@ public:
 
     float getNitroDuration() const;
     float getNitroEngineForce() const;
+    float getNitroEngineMult() const;
     float getNitroConsumption() const;
     float getNitroSmallContainer() const;
     float getNitroBigContainer() const;
@@ -347,11 +356,13 @@ public:
     float getNitroFadeOutTime() const;
     float getNitroMax() const;
 
-    float getSlipstreamDuration() const;
+    float getSlipstreamDurationFactor() const;
+    float getSlipstreamBaseSpeed() const;
     float getSlipstreamLength() const;
     float getSlipstreamWidth() const;
-    float getSlipstreamCollectTime() const;
-    float getSlipstreamUseTime() const;
+    float getSlipstreamInnerFactor() const;
+    float getSlipstreamMinCollectTime() const;
+    float getSlipstreamMaxCollectTime() const;
     float getSlipstreamAddPower() const;
     float getSlipstreamMinSpeed() const;
     float getSlipstreamMaxSpeedIncrease() const;
@@ -380,4 +391,3 @@ public:
 };
 
 #endif
-

@@ -25,7 +25,6 @@ namespace scene
 	class CSkinnedMesh: public ISkinnedMesh
 	{
 	public:
-
 		//! constructor
 		CSkinnedMesh();
 
@@ -104,14 +103,11 @@ namespace scene
 		//! Sets Interpolation Mode
 		virtual void setInterpolationMode(E_INTERPOLATION_MODE mode);
 
-		//! Convertes the mesh to contain tangent information
-		virtual void convertMeshToTangents();
-
 		//! Does the mesh have no animation
 		virtual bool isStatic();
 
 		//! (This feature is not implemented in irrlicht yet)
-		virtual bool setHardwareSkinning(bool on);
+		virtual bool setHardwareSkinning(bool on) { return false; }
 
 		//Interface for the mesh loaders (finalize should lock these functions, and they should have some prefix like loader_
 		//these functions will use the needed arrays, set values, etc to help the loaders
@@ -159,15 +155,23 @@ namespace scene
 		void addJoints(core::array<IBoneSceneNode*> &jointChildSceneNodes,
 				IAnimatedMeshSceneNode* node,
 				ISceneManager* smgr);
-        CSkinnedMesh *clone();
+
+		void buildAllGlobalAnimatedMatrices(SJoint *Joint=0, SJoint *ParentJoint=0);
+
+		f32 AnimationFrames;
+
+		core::array<SJoint*> RootJoints;
+
+		virtual void freeMeshVertexBuffer();
+
 private:
+		void toStaticPose();
+
 		void checkForAnimation();
 
 		void normalizeWeights();
 
 		void buildAllLocalAnimatedMatrices();
-
-		void buildAllGlobalAnimatedMatrices(SJoint *Joint=0, SJoint *ParentJoint=0);
 
 		void getFrameData(f32 frame, SJoint *Node,
 				core::vector3df &position, s32 &positionHint,
@@ -178,23 +182,16 @@ private:
 
 		void skinJoint(SJoint *Joint, SJoint *ParentJoint, f32 strength=1.f);
 
-		void calculateTangents(core::vector3df& normal,
-			core::vector3df& tangent, core::vector3df& binormal,
-			core::vector3df& vt1, core::vector3df& vt2, core::vector3df& vt3,
-			core::vector2df& tc1, core::vector2df& tc2, core::vector2df& tc3);
-
 		core::array<SSkinMeshBuffer*> *SkinningBuffers; //Meshbuffer to skin, default is to skin localBuffers
 
 		core::array<SSkinMeshBuffer*> LocalBuffers;
 
 		core::array<SJoint*> AllJoints;
-		core::array<SJoint*> RootJoints;
 
 		core::array< core::array<bool> > Vertices_Moved;
 
 		core::aabbox3d<f32> BoundingBox;
 
-		f32 AnimationFrames;
 		f32 FramesPerSecond;
 
 		f32 LastAnimatedFrame;
@@ -205,7 +202,7 @@ private:
 		bool HasAnimation;
 		bool PreparedForSkinning;
 		bool AnimateNormals;
-		bool HardwareSkinning;
+		bool m_deleted_vertex_buffer;
 	};
 
 } // end namespace scene

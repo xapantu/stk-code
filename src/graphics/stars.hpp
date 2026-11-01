@@ -21,9 +21,12 @@
 
 #include "utils/no_copy.hpp"
 
+#include "vector3d.h"
+
 #include <vector>
 
-#include <vector3d.h>
+class AbstractKart;
+
 namespace irr
 {
     namespace scene { class ISceneNode; }
@@ -50,15 +53,16 @@ private:
     /** Whether stars are currently enabled */
     bool m_enabled;
 
-    float m_fade_in_time;
+    float m_period;
     float m_remaining_time;
 
  public:
-           Stars  (scene::ISceneNode* parentKart, core::vector3df center);
+           Stars  (AbstractKart *kart);
           ~Stars  ();
     void   showFor(float time);
     void   reset();
     void   update (float delta_t);
+    bool   isEnabled() const { return m_enabled; }
 };
 #endif
 

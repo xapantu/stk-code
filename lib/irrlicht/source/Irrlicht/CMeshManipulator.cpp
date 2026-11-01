@@ -646,6 +646,8 @@ SMesh* CMeshManipulator::createMeshCopy(scene::IMesh* mesh) const
 				buffer->drop();
 			}
 			break;
+		default:
+			break;
 		}// end switch
 
 	}// end for all mesh buffers
@@ -750,6 +752,8 @@ IMesh* CMeshManipulator::createMeshUniquePrimitives(IMesh* mesh) const
 				clone->addMeshBuffer(buffer);
 				buffer->drop();
 			}
+			break;
+		default:
 			break;
 		}// end switch
 
@@ -987,6 +991,8 @@ IMesh* CMeshManipulator::createMeshWithTangents(IMesh* mesh, bool recalculateNor
 					vNew = v[idx[i]];
 				}
 				break;
+			default:
+				break;
 			}
 			core::map<video::S3DVertexTangents, int>::Node* n = vertMap.find(vNew);
 			if (n)
@@ -1075,6 +1081,8 @@ IMesh* CMeshManipulator::createMeshWith2TCoords(IMesh* mesh) const
 							v[idx[i]].Pos, v[idx[i]].Normal, v[idx[i]].Color, v[idx[i]].TCoords, v[idx[i]].TCoords);
 				}
 				break;
+			default:
+				break;
 			}
 			core::map<video::S3DVertex2TCoords, int>::Node* n = vertMap.find(vNew);
 			if (n)
@@ -1157,6 +1165,8 @@ IMesh* CMeshManipulator::createMeshWith1TCoords(IMesh* mesh) const
 					vNew = video::S3DVertex(
 							v[idx[i]].Pos, v[idx[i]].Normal, v[idx[i]].Color, v[idx[i]].TCoords);
 				}
+				break;
+			default:
 				break;
 			}
 			core::map<video::S3DVertex, int>::Node* n = vertMap.find(vNew);
@@ -1483,7 +1493,6 @@ IMesh* CMeshManipulator::createForsythOptimizedMesh(const IMesh *mesh) const
 
 				// Main algorithm
 				u32 highest = 0;
-				u32 drawcalls = 0;
 				for (;;)
 				{
 					if (tc[highest].drawn)
@@ -1572,7 +1581,6 @@ IMesh* CMeshManipulator::createForsythOptimizedMesh(const IMesh *mesh) const
 					lru.add(tc[highest].ind[0]);
 					lru.add(tc[highest].ind[1]);
 					highest = lru.add(tc[highest].ind[2], true);
-					drawcalls++;
 				}
 
 				buf->setBoundingBox(mb->getBoundingBox());
@@ -1595,7 +1603,6 @@ IMesh* CMeshManipulator::createForsythOptimizedMesh(const IMesh *mesh) const
 
 				// Main algorithm
 				u32 highest = 0;
-				u32 drawcalls = 0;
 				for (;;)
 				{
 					if (tc[highest].drawn)
@@ -1684,7 +1691,6 @@ IMesh* CMeshManipulator::createForsythOptimizedMesh(const IMesh *mesh) const
 					lru.add(tc[highest].ind[0]);
 					lru.add(tc[highest].ind[1]);
 					highest = lru.add(tc[highest].ind[2]);
-					drawcalls++;
 				}
 
 				buf->setBoundingBox(mb->getBoundingBox());
@@ -1708,7 +1714,6 @@ IMesh* CMeshManipulator::createForsythOptimizedMesh(const IMesh *mesh) const
 
 				// Main algorithm
 				u32 highest = 0;
-				u32 drawcalls = 0;
 				for (;;)
 				{
 					if (tc[highest].drawn)
@@ -1797,13 +1802,14 @@ IMesh* CMeshManipulator::createForsythOptimizedMesh(const IMesh *mesh) const
 					lru.add(tc[highest].ind[0]);
 					lru.add(tc[highest].ind[1]);
 					highest = lru.add(tc[highest].ind[2]);
-					drawcalls++;
 				}
 
 				buf->setBoundingBox(mb->getBoundingBox());
 				newmesh->addMeshBuffer(buf);
 				buf->drop();
 			}
+			break;
+			default:
 			break;
 		}
 

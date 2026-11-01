@@ -18,6 +18,8 @@
 #ifndef _follow_the_leader_hpp_
 #define _follow_the_leader_hpp_
 
+#define LEADER_HIT_TIME 5.0f
+
 #include "modes/linear_world.hpp"
 
 /**
@@ -27,8 +29,11 @@
 class FollowTheLeaderRace : public LinearWorld
 {
 private:
-        // time till elimination in follow leader
+    // time till elimination in follow leader
     std::vector<float>  m_leader_intervals;
+
+    // Number of rescue/hit endured by the leader since the previous kart elimination
+    unsigned int m_leader_hit_count;
 
     /** A timer used before terminating the race. */
     float m_is_over_delay;
@@ -46,10 +51,9 @@ public:
     virtual int  getScoreForPosition(int p) OVERRIDE;
 
     // overriding World methods
-    virtual void reset() OVERRIDE;
+    virtual void reset(bool restart=false) OVERRIDE;
     virtual const std::string& getIdent() const OVERRIDE;
     virtual const btTransform &getStartTransform(int index) OVERRIDE;
-    virtual float getClockStartTime() const;
     virtual void getKartsDisplayInfo(
                  std::vector<RaceGUIBase::KartIconDisplayInfo> *info) OVERRIDE;
     virtual void init() OVERRIDE;
@@ -61,6 +65,11 @@ public:
     // ------------------------------------------------------------------------
     /** Returns if faster music should be used at the end. */
     virtual bool useFastMusicNearEnd() const OVERRIDE { return false; }
+
+    bool isLeader(int kart_id) { return (kart_id == 0); }
+    void leaderHit();
+    // For now, use a similar countdown change as with leaderHit
+    void leaderRescued() { leaderHit(); }
 };   // FollowTheLeader
 
 

@@ -19,23 +19,20 @@
 #ifndef HEADER_HTTP_REQUEST_HPP
 #define HEADER_HTTP_REQUEST_HPP
 
-#include "io/file_manager.hpp"
 #include "online/request.hpp"
 #include "utils/cpp2011.hpp"
 #include "utils/string_utils.hpp"
-#include "utils/synchronised.hpp"
 
-#ifdef WIN32
-#  include <winsock2.h>
-#endif
-#ifndef NO_CURL
-#  include <curl/curl.h>
-#endif
-#include <assert.h>
+#include <cassert>
+#include <cstdint>
+#include <atomic>
 #include <string>
 
 namespace Online
 {
+    bool globalHTTPRequestInit();
+    void globalHTTPRequestCleanup();
+
     class API
     {
     public:
@@ -48,79 +45,65 @@ namespace Online
     class HTTPRequest : public Request
     {
     private:
-        /** The progress indicator. 0 untill it is started and the first
+        /** The progress indicator. 0 until it is started and the first
          *  packet is downloaded. Guaranteed to be <1 while the download
          *  is in progress, it will be set to either -1 (error) or 1
          *  (everything ok) at the end. */
-        Synchronised<float> m_progress;
+        std::atomic<float> m_progress;
+
+        std::atomic<double> m_total_size;
 
         /** The url to download. */
         std::string m_url;
 
-        /** The POST parameters that will be send with the request. */
+        /** The POST parameters that will be sent with the request. */
         std::string m_parameters;
 
-        /** Contains a filename if the data should be saved into a file
-         *  instead of being kept in in memory. Otherwise this is "". */
-        std::string m_filename;
-
-#ifndef NO_CURL
-        /** Pointer to the curl data structure for this request. */
-        CURL *m_curl_session;
-
-        /** curl return code. */
-        CURLcode m_curl_code;
-#endif
+        /** Result code from request implementation, 0 if succeeded. */
+        int64_t m_result_code;
 
         /** String to store the received data in. */
         std::string m_string_buffer;
 
+#ifdef APPLE_NETWORK_LIBRARIES
+        std::string m_error_string;
+#endif
+
+        std::string urlEncode(const std::string& value);
+
+        void logMessage();
     protected:
-        virtual void prepareOperation() OVERRIDE;
+        /** Contains a filename if the data should be saved into a file
+         *  instead of being kept in memory. Otherwise this is "". */
+        std::string m_filename;
+
+        bool m_disable_sending_log;
+
+        /* If true, it will not send POST parameters so
+         * it's just a GET request. */
+        bool m_download_assets_request;
+
         virtual void operation() OVERRIDE;
-        virtual void afterOperation() OVERRIDE;
 
-        static int progressDownload(void *clientp, double dltotal,
-                                    double dlnow,  double ultotal,
-                                    double ulnow);
-
-        static size_t writeCallback(void *contents, size_t size,
-                                    size_t nmemb,   void *userp);
         void init();
-
-    public :
-        HTTPRequest(bool manage_memory = false, int priority = 1);
-        HTTPRequest(const std::string &filename, bool manage_memory = false,
-                    int priority = 1);
-        HTTPRequest(const char * const filename, bool manage_memory = false,
-                    int priority = 1);
-        virtual           ~HTTPRequest() {}
+    public:
+        HTTPRequest(int priority = 1);
+        HTTPRequest(const std::string &filename, int priority = 1);
+        HTTPRequest(const char * const filename, int priority = 1);
         virtual bool       isAllowedToAdd() const OVERRIDE;
         void               setApiURL(const std::string& url, const std::string &action);
         void               setAddonsURL(const std::string& path);
 
         // ------------------------------------------------------------------------
         /** Returns true if there was an error downloading the file. */
-#ifndef NO_CURL
-        bool hadDownloadError() const { return m_curl_code != CURLE_OK; }
-#else
-        bool hadDownloadError() const { return true; }
-#endif
-
+        virtual bool hadDownloadError() const        { return m_result_code != 0; }
         // ------------------------------------------------------------------------
-        /** Returns the curl error message if an error has occurred.
-         *  \pre m_curl_code!=CURLE_OK
+        void setDownloadAssetsRequest(bool val)
+                                               { m_download_assets_request = val; }
+        // ------------------------------------------------------------------------
+        /** Returns the error message if an error has occurred.
          */
-        const char* getDownloadErrorMessage() const
-        {
-            assert(hadDownloadError());
-#ifndef NO_CURL
-            return curl_easy_strerror(m_curl_code);
-#else
-			return "cURL not available";
-#endif
-        }   // getDownloadErrorMessage
-
+        const char* getDownloadErrorMessage() const;
         // ------------------------------------------------------------------------
         /** Returns the downloaded string.
          *  \pre request has to be done
@@ -145,7 +128,7 @@ namespace Online
         void addParameter(const std::string &name,
                           const irr::core::stringw &value)
         {
-            core::stringc s = core::stringc(value.c_str());
+            std::string s = StringUtils::wideToUtf8(value);
 
             // Call the template to escape strings properly
             addParameter(name, s.c_str());
@@ -156,25 +139,20 @@ namespace Online
         template <typename T>
         void addParameter(const std::string &name, const T& value)
         {
-#ifndef NO_CURL
             assert(isPreparing());
             std::string s = StringUtils::toString(value);
-
-            char *s1 = curl_easy_escape(m_curl_session, name.c_str(), (int)name.size());
-            char *s2 = curl_easy_escape(m_curl_session, s.c_str(), (int)s.size());
-            m_parameters.append(std::string(s1) + "=" + s2 + "&");
-            curl_free(s1);
-            curl_free(s2);
-#endif
-        }   // addParameter
+            std::string s1 = urlEncode(name);
+            std::string s2 = urlEncode(s);
+            m_parameters.append(s1 + "=" + s2 + "&");
+        }
 
         // --------------------------------------------------------------------
         /** Returns the current progress. */
-        float getProgress() const { return m_progress.getAtomic(); }
+        float getProgress() const { return m_progress.load(); }
 
         // --------------------------------------------------------------------
         /** Sets the current progress. */
-        void setProgress(float f) { m_progress.setAtomic(f); }
+        void setProgress(float f) { m_progress.store(f); }
 
         // --------------------------------------------------------------------
         const std::string & getURL() const { assert(isBusy()); return m_url;}
@@ -186,7 +164,12 @@ namespace Online
             assert(isPreparing());
             m_url = url;
         }   // setURL
-
+        // --------------------------------------------------------------------
+        const std::string& getFileName() const           { return m_filename; }
+        // --------------------------------------------------------------------
+        double getTotalSize() const             { return m_total_size.load(); }
+        // --------------------------------------------------------------------
+        void setTotalSize(double d)                  { m_total_size.store(d); }
     };   // class HTTPRequest
 } //namespace Online
 #endif // HEADER_HTTP_REQUEST_HPP

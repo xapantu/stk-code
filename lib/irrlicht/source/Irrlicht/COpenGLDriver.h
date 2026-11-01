@@ -13,6 +13,7 @@ namespace irr
 {
 	class CIrrDeviceWin32;
 	class CIrrDeviceLinux;
+	class CIrrDeviceWayland;
 	class CIrrDeviceSDL;
 	class CIrrDeviceMacOSX;
 }
@@ -37,11 +38,21 @@ namespace video
 		friend class COpenGLTexture;
 	public:
 
+		virtual void enableScissorTest(const core::rect<s32>& r);
+		virtual void disableScissorTest();
+
 		#ifdef _IRR_COMPILE_WITH_WINDOWS_DEVICE_
 		COpenGLDriver(const SIrrlichtCreationParameters& params, io::IFileSystem* io, CIrrDeviceWin32* device);
 		//! inits the windows specific parts of the open gl driver
 		bool initDriver(CIrrDeviceWin32* device);
 		bool changeRenderContext(const SExposedVideoData& videoData, CIrrDeviceWin32* device);
+		#endif
+
+		#ifdef _IRR_COMPILE_WITH_WAYLAND_DEVICE_
+		COpenGLDriver(const SIrrlichtCreationParameters& params, io::IFileSystem* io, CIrrDeviceWayland* device);
+		//! inits the EGL specific parts of the open gl driver
+		bool initDriver(CIrrDeviceWayland* device);
+		bool changeRenderContext(const SExposedVideoData& videoData, CIrrDeviceWayland* device);
 		#endif
 
 		#ifdef _IRR_COMPILE_WITH_X11_DEVICE_
@@ -364,7 +375,7 @@ namespace video
 		//! Returns an image created from the last rendered frame.
 		virtual IImage* createScreenShot(video::ECOLOR_FORMAT format=video::ECF_UNKNOWN, video::E_RENDER_TARGET target=video::ERT_FRAME_BUFFER);
 
-		//! checks if an OpenGL error has happend and prints it
+		//! checks if an OpenGL error has happened and prints it
 		//! for performance reasons only available in debug mode
 		bool testGLError();
 
@@ -586,6 +597,9 @@ namespace video
 			GLXDrawable Drawable;
 			Display* X11Display;
 			CIrrDeviceLinux *X11Device;
+		#endif
+		#ifdef _IRR_COMPILE_WITH_WAYLAND_DEVICE_
+			CIrrDeviceWayland *wl_device;
 		#endif
 		#ifdef _IRR_COMPILE_WITH_OSX_DEVICE_
 			CIrrDeviceMacOSX *OSXDevice;

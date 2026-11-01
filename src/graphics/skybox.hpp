@@ -20,36 +20,45 @@
 #define HEADER_SKYBOX_HPP
 
 #include "graphics/gl_headers.hpp"
-#include <ICameraSceneNode.h>
-#include <ITexture.h>
-#include <IVideoDriver.h>
 #include <vector>
+
+namespace irr
+{
+    namespace scene
+    {
+        class ISceneNode; class ICameraSceneNode;
+    }
+    namespace video
+    {
+        class IImage; class ITexture;
+    }
+}
 
 class Skybox
 {
 private:
-    /** The 6 skybox textures */
-    std::vector<irr::video::ITexture *> m_skybox_textures;
+    /** The 6 skybox images */
+    std::vector<irr::video::IImage *> m_skybox_textures;
     
     /** The skybox texture id */
     GLuint m_cube_map;
     
     /** The specular probe texture id */
-    GLuint m_specular_probe;   
+    GLuint m_specular_probe;
     
 
     void generateCubeMapFromTextures ();
     void generateSpecularCubemap ();
     
 public:
-    Skybox(const std::vector<irr::video::ITexture *> &skybox_textures);
+    Skybox(const std::vector<irr::video::IImage *> &skybox_textures);
     ~Skybox();
     
     void render(const irr::scene::ICameraSceneNode *camera) const;
 
     inline GLuint getSpecularProbe()      const     {return m_specular_probe; }
 
-
+    inline GLuint getCubeMap() const                     { return m_cube_map; }
 };
 
 #endif //HEADER_SKYBOX_HPP

@@ -18,41 +18,38 @@
 
 #include "graphics/stars.hpp"
 
-#include <cmath>
-
 #include "graphics/irr_driver.hpp"
-#include "graphics/material.hpp"
-#include "graphics/material_manager.hpp"
+#include "karts/abstract_kart.hpp"
+#include "karts/kart_model.hpp"
 #include "utils/constants.hpp"
 
 #include <ISceneNode.h>
 #include <IBillboardSceneNode.h>
 
+#include <cmath>
+
+const int FREQUENCY = 2;
 const int STAR_AMOUNT = 7;
 const float RADIUS = 0.7f;
 const float STAR_SIZE = 0.4f;
 
-Stars::Stars(scene::ISceneNode* parentKart, core::vector3df center)
+Stars::Stars(AbstractKart *kart)
 {
-    m_parent_kart_node = parentKart;
+    m_parent_kart_node = kart->getNode();
     m_enabled = false;
-
-    video::ITexture* texture = irr_driver->getTexture("starparticle.png");
-    Material* star_material =
-        material_manager->getMaterial("starparticle.png");
-
-    m_center = center;
+    m_center = core::vector3df(0.0f,
+                               kart->getKartModel()->getModel()
+                                   ->getBoundingBox().MaxEdge.Y,
+                               0.0f                             );
 
     for (int n=0; n<STAR_AMOUNT; n++)
     {
         scene::ISceneNode* billboard =
             irr_driver->addBillboard(core::dimension2df(STAR_SIZE, STAR_SIZE),
-                                     texture, parentKart);
+                                     "starparticle.png", kart->getNode());
 #ifdef DEBUG
         billboard->setName("star");
 #endif
-        star_material->setMaterialProperties(&(billboard->getMaterial(0)), NULL);
-        billboard->setMaterialTexture(0, star_material->getTexture());
 
         billboard->setVisible(false);
 
@@ -77,7 +74,7 @@ void Stars::showFor(float time)
 {
     m_enabled        = true;
     m_remaining_time = time;
-    m_fade_in_time   = 1.0f;
+    m_period         = time;
 
     const int node_amount = (int)m_nodes.size();
     for (int n=0; n<node_amount; n++)
@@ -119,6 +116,23 @@ void Stars::update(float delta_t)
         return;
     }
 
+    // This is a basic Fourier series for a square wave, with edits to allow
+    // adjusting the period and controlling the frequency based on the
+    // period.
+    float factor = 0.0f;
+    for (int n = 1; n <= FREQUENCY * static_cast<int>(m_period); n++)
+    {
+        factor += 4.0f / M_PI * (sin(M_PI / m_period * (2.0f * n - 1.0f) *
+                    (m_period - m_remaining_time)) / (2.0f * n - 1.0f));
+    }
+    factor = pow(factor, 2.f);
+
+    // When the factor is very small, the stars are rendered incorrectly
+    if (factor <= 0.001f)
+        return;
+
+    float radius = RADIUS * factor;
+
     const int node_amount = (int)m_nodes.size();
     for (int n=0; n<node_amount; n++)
     {
@@ -132,28 +146,9 @@ void Stars::update(float delta_t)
         // keep angle in range [0, 1[
         angle -= (int)angle;
 
-        float radius = RADIUS;
-
-
-        // manage "fade-in"
-        if (m_fade_in_time > 0.0f)
-        {
-            float fade = (1.0f - m_fade_in_time);
-
-            ((scene::IBillboardSceneNode*)m_nodes[n])->setSize(
-                    core::dimension2d< f32 >(fade*STAR_SIZE, fade*STAR_SIZE) );
-
-            radius *= fade;
-        }
-        // manage "fade-out"
-        else if (m_remaining_time < 1.0f)
-        {
-            radius *= m_remaining_time;
-
-            ((scene::IBillboardSceneNode*)m_nodes[n])
-                ->setSize( core::dimension2df(m_remaining_time*STAR_SIZE,
-                                              m_remaining_time*STAR_SIZE) );
-        }
+        ((scene::IBillboardSceneNode*)m_nodes[n])
+                ->setSize( core::dimension2df(factor*STAR_SIZE,
+                                              factor*STAR_SIZE) );
 
         // Set position: X and Z are the position in the cirlce,
         // the Y components shakes the stars up and down like falling coin
@@ -163,7 +158,5 @@ void Stars::update(float delta_t)
                                std::sin(angle*M_PI*2.0f)*radius              );
         m_nodes[n]->setPosition(m_center + offset);
     } // end for
-
-    if (m_fade_in_time > 0.0f) m_fade_in_time -= delta_t;
 }   // update
 

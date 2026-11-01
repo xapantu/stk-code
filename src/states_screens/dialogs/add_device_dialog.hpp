@@ -15,11 +15,16 @@
 //  along with this program; if not, write to the Free Software
 //  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
-
+#ifndef SERVER_ONLY // No GUI files in server builds
 #ifndef HEADER_ADD_DEVICE_DIALOG_HPP
 #define HEADER_ADD_DEVICE_DIALOG_HPP
 
 #include "guiengine/modaldialog.hpp"
+
+namespace irr
+{
+    namespace gui { class IGUIStaticText; }
+}
 
 /**
   * \brief Dialog that warns the user about the potential problems of
@@ -28,13 +33,20 @@
   */
 class AddDeviceDialog : public GUIEngine::ModalDialog
 {
+private:
+    irr::gui::IGUIStaticText* m_text;
+    void configDialog();
 public:
 
     AddDeviceDialog();
     
-    void onEnterPressedInternal();
     GUIEngine::EventPropagation processEvent(const std::string& eventSource);
+    void onResize()
+    {
+        GUIEngine::ModalDialog::onResize();
+        configDialog();
+    }
 };
-  
 
 #endif
+#endif // ifndef SERVER_ONLY

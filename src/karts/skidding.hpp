@@ -22,7 +22,9 @@
 #include "karts/controller/kart_control.hpp"
 #include "utils/leak_check.hpp"
 #include "utils/no_copy.hpp"
+#include "utils/types.hpp"
 
+class BareNetworkString;
 class Kart;
 class ShowCurve;
 
@@ -36,6 +38,7 @@ class ShowCurve;
 
 class Skidding
 {
+friend class KartRewinder;
 public:
     LEAK_CHECK();
 private:
@@ -55,7 +58,7 @@ private:
 
     /** Keeps track on how long a kart has been skidding, in order to
      *  trigger the skidding bonus. */
-    float m_skid_time;
+    uint16_t m_skid_time;
 
     /** True if the kart has skidded long enough to get a skid bonus if it
      *  stopped skidding now. */
@@ -64,13 +67,15 @@ private:
     /** Set to >0 when a graphical jump is to be done. */
     float m_remaining_jump_time;
 
-    /** A vertical offset used to make the kart do a graphical 'jump' when
-     *  skidding is started. */
-    float m_gfx_jump_offset;
+    float m_graphical_remaining_jump_time;
 
-    /** Keeps track of a graphical jump speed (which simulates the physics,
-     *  i.e. gravity is used to reduce the jump speed. */
-    float m_jump_speed;
+    float m_prev_visual_rotation;
+
+    float m_smoothing_time;
+
+    float m_smoothing_dt;
+
+    int m_skid_bonus_end_ticks;
 
 public:
     /** SKID_NONE: Kart is currently not skidding.
@@ -98,18 +103,29 @@ private:
 
     unsigned int getSkidBonus(float *bonus_time, float *bonus_speed,
                               float *bonus_force) const;
-    void  updateSteering(float steer, float dt);
+    float updateSteering(float steer, int ticks);
 public:
          Skidding(Kart *kart);
         ~Skidding();
     void reset();
-    void update(float dt, bool is_on_ground, float steer,
+    float updateGraphics(float dt);
+    void update(int dt, bool is_on_ground, float steer,
                 KartControl::SkidControl skidding);
+    void saveState(BareNetworkString *buffer);
+    void rewindTo(BareNetworkString *buffer);
     // ------------------------------------------------------------------------
     /** Determines how much the graphics model of the kart should be rotated
      *  additionally (for skidding), depending on how long the kart has been
      *  skidding etc. */
-    float getVisualSkidRotation() const { return m_visual_rotation; };
+    float getVisualSkidRotation() const
+    {
+        if (m_smoothing_dt >= 0.0f)
+        {
+            return m_smoothing_dt * m_visual_rotation +
+                (1.0f - m_smoothing_dt) * m_prev_visual_rotation;
+        }
+        return m_visual_rotation;
+    }
     // ------------------------------------------------------------------------
     /** Returns the current skid factor in [1, skid_max_for_this_kart]. */
     float getSkidFactor() const { return m_skid_factor; }
@@ -121,12 +137,6 @@ public:
      *  a fraction of the maximum steering angle ( so in [-1, 1]). */
     float getSteeringFraction() { return m_real_steering; }
     // ------------------------------------------------------------------------
-    /** Returns an additional height offset that is used to show a graphical
-     *  jump when a skid starts. So when this is >0 the wheels appear not to
-     *  touch the ground (though in reality the physical kart does, but also
-     *  see physical jumping implemented in this object). */
-    float getGraphicalJumpOffset() const { return m_gfx_jump_offset; }
-    // ------------------------------------------------------------------------
     /** Returns the skidding state. */
     SkidState getSkidState() const { return m_skid_state; }
     // ------------------------------------------------------------------------
@@ -136,6 +146,12 @@ public:
      *  stopped skidding now. This function returns false if the kart is
      *  actually using the skid bonus. */
     bool getSkidBonusReady() const { return m_skid_bonus_ready; }
+    // ------------------------------------------------------------------------
+    bool isJumping() const { return m_graphical_remaining_jump_time > 0;  }
+    // ------------------------------------------------------------------------
+    void prepareSmoothing();
+    // ------------------------------------------------------------------------
+    void checkSmoothing();
 
 };   // Skidding
 

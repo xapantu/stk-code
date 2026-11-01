@@ -25,15 +25,17 @@ class CImageLoaderPng : public IImageLoader
 {
 public:
 
-   //! returns true if the file maybe is able to be loaded by this class
-   //! based on the file extension (e.g. ".png")
-   virtual bool isALoadableFileExtension(const io::path& filename) const;
+	//! returns true if the file maybe is able to be loaded by this class
+	//! based on the file extension (e.g. ".png")
+	virtual bool isALoadableFileExtension(const io::path& filename) const;
 
-   //! returns true if the file maybe is able to be loaded by this class
-   virtual bool isALoadableFileFormat(io::IReadFile* file) const;
+	//! returns true if the file maybe is able to be loaded by this class
+	virtual bool isALoadableFileFormat(io::IReadFile* file) const;
 
-   //! creates a surface from the file
-   virtual IImage* loadImage(io::IReadFile* file) const;
+	//! creates a surface from the file
+	virtual IImage* loadImage(io::IReadFile* file, bool skip_checking = false) const;
+
+	virtual bool getImageSize(io::IReadFile* file, core::dimension2du* dim) const;
 };
 
 

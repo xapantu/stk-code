@@ -17,6 +17,7 @@
 #include "quaternion.h"
 #include "IFileSystem.h"
 
+#include <ge_render_info.hpp>
 
 namespace irr
 {
@@ -41,8 +42,6 @@ CAnimatedMeshSceneNode::CAnimatedMeshSceneNode(IAnimatedMesh* mesh,
 	#ifdef _DEBUG
 	setDebugName("CAnimatedMeshSceneNode");
 	#endif
-
-	setMesh(mesh);
 }
 
 
@@ -63,7 +62,8 @@ void CAnimatedMeshSceneNode::setCurrentFrame(f32 frame)
 	// if you pass an out of range value, we just clamp it
 	CurrentFrameNr = core::clamp ( frame, (f32)StartFrame, (f32)EndFrame );
 
-	beginTransition(); //transit to this frame if enabled
+	// STK calls setCurrentFrame each frame for steering animation
+	//beginTransition(); //transit to this frame if enabled
 }
 
 
@@ -84,6 +84,7 @@ void CAnimatedMeshSceneNode::buildFrameNr(u32 timeMs)
 		{
 			Transiting=0.f;
 			TransitingBlend=0.f;
+			setTransitionTime(0.f);
 		}
 	}
 
@@ -101,12 +102,12 @@ void CAnimatedMeshSceneNode::buildFrameNr(u32 timeMs)
 		if (FramesPerSecond > 0.f) //forwards...
 		{
 			if (CurrentFrameNr > EndFrame)
-				CurrentFrameNr = StartFrame + fmod(CurrentFrameNr - StartFrame, (f32)(EndFrame-StartFrame));
+				CurrentFrameNr = StartFrame + fmodf(CurrentFrameNr - StartFrame, (f32)(EndFrame-StartFrame));
 		}
 		else //backwards...
 		{
 			if (CurrentFrameNr < StartFrame)
-				CurrentFrameNr = EndFrame - fmod(EndFrame - CurrentFrameNr, (f32)(EndFrame-StartFrame));
+				CurrentFrameNr = EndFrame - fmodf(EndFrame - CurrentFrameNr, (f32)(EndFrame-StartFrame));
 		}
 	}
 	else
@@ -191,6 +192,8 @@ IMesh * CAnimatedMeshSceneNode::getMeshForCurrentFrame()
 #ifndef _IRR_COMPILE_WITH_SKINNED_MESH_SUPPORT_
 		return 0;
 #else
+		if (Transiting != 0.0f)
+			animateJoints(false);
 
 		// As multiple scene nodes may be sharing the same skinned mesh, we have to
 		// re-animate it every frame to ensure that this node gets the mesh that it needs.
@@ -251,6 +254,10 @@ void CAnimatedMeshSceneNode::OnAnimate(u32 timeMs)
 	LastTimeMs = timeMs;
 
 	IAnimatedMeshSceneNode::OnAnimate(timeMs);
+
+	// For up-to-date current frame bone-child attachment
+	for (u32 n=0;n<JointChildSceneNodes.size();++n)
+		JointChildSceneNodes[n]->recursiveUpdateAbsolutePosition();
 }
 
 
@@ -778,6 +785,8 @@ void CAnimatedMeshSceneNode::setMesh(IAnimatedMesh* mesh)
 	// get start and begin time
 //	setAnimationSpeed(Mesh->getAnimationSpeed());
 	setFrameLoop(0, Mesh->getFrameCount());
+	if (m_first_render_info)
+		resetFirstRenderInfo(m_first_render_info);
 }
 
 //! updates the absolute position based on the relative and the parents position
@@ -802,9 +811,12 @@ void CAnimatedMeshSceneNode::setTransitionTime(f32 time)
 		return;
 	TransitionTime = ttime;
 	if (ttime != 0)
+	{
 		setJointMode(EJUOR_CONTROL);
+		beginTransition();
+	}
 	else
-		setJointMode(EJUOR_NONE);
+		setJointMode(EJUOR_READ);
 }
 
 
@@ -992,6 +1004,81 @@ ISceneNode* CAnimatedMeshSceneNode::clone(ISceneNode* newParent, ISceneManager* 
 	return newNode;
 }
 
+void CAnimatedMeshSceneNode::useAnimationSet(u32 set_num)
+{
+	if (m_animation_set.empty())
+	{
+		setFrameLoop(getStartFrame(), getEndFrame());
+		return;
+	}
+	setFrameLoop(m_animation_set[set_num * 2], m_animation_set[set_num * 2 + 1]);
+}
+
+void CAnimatedMeshSceneNode::setFrameLoopOnce(s32 begin, s32 end)
+{
+	if (LoopCallBack != NULL || !Looping)
+	{
+		return;
+	}
+	Looping = false;
+	class MiniLoopSetter : public IAnimationEndCallBack
+	{
+	private:
+		int m_old_start, m_old_end, m_new_start, m_new_end;
+
+		bool m_run_cb;
+	public:
+		MiniLoopSetter(int old_start, int old_end, int new_start, int new_end)
+			: m_old_start(old_start), m_old_end(old_end),
+			m_new_start(new_start), m_new_end(new_end), m_run_cb(false) {}
+		virtual void OnAnimationEnd(IAnimatedMeshSceneNode* node)
+		{
+			if (!m_run_cb)
+			{
+				m_run_cb = true;
+				node->setFrameLoop(m_new_start, m_new_end);
+				return;
+			}
+			if (m_run_cb)
+			{
+				node->setFrameLoop(m_old_start, m_old_end);
+				node->setLoopMode(true);
+				node->setAnimationEndCallback(NULL);
+				return;
+			}
+		}
+	};
+	MiniLoopSetter* mls = new MiniLoopSetter(StartFrame, EndFrame,
+		begin, end);
+	setAnimationEndCallback(mls);
+	mls->drop();
+
+}
+
+s32 CAnimatedMeshSceneNode::getAnimationSet() const
+{
+	for (u32 i = 0; i < m_animation_set.size(); i += 2)
+	{
+		if (m_animation_set[i] == (u32)StartFrame &&
+			m_animation_set[i + 1] == (u32)EndFrame)
+		{
+			return (s32)(i >> 1);
+		}
+	}
+	return -1;
+}
+
+void CAnimatedMeshSceneNode::resetFirstRenderInfo(std::shared_ptr<GE::GERenderInfo> ri)
+{
+	m_first_render_info = ri;
+	for (u32 i = 0; i < Materials.size(); i++)
+		Materials[i].setRenderInfo(nullptr);
+	for (u32 i = 0; i < Materials.size(); i++)
+	{
+		if (Materials[i].isColorizable() || (ri && ri->isTransparent()))
+			Materials[i].setRenderInfo(ri);
+	}
+}
 
 } // end namespace scene
 } // end namespace irr

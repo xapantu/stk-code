@@ -16,12 +16,14 @@
 //  along with this program; if not, write to the Free Software
 //  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
+#ifndef SERVER_ONLY
+
 #ifndef HEADER_SMOKE_HPP
 #define HEADER_SMOKE_HPP
 
 namespace irr
 {
-    namespace scene { class IParticleSystemSceneNode; class ISceneNode; class IParticleEmitter; }
+    namespace scene { class ISceneNode; class IParticleEmitter; }
 }
 using namespace irr;
 
@@ -29,14 +31,9 @@ using namespace irr;
 #include "utils/no_copy.hpp"
 #include "utils/vec3.hpp"
 
-#define VISUALIZE_BOX_EMITTER 0
-
-#if VISUALIZE_BOX_EMITTER
-#include <vector>
-#endif
-
 class Material;
 class ParticleKind;
+class STKParticle;
 class Track;
 
 /**
@@ -46,11 +43,8 @@ class Track;
 class ParticleEmitter : public NoCopy
 {
 private:
-
-    bool                             m_is_glsl;
-
-    /** Irrlicht's particle systems. */
-    scene::IParticleSystemSceneNode *m_node;
+    /** STK particle systems. */
+    STKParticle*                     m_node;
 
     Vec3                             m_position;
 
@@ -59,10 +53,6 @@ private:
     /** The emitters. Access to these is needed to adjust the number of
      *  particles per second. */
     scene::IParticleEmitter         *m_emitter;
-
-#if VISUALIZE_BOX_EMITTER
-    std::vector<scene::ISceneNode*> m_visualisation;
-#endif
 
     const ParticleKind              *m_particle_type;
 
@@ -92,8 +82,10 @@ public:
     void         setCreationRateAbsolute(float fraction);
     void         setCreationRateRelative(float f);
     int          getCreationRate();
+    float        getCreationRateFloat() {return m_min_rate;}
 
     void         setPosition(const Vec3 &pos);
+    void         setRotation(const Vec3 &rot);
 
     const ParticleKind* getParticlesInfo() const { return m_particle_type; }
 
@@ -101,9 +93,7 @@ public:
 
     void         resizeBox(float size);
 
-    void         clearParticles();
-
-    scene::IParticleSystemSceneNode* getNode() { return m_node; }
+    STKParticle* getNode() { return m_node; }
 
     /** call this if the node was freed otherwise */
     void         unsetNode() { m_node = NULL; }
@@ -112,6 +102,8 @@ public:
 
     bool         randomizeInitialY() const { return m_randomize_initial_y; }
 };
-#endif
+#endif // HEADER_SMOKE_HPP
+
+#endif // !SERVER_ONLY
 
 

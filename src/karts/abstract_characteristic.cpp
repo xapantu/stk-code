@@ -18,6 +18,7 @@
 
 #include "karts/abstract_characteristic.hpp"
 
+#include "config/stk_config.hpp"
 #include "utils/log.hpp"
 #include "utils/interpolation_array.hpp"
 
@@ -74,6 +75,8 @@ AbstractCharacteristic::ValueType AbstractCharacteristic::getType(
         return TYPE_FLOAT;
     case STABILITY_TRACK_CONNECTION_ACCEL:
         return TYPE_FLOAT;
+    case STABILITY_ANGULAR_FACTOR:
+        return TYPE_FLOAT_VECTOR;
     case STABILITY_SMOOTH_FLYING_IMPULSE:
         return TYPE_FLOAT;
     case TURN_RADIUS:
@@ -85,6 +88,8 @@ AbstractCharacteristic::ValueType AbstractCharacteristic::getType(
     case ENGINE_POWER:
         return TYPE_FLOAT;
     case ENGINE_MAX_SPEED:
+        return TYPE_FLOAT;
+    case ENGINE_GENERIC_MAX_SPEED:
         return TYPE_FLOAT;
     case ENGINE_BRAKE_FACTOR:
         return TYPE_FLOAT;
@@ -101,12 +106,6 @@ AbstractCharacteristic::ValueType AbstractCharacteristic::getType(
     case WHEELS_DAMPING_RELAXATION:
         return TYPE_FLOAT;
     case WHEELS_DAMPING_COMPRESSION:
-        return TYPE_FLOAT;
-    case CAMERA_DISTANCE:
-        return TYPE_FLOAT;
-    case CAMERA_FORWARD_UP_ANGLE:
-        return TYPE_FLOAT;
-    case CAMERA_BACKWARD_UP_ANGLE:
         return TYPE_FLOAT;
     case JUMP_ANIMATION_TIME:
         return TYPE_FLOAT;
@@ -126,11 +125,17 @@ AbstractCharacteristic::ValueType AbstractCharacteristic::getType(
         return TYPE_FLOAT;
     case PARACHUTE_DURATION_OTHER:
         return TYPE_FLOAT;
+    case PARACHUTE_DURATION_RANK_MULT:
+        return TYPE_FLOAT;
+    case PARACHUTE_DURATION_SPEED_MULT:
+        return TYPE_FLOAT;
     case PARACHUTE_LBOUND_FRACTION:
         return TYPE_FLOAT;
     case PARACHUTE_UBOUND_FRACTION:
         return TYPE_FLOAT;
     case PARACHUTE_MAX_SPEED:
+        return TYPE_FLOAT;
+    case FRICTION_KART_FRICTION:
         return TYPE_FLOAT;
     case BUBBLEGUM_DURATION:
         return TYPE_FLOAT;
@@ -192,6 +197,8 @@ AbstractCharacteristic::ValueType AbstractCharacteristic::getType(
         return TYPE_FLOAT;
     case NITRO_ENGINE_FORCE:
         return TYPE_FLOAT;
+    case NITRO_ENGINE_MULT:
+        return TYPE_FLOAT;
     case NITRO_CONSUMPTION:
         return TYPE_FLOAT;
     case NITRO_SMALL_CONTAINER:
@@ -204,15 +211,19 @@ AbstractCharacteristic::ValueType AbstractCharacteristic::getType(
         return TYPE_FLOAT;
     case NITRO_MAX:
         return TYPE_FLOAT;
-    case SLIPSTREAM_DURATION:
+    case SLIPSTREAM_DURATION_FACTOR:
+        return TYPE_FLOAT;
+    case SLIPSTREAM_BASE_SPEED:
         return TYPE_FLOAT;
     case SLIPSTREAM_LENGTH:
         return TYPE_FLOAT;
     case SLIPSTREAM_WIDTH:
         return TYPE_FLOAT;
-    case SLIPSTREAM_COLLECT_TIME:
+    case SLIPSTREAM_INNER_FACTOR:
         return TYPE_FLOAT;
-    case SLIPSTREAM_USE_TIME:
+    case SLIPSTREAM_MIN_COLLECT_TIME:
+        return TYPE_FLOAT;
+    case SLIPSTREAM_MAX_COLLECT_TIME:
         return TYPE_FLOAT;
     case SLIPSTREAM_ADD_POWER:
         return TYPE_FLOAT;
@@ -298,6 +309,8 @@ std::string AbstractCharacteristic::getName(CharacteristicType type)
         return "STABILITY_DOWNWARD_IMPULSE_FACTOR";
     case STABILITY_TRACK_CONNECTION_ACCEL:
         return "STABILITY_TRACK_CONNECTION_ACCEL";
+    case STABILITY_ANGULAR_FACTOR:
+        return "STABILITY_ANGULAR_FACTOR";
     case STABILITY_SMOOTH_FLYING_IMPULSE:
         return "STABILITY_SMOOTH_FLYING_IMPULSE";
     case TURN_RADIUS:
@@ -310,6 +323,8 @@ std::string AbstractCharacteristic::getName(CharacteristicType type)
         return "ENGINE_POWER";
     case ENGINE_MAX_SPEED:
         return "ENGINE_MAX_SPEED";
+    case ENGINE_GENERIC_MAX_SPEED:
+        return "ENGINE_GENERIC_MAX_SPEED";
     case ENGINE_BRAKE_FACTOR:
         return "ENGINE_BRAKE_FACTOR";
     case ENGINE_BRAKE_TIME_INCREASE:
@@ -326,12 +341,6 @@ std::string AbstractCharacteristic::getName(CharacteristicType type)
         return "WHEELS_DAMPING_RELAXATION";
     case WHEELS_DAMPING_COMPRESSION:
         return "WHEELS_DAMPING_COMPRESSION";
-    case CAMERA_DISTANCE:
-        return "CAMERA_DISTANCE";
-    case CAMERA_FORWARD_UP_ANGLE:
-        return "CAMERA_FORWARD_UP_ANGLE";
-    case CAMERA_BACKWARD_UP_ANGLE:
-        return "CAMERA_BACKWARD_UP_ANGLE";
     case JUMP_ANIMATION_TIME:
         return "JUMP_ANIMATION_TIME";
     case LEAN_MAX:
@@ -350,12 +359,18 @@ std::string AbstractCharacteristic::getName(CharacteristicType type)
         return "PARACHUTE_DURATION";
     case PARACHUTE_DURATION_OTHER:
         return "PARACHUTE_DURATION_OTHER";
+    case PARACHUTE_DURATION_RANK_MULT:
+        return "PARACHUTE_DURATION_RANK_MULT";
+    case PARACHUTE_DURATION_SPEED_MULT:
+        return "PARACHUTE_DURATION_SPEED_MULT";
     case PARACHUTE_LBOUND_FRACTION:
         return "PARACHUTE_LBOUND_FRACTION";
     case PARACHUTE_UBOUND_FRACTION:
         return "PARACHUTE_UBOUND_FRACTION";
     case PARACHUTE_MAX_SPEED:
         return "PARACHUTE_MAX_SPEED";
+    case FRICTION_KART_FRICTION:
+        return "FRICTION_KART_FRICTION";
     case BUBBLEGUM_DURATION:
         return "BUBBLEGUM_DURATION";
     case BUBBLEGUM_SPEED_FRACTION:
@@ -416,6 +431,8 @@ std::string AbstractCharacteristic::getName(CharacteristicType type)
         return "NITRO_DURATION";
     case NITRO_ENGINE_FORCE:
         return "NITRO_ENGINE_FORCE";
+    case NITRO_ENGINE_MULT:
+        return "NITRO_ENGINE_MULT";
     case NITRO_CONSUMPTION:
         return "NITRO_CONSUMPTION";
     case NITRO_SMALL_CONTAINER:
@@ -428,16 +445,20 @@ std::string AbstractCharacteristic::getName(CharacteristicType type)
         return "NITRO_FADE_OUT_TIME";
     case NITRO_MAX:
         return "NITRO_MAX";
-    case SLIPSTREAM_DURATION:
-        return "SLIPSTREAM_DURATION";
+    case SLIPSTREAM_DURATION_FACTOR:
+        return "SLIPSTREAM_DURATION_FACTOR";
+    case SLIPSTREAM_BASE_SPEED:
+        return "SLIPSTREAM_BASE_SPEED";
     case SLIPSTREAM_LENGTH:
         return "SLIPSTREAM_LENGTH";
     case SLIPSTREAM_WIDTH:
         return "SLIPSTREAM_WIDTH";
-    case SLIPSTREAM_COLLECT_TIME:
-        return "SLIPSTREAM_COLLECT_TIME";
-    case SLIPSTREAM_USE_TIME:
-        return "SLIPSTREAM_USE_TIME";
+    case SLIPSTREAM_INNER_FACTOR:
+        return "SLIPSTREAM_INNER_FACTOR";
+    case SLIPSTREAM_MIN_COLLECT_TIME:
+        return "SLIPSTREAM_MIN_COLLECT_TIME";
+    case SLIPSTREAM_MAX_COLLECT_TIME:
+        return "SLIPSTREAM_MAX_COLLECT_TIME";
     case SLIPSTREAM_ADD_POWER:
         return "SLIPSTREAM_ADD_POWER";
     case SLIPSTREAM_MIN_SPEED:
@@ -615,6 +636,18 @@ float AbstractCharacteristic::getStabilityTrackConnectionAccel() const
 }  // getStabilityTrackConnectionAccel
 
 // ----------------------------------------------------------------------------
+std::vector<float> AbstractCharacteristic::getStabilityAngularFactor() const
+{
+    std::vector<float> result;
+    bool is_set = false;
+    process(STABILITY_ANGULAR_FACTOR, &result, &is_set);
+    if (!is_set)
+        Log::fatal("AbstractCharacteristic", "Can't get characteristic %s",
+                    getName(STABILITY_ANGULAR_FACTOR).c_str());
+    return result;
+}  // getStabilityAngularFactor
+
+// ----------------------------------------------------------------------------
 float AbstractCharacteristic::getStabilitySmoothFlyingImpulse() const
 {
     float result;
@@ -685,6 +718,18 @@ float AbstractCharacteristic::getEngineMaxSpeed() const
                     getName(ENGINE_MAX_SPEED).c_str());
     return result;
 }  // getEngineMaxSpeed
+
+// ----------------------------------------------------------------------------
+float AbstractCharacteristic::getEngineGenericMaxSpeed() const
+{
+    float result;
+    bool is_set = false;
+    process(ENGINE_GENERIC_MAX_SPEED, &result, &is_set);
+    if (!is_set)
+        Log::fatal("AbstractCharacteristic", "Can't get characteristic %s",
+                    getName(ENGINE_GENERIC_MAX_SPEED).c_str());
+    return result;
+}  // getEngineGenericMaxSpeed
 
 // ----------------------------------------------------------------------------
 float AbstractCharacteristic::getEngineBrakeFactor() const
@@ -781,42 +826,6 @@ float AbstractCharacteristic::getWheelsDampingCompression() const
                     getName(WHEELS_DAMPING_COMPRESSION).c_str());
     return result;
 }  // getWheelsDampingCompression
-
-// ----------------------------------------------------------------------------
-float AbstractCharacteristic::getCameraDistance() const
-{
-    float result;
-    bool is_set = false;
-    process(CAMERA_DISTANCE, &result, &is_set);
-    if (!is_set)
-        Log::fatal("AbstractCharacteristic", "Can't get characteristic %s",
-                    getName(CAMERA_DISTANCE).c_str());
-    return result;
-}  // getCameraDistance
-
-// ----------------------------------------------------------------------------
-float AbstractCharacteristic::getCameraForwardUpAngle() const
-{
-    float result;
-    bool is_set = false;
-    process(CAMERA_FORWARD_UP_ANGLE, &result, &is_set);
-    if (!is_set)
-        Log::fatal("AbstractCharacteristic", "Can't get characteristic %s",
-                    getName(CAMERA_FORWARD_UP_ANGLE).c_str());
-    return result;
-}  // getCameraForwardUpAngle
-
-// ----------------------------------------------------------------------------
-float AbstractCharacteristic::getCameraBackwardUpAngle() const
-{
-    float result;
-    bool is_set = false;
-    process(CAMERA_BACKWARD_UP_ANGLE, &result, &is_set);
-    if (!is_set)
-        Log::fatal("AbstractCharacteristic", "Can't get characteristic %s",
-                    getName(CAMERA_BACKWARD_UP_ANGLE).c_str());
-    return result;
-}  // getCameraBackwardUpAngle
 
 // ----------------------------------------------------------------------------
 float AbstractCharacteristic::getJumpAnimationTime() const
@@ -927,6 +936,30 @@ float AbstractCharacteristic::getParachuteDurationOther() const
 }  // getParachuteDurationOther
 
 // ----------------------------------------------------------------------------
+float AbstractCharacteristic::getParachuteDurationRankMult() const
+{
+    float result;
+    bool is_set = false;
+    process(PARACHUTE_DURATION_RANK_MULT, &result, &is_set);
+    if (!is_set)
+        Log::fatal("AbstractCharacteristic", "Can't get characteristic %s",
+                    getName(PARACHUTE_DURATION_RANK_MULT).c_str());
+    return result;
+}  // getParachuteDurationRankMult
+
+// ----------------------------------------------------------------------------
+float AbstractCharacteristic::getParachuteDurationSpeedMult() const
+{
+    float result;
+    bool is_set = false;
+    process(PARACHUTE_DURATION_SPEED_MULT, &result, &is_set);
+    if (!is_set)
+        Log::fatal("AbstractCharacteristic", "Can't get characteristic %s",
+                    getName(PARACHUTE_DURATION_SPEED_MULT).c_str());
+    return result;
+}  // getParachuteDurationSpeedMult
+
+// ----------------------------------------------------------------------------
 float AbstractCharacteristic::getParachuteLboundFraction() const
 {
     float result;
@@ -961,6 +994,18 @@ float AbstractCharacteristic::getParachuteMaxSpeed() const
                     getName(PARACHUTE_MAX_SPEED).c_str());
     return result;
 }  // getParachuteMaxSpeed
+
+// ----------------------------------------------------------------------------
+float AbstractCharacteristic::getFrictionKartFriction() const
+{
+    float result;
+    bool is_set = false;
+    process(FRICTION_KART_FRICTION, &result, &is_set);
+    if (!is_set)
+        Log::fatal("AbstractCharacteristic", "Can't get characteristic %s",
+                    getName(FRICTION_KART_FRICTION).c_str());
+    return result;
+}  // getFrictionKartFriction
 
 // ----------------------------------------------------------------------------
 float AbstractCharacteristic::getBubblegumDuration() const
@@ -1323,6 +1368,18 @@ float AbstractCharacteristic::getNitroEngineForce() const
 }  // getNitroEngineForce
 
 // ----------------------------------------------------------------------------
+float AbstractCharacteristic::getNitroEngineMult() const
+{
+    float result;
+    bool is_set = false;
+    process(NITRO_ENGINE_MULT, &result, &is_set);
+    if (!is_set)
+        Log::fatal("AbstractCharacteristic", "Can't get characteristic %s",
+                    getName(NITRO_ENGINE_MULT).c_str());
+    return result;
+}  // getNitroEngineMult
+
+// ----------------------------------------------------------------------------
 float AbstractCharacteristic::getNitroConsumption() const
 {
     float result;
@@ -1395,16 +1452,28 @@ float AbstractCharacteristic::getNitroMax() const
 }  // getNitroMax
 
 // ----------------------------------------------------------------------------
-float AbstractCharacteristic::getSlipstreamDuration() const
+float AbstractCharacteristic::getSlipstreamDurationFactor() const
 {
     float result;
     bool is_set = false;
-    process(SLIPSTREAM_DURATION, &result, &is_set);
+    process(SLIPSTREAM_DURATION_FACTOR, &result, &is_set);
     if (!is_set)
         Log::fatal("AbstractCharacteristic", "Can't get characteristic %s",
-                    getName(SLIPSTREAM_DURATION).c_str());
+                    getName(SLIPSTREAM_DURATION_FACTOR).c_str());
     return result;
-}  // getSlipstreamDuration
+}  // getSlipstreamDurationFactor
+
+// ----------------------------------------------------------------------------
+float AbstractCharacteristic::getSlipstreamBaseSpeed() const
+{
+    float result;
+    bool is_set = false;
+    process(SLIPSTREAM_BASE_SPEED, &result, &is_set);
+    if (!is_set)
+        Log::fatal("AbstractCharacteristic", "Can't get characteristic %s",
+                    getName(SLIPSTREAM_BASE_SPEED).c_str());
+    return result;
+}  // getSlipstreamBaseSpeed
 
 // ----------------------------------------------------------------------------
 float AbstractCharacteristic::getSlipstreamLength() const
@@ -1431,28 +1500,40 @@ float AbstractCharacteristic::getSlipstreamWidth() const
 }  // getSlipstreamWidth
 
 // ----------------------------------------------------------------------------
-float AbstractCharacteristic::getSlipstreamCollectTime() const
+float AbstractCharacteristic::getSlipstreamInnerFactor() const
 {
     float result;
     bool is_set = false;
-    process(SLIPSTREAM_COLLECT_TIME, &result, &is_set);
+    process(SLIPSTREAM_INNER_FACTOR, &result, &is_set);
     if (!is_set)
         Log::fatal("AbstractCharacteristic", "Can't get characteristic %s",
-                    getName(SLIPSTREAM_COLLECT_TIME).c_str());
+                    getName(SLIPSTREAM_INNER_FACTOR).c_str());
     return result;
-}  // getSlipstreamCollectTime
+}  // getSlipstreamInnerFactor
 
 // ----------------------------------------------------------------------------
-float AbstractCharacteristic::getSlipstreamUseTime() const
+float AbstractCharacteristic::getSlipstreamMinCollectTime() const
 {
     float result;
     bool is_set = false;
-    process(SLIPSTREAM_USE_TIME, &result, &is_set);
+    process(SLIPSTREAM_MIN_COLLECT_TIME, &result, &is_set);
     if (!is_set)
         Log::fatal("AbstractCharacteristic", "Can't get characteristic %s",
-                    getName(SLIPSTREAM_USE_TIME).c_str());
+                    getName(SLIPSTREAM_MIN_COLLECT_TIME).c_str());
     return result;
-}  // getSlipstreamUseTime
+}  // getSlipstreamMinCollectTime
+
+// ----------------------------------------------------------------------------
+float AbstractCharacteristic::getSlipstreamMaxCollectTime() const
+{
+    float result;
+    bool is_set = false;
+    process(SLIPSTREAM_MAX_COLLECT_TIME, &result, &is_set);
+    if (!is_set)
+        Log::fatal("AbstractCharacteristic", "Can't get characteristic %s",
+                    getName(SLIPSTREAM_MAX_COLLECT_TIME).c_str());
+    return result;
+}  // getSlipstreamMaxCollectTime
 
 // ----------------------------------------------------------------------------
 float AbstractCharacteristic::getSlipstreamAddPower() const
@@ -1720,4 +1801,3 @@ bool AbstractCharacteristic::getSkidEnabled() const
 
 
 /* <characteristics-end acgetter> */
-

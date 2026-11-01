@@ -8,7 +8,15 @@
 #include "EDriverTypes.h"
 #include "EDeviceTypes.h"
 #include "dimension2d.h"
+#include "position2d.h"
 #include "ILogger.h"
+#include "irrString.h"
+
+#if !defined(SERVER_ONLY) && defined(_IRR_COMPILE_WITH_SDL_DEVICE_)
+#include "SDL_video.h"
+#else
+#define SDL_Window void
+#endif
 
 namespace irr
 {
@@ -24,11 +32,14 @@ namespace irr
 			DeviceType(EIDT_BEST),
 			DriverType(video::EDT_BURNINGSVIDEO),
 			WindowSize(core::dimension2d<u32>(800, 600)),
+#if !defined(SERVER_ONLY) && defined(_IRR_COMPILE_WITH_SDL_DEVICE_)
+			WindowPosition(core::position2di(SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED)),
+#endif
 			Bits(16),
 			ZBufferBits(16),
 			Fullscreen(false),
 			Stencilbuffer(false),
-			Vsync(false),
+			SwapInterval(0),
 			AntiAlias(0),
 			HandleSRGB(false),
 			WithAlphaChannel(false),
@@ -48,7 +59,10 @@ namespace irr
 			DriverMultithreaded(false),
 			UsePerformanceTimer(true),
             ForceLegacyDevice(false),
-			SDK_version_do_not_use(IRRLICHT_SDK_VERSION)
+            ShadersPath(""),
+			SDK_version_do_not_use(IRRLICHT_SDK_VERSION),
+			PrivateData(NULL),
+			m_sdl_window(NULL)
 		{
 		}
 
@@ -65,7 +79,7 @@ namespace irr
 			ZBufferBits = other.ZBufferBits;
 			Fullscreen = other.Fullscreen;
 			Stencilbuffer = other.Stencilbuffer;
-			Vsync = other.Vsync;
+			SwapInterval = other.SwapInterval;
 			AntiAlias = other.AntiAlias;
 			HandleSRGB = other.HandleSRGB;
 			WithAlphaChannel = other.WithAlphaChannel;
@@ -81,7 +95,10 @@ namespace irr
 			DisplayAdapter = other.DisplayAdapter;
 			UsePerformanceTimer = other.UsePerformanceTimer;
             ForceLegacyDevice = other.ForceLegacyDevice;
+            ShadersPath = other.ShadersPath;
 			PrivateData = other.PrivateData;
+			WindowPosition = other.WindowPosition;
+			m_sdl_window = other.m_sdl_window;
 			return *this;
 		}
 
@@ -108,6 +125,9 @@ namespace irr
 		//! Size of the window or the video mode in fullscreen mode. Default: 800x600
 		core::dimension2d<u32> WindowSize;
 
+		//! Window created position
+		core::position2di WindowPosition;
+
 		//! Minimum Bits per pixel of the color buffer in fullscreen mode. Ignored if windowed mode. Default: 16.
 		u8 Bits;
 
@@ -127,10 +147,9 @@ namespace irr
 		bool Stencilbuffer;
 
 		//! Specifies vertical syncronisation.
-		/** If set to true, the driver will wait for the vertical
-		retrace period, otherwise not. May be silently ignored.
-		Default: false */
-		bool Vsync;
+		/** 0 = disabled, 1 = full, 2 = half
+		Default: 0 */
+		int SwapInterval;
 
 		//! Specifies if the device should use fullscreen anti aliasing
 		/** Makes sharp/pixelated edges softer, but requires more
@@ -275,7 +294,7 @@ namespace irr
 		*/
 		ELOG_LEVEL LoggingLevel;
 
-		//! Allows to select which graphic card is used for rendering when more than one card is in the system.
+		//! Allows one to select which graphic card is used for rendering when more than one card is in the system.
 		/** So far only supported on D3D */
 		u32 DisplayAdapter;
 
@@ -296,6 +315,11 @@ namespace irr
         /** opengl 3 context is available.
         */
         bool ForceLegacyDevice;
+        
+        //! Specifies custom path for shaders directory.
+        /** Allows one to overwrite IRR_OGLES2_SHADER_PATH constant
+        */
+        core::stringc ShadersPath;
 
 		//! Don't use or change this parameter.
 		/** Always set it to IRRLICHT_SDK_VERSION, which is done by default.
@@ -308,6 +332,7 @@ namespace irr
 		Java RE. */
 		void *PrivateData;
 
+		SDL_Window* m_sdl_window;
 	};
 
 

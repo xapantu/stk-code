@@ -1,6 +1,6 @@
 /*
    AngelCode Scripting Library
-   Copyright (c) 2003-2014 Andreas Jonsson
+   Copyright (c) 2003-2024 Andreas Jonsson
 
    This software is provided 'as-is', without any express or implied 
    warranty. In no event will the authors be held liable for any 
@@ -52,49 +52,67 @@ asCTokenizer::asCTokenizer()
 	engine = 0;
 	memset(keywordTable, 0, sizeof(keywordTable));
 
+	InitJumpTable();
+}
+
+asCTokenizer::~asCTokenizer()
+{
+	FreeJumpTable();
+}
+
+void asCTokenizer::FreeJumpTable()
+{
+	// Deallocate the jump table
+	for (asUINT n = 0; n < 256; n++)
+	{
+		if (keywordTable[n])
+			asDELETEARRAY(keywordTable[n]);
+	}
+	memset(keywordTable, 0, sizeof(keywordTable));
+}
+
+void asCTokenizer::InitJumpTable()
+{
+	FreeJumpTable();
+
 	// Initialize the jump table
-	for( asUINT n = 0; n < numTokenWords; n++ )
+	for (asUINT n = 0; n < numTokenWords; n++)
 	{
 		const sTokenWord& current = tokenWords[n];
+
+		// Check if a token must be skipped due to engine properties
+		if (current.tokenType == ttForEach && engine && !engine->ep.foreachSupport)
+			continue;
+
 		unsigned char start = current.word[0];
 
 		// Create new jump table entry if none exists
-		if( !keywordTable[start] )
+		if (!keywordTable[start])
 		{
 			// Surely there won't ever be more than 32 keywords starting with
 			// the same character. Right?
 			keywordTable[start] = asNEWARRAY(const sTokenWord*, 32);
-			memset(keywordTable[start], 0, sizeof(sTokenWord*)*32);
+			memset(keywordTable[start], 0, sizeof(sTokenWord*) * 32);
 		}
 
 		// Add the token sorted from longest to shortest so
 		// we check keywords greedily.
 		const sTokenWord** tok = keywordTable[start];
 		unsigned insert = 0, index = 0;
-		while( tok[index] )
+		while (tok[index])
 		{
-			if(tok[index]->wordLength >= current.wordLength)
+			if (tok[index]->wordLength >= current.wordLength)
 				++insert;
 			++index;
 		}
 
-		while( index > insert )
+		while (index > insert)
 		{
 			tok[index] = tok[index - 1];
 			--index;
 		}
 
 		tok[insert] = &current;
-	}
-}
-
-asCTokenizer::~asCTokenizer()
-{
-	// Deallocate the jump table
-	for( asUINT n = 0; n < 256; n++ )
-	{
-		if( keywordTable[n] )
-			asDELETEARRAY(keywordTable[n]);
 	}
 }
 
@@ -346,12 +364,16 @@ bool asCTokenizer::IsConstant(const char *source, size_t sourceLength, size_t &t
 			size_t n;
 			for( n = 3; n < sourceLength-2; n++ )
 			{
-				if( source[n] == '"' && source[n+1] == '"' && source[n+2] == '"' )
-					break;
+				if (source[n] == '"' && source[n + 1] == '"' && source[n + 2] == '"')
+				{
+					tokenType = ttHeredocStringConstant;
+					tokenLength = n + 3;
+					return true;
+				}
 			}
 
-			tokenType   = ttHeredocStringConstant;
-			tokenLength = n+3;
+			tokenType   = ttNonTerminatedStringConstant;
+			tokenLength = n+2;
 		}
 		else
 		{
@@ -395,20 +417,27 @@ bool asCTokenizer::IsConstant(const char *source, size_t sourceLength, size_t &t
 
 bool asCTokenizer::IsIdentifier(const char *source, size_t sourceLength, size_t &tokenLength, eTokenType &tokenType) const
 {
+	// char is unsigned by default on some architectures, e.g. ppc and arm
+	// Make sure the value is always treated as signed in the below comparisons
+	signed char c = source[0];
+
 	// Starting with letter or underscore
-	if( (source[0] >= 'a' && source[0] <= 'z') ||
-		(source[0] >= 'A' && source[0] <= 'Z') ||
-		source[0] == '_' )
+	if( (c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		c == '_' ||
+		(c < 0 && engine->ep.allowUnicodeIdentifiers) )
 	{
 		tokenType   = ttIdentifier;
 		tokenLength = 1;
 
 		for( size_t n = 1; n < sourceLength; n++ )
 		{
-			if( (source[n] >= 'a' && source[n] <= 'z') ||
-				(source[n] >= 'A' && source[n] <= 'Z') ||
-				(source[n] >= '0' && source[n] <= '9') ||
-				source[n] == '_' )
+			c = source[n];
+			if( (c >= 'a' && c <= 'z') ||
+				(c >= 'A' && c <= 'Z') ||
+				(c >= '0' && c <= '9') ||
+				c == '_' ||
+				(c < 0 && engine->ep.allowUnicodeIdentifiers) )
 				tokenLength++;
 			else
 				break;

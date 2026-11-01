@@ -15,15 +15,28 @@
 //  along with this program; if not, write to the Free Software
 //  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
+#ifndef SERVER_ONLY
 
 #include "graphics/skybox.hpp"
+#include "config/stk_config.hpp"
 #include "graphics/central_settings.hpp"
 #include "graphics/irr_driver.hpp"
-#include "graphics/shaders.hpp"
+#include "graphics/sp/sp_base.hpp"
+#include "graphics/texture_shader.hpp"
 
+#include <ge_main.hpp>
 
-#include <algorithm> 
+#include <algorithm>
 #include <cassert>
+
+#include <IImage.h>
+
+#include <squish.h>
+extern "C"
+{
+    #include <mipmap/img.h>
+    #include <mipmap/imgresize.h>
+}
 
 using namespace irr;
 
@@ -55,36 +68,21 @@ public:
     }   // bindVertexArray
 };   // SkyboxShader
 
-
-class SpecularIBLGenerator : public TextureShader<SpecularIBLGenerator, 1, 
+class SpecularIBLGenerator : public TextureShader<SpecularIBLGenerator, 2,
                                                   core::matrix4, float >
 {
 public:
-    GLuint m_tu_samples;
     SpecularIBLGenerator()
     {
         loadProgram(OBJECT, GL_VERTEX_SHADER,   "screenquad.vert",
                             GL_FRAGMENT_SHADER, "importance_sampling_specular.frag");
         assignUniforms("PermutationMatrix", "ViewportSize");
-        m_tu_samples = 1;
-        assignSamplerNames(0, "tex", ST_TRILINEAR_CUBEMAP);
-        assignTextureUnit(m_tu_samples, "samples");
+        assignSamplerNames(0, "tex", ST_TRILINEAR_CUBEMAP,
+                           1, "samples", ST_NEAREST_CLAMPED_FILTERED);
     }
-
 };   // SpecularIBLGenerator
 
-
 namespace {
-    // ----------------------------------------------------------------------------
-    void swapPixels(char *old_img, char *new_img, unsigned stride, unsigned old_i,
-                    unsigned old_j, unsigned new_i, unsigned new_j)
-    {
-        new_img[4 * (stride * new_i + new_j)] = old_img[4 * (stride * old_i + old_j)];
-        new_img[4 * (stride * new_i + new_j) + 1] = old_img[4 * (stride * old_i + old_j) + 1];
-        new_img[4 * (stride * new_i + new_j) + 2] = old_img[4 * (stride * old_i + old_j) + 2];
-        new_img[4 * (stride * new_i + new_j) + 3] = old_img[4 * (stride * old_i + old_j) + 3];
-    }   // swapPixels
-    
     // ----------------------------------------------------------------------------
     // From http://http.developer.nvidia.com/GPUGems3/gpugems3_ch20.html
     /** Returns the index-th pair from Hammersley set of pseudo random set.
@@ -97,7 +95,7 @@ namespace {
         float InvertedBinaryRepresentation = 0.;
         for (size_t i = 0; i < 32; i++)
         {
-            InvertedBinaryRepresentation += ((index >> i) & 0x1) 
+            InvertedBinaryRepresentation += ((index >> i) & 0x1)
                                           * powf(.5, (float) (i + 1.));
         }
         return std::make_pair(float(index) / float(samples),
@@ -108,7 +106,7 @@ namespace {
     // ----------------------------------------------------------------------------
     /** Returns a pseudo random (theta, phi) generated from a probability density
     *  function modeled after Phong function.
-    *  \param a pseudo random float pair from a uniform density function between 
+    *  \param a pseudo random float pair from a uniform density function between
     *         0 and 1.
     *   \param exponent from the Phong formula.
     */
@@ -120,8 +118,8 @@ namespace {
     }   // getImportanceSamplingPhong
 
     // ----------------------------------------------------------------------------
-    static core::matrix4 getPermutationMatrix(size_t indexX, float valX, 
-                                              size_t indexY, float valY, 
+    static core::matrix4 getPermutationMatrix(size_t indexX, float valX,
+                                              size_t indexY, float valY,
                                               size_t indexZ, float valZ)
     {
         core::matrix4 result_mat;
@@ -135,9 +133,12 @@ namespace {
         M[8 + indexZ] = valZ;
         return result_mat;
     }   // getPermutationMatrix
-    
+
 }  //namespace
 
+// ============================================================================
+extern "C" void squishCompressImage(uint8_t* rgba, int width, int height,
+                                    int pitch, void* blocks, unsigned flags);
 // ----------------------------------------------------------------------------
 /** Generate an opengl cubemap texture from 6 2d textures */
 void Skybox::generateCubeMapFromTextures()
@@ -149,78 +150,159 @@ void Skybox::generateCubeMapFromTextures()
     unsigned size = 0;
     for (unsigned i = 0; i < 6; i++)
     {
-        size = std::max(size, m_skybox_textures[i]->getSize().Width);
-        size = std::max(size, m_skybox_textures[i]->getSize().Height);
+        size = std::max(size, m_skybox_textures[i]->getDimension().Width);
+        size = std::max(size, m_skybox_textures[i]->getDimension().Height);
     }
 
     const unsigned texture_permutation[] = { 2, 3, 0, 1, 5, 4 };
-    char *rgba[6];
-    for (unsigned i = 0; i < 6; i++)
-        rgba[i] = new char[size * size * 4];
     for (unsigned i = 0; i < 6; i++)
     {
+        char *rgba = new char[size * size * 4];
+
         unsigned idx = texture_permutation[i];
+        video::IImage* img = m_skybox_textures[idx];
 
-        video::IImage* image = irr_driver->getVideoDriver()
-            ->createImageFromData(m_skybox_textures[idx]->getColorFormat(),
-                                  m_skybox_textures[idx]->getSize(),
-                                  m_skybox_textures[idx]->lock(), false   );
-        m_skybox_textures[idx]->unlock();
+        bool is_gles = false;
+#ifdef USE_GLES2
+        is_gles = true;
+#endif
+        if (CVS->isTextureCompressionEnabled() || is_gles)
+        {
+            uint8_t* data = (uint8_t*)img->lock();
+            for (unsigned int j = 0; j <
+                img->getDimension().Width * img->getDimension().Height; j++)
+            {
+                uint8_t tmp_val = data[j * 4];
+                data[j * 4] = data[j * 4 + 2];
+                data[j * 4 + 2] = tmp_val;
+            }
+        }
 
-        image->copyToScaling(rgba[i], size, size);
-        image->drop();
+        img->copyToScaling(rgba, size, size);
+        img->drop();
 
         if (i == 2 || i == 3)
         {
-            char *tmp = new char[size * size * 4];
-            memcpy(tmp, rgba[i], size * size * 4);
-            for (unsigned x = 0; x < size; x++)
+            // The size % 2 is here to handle the case of an odd size. We only
+            // need to apply it to one of {x, y}. With integer division:
+            // (odd / 2) * (odd / 2 + 1) * 4  = (odd * odd) - 1 pixel assignations
+            // The central pixel which would swap with itself is left untouched.
+            for (unsigned x = 0; x < (size + (size % 2))/2; x++)
             {
-                for (unsigned y = 0; y < size; y++)
+                unsigned inv_x = size - x - 1;
+                for (unsigned y = 0; y < size/2; y++)
                 {
-                    swapPixels(tmp, rgba[i], size, x, y, (size - y - 1), x);
+                    unsigned inv_y = size - y - 1;
+                    for (unsigned z = 0; z < 4; z++)
+                    {
+                        char tmp = rgba[4 * (size * x + y) + z];
+                        rgba[4 * (size * x + y) + z] =
+                            rgba[4 * (size * y + inv_x) + z];
+                        rgba[4 * (size * y + inv_x) + z] =
+                            rgba[4 * (size * inv_x + inv_y) + z];
+                        rgba[4 * (size * inv_x + inv_y) + z] =
+                            rgba[4 * (size * inv_y + x) + z];
+                        rgba[4 * (size * inv_y + x) + z] = tmp;
+                    }
                 }
             }
-            delete[] tmp;
         }
 
+        bool needs_srgb_format = CVS->isDeferredEnabled();
         glBindTexture(GL_TEXTURE_CUBE_MAP, m_cube_map);
-#ifndef ANDROID
+
         if (CVS->isTextureCompressionEnabled())
         {
-            glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0,
-                         GL_COMPRESSED_SRGB_ALPHA, size, size, 0, GL_BGRA,
-                         GL_UNSIGNED_BYTE, (GLvoid*)rgba[i]);
+            const unsigned tc_flag = squish::kDxt5 | stk_config->m_tc_quality;
+
+            unsigned tex_size = GE::get4x4CompressedTextureSize(size, size);
+            uint8_t* compressed = new uint8_t[tex_size];
+            squishCompressImage((uint8_t*)rgba, size, size, size * 4,
+                compressed, tc_flag);
+            GLint internal_format = needs_srgb_format ?
+                GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT :
+                GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+            glCompressedTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0,
+                internal_format, size, size, 0, tex_size, compressed);
+            delete[] compressed;
+
+            imMipmapCascade cascade;
+            imReduceOptions options;
+            imReduceSetOptions(&options, IM_REDUCE_FILTER_LINEAR/*filter*/,
+                2/*hopcount*/, 2.0f/*alpha*/, 1.0f/*amplifynormal*/,
+                0.0f/*normalsustainfactor*/);
+#ifdef DEBUG
+            int ret = imBuildMipmapCascade(&cascade, rgba, size, size,
+                1/*layercount*/, 4, size * 4, &options, 0);
+            assert(ret == 1);
+            delete[] rgba;
+#else
+            imBuildMipmapCascade(&cascade, rgba, size, size,
+                1/*layercount*/, 4, size * 4, &options, 0);
+            delete[] rgba;
+#endif
+            unsigned mip = 0;
+            unsigned cur_width = size;
+            while (true)
+            {
+                cur_width = cur_width < 2 ? 1 : cur_width >> 1;
+
+                unsigned tex_size = GE::get4x4CompressedTextureSize(cur_width,
+                    cur_width);
+                uint8_t* compressed = new uint8_t[tex_size];
+                squishCompressImage((uint8_t*)cascade.mipmap[mip + 1],
+                    cur_width, cur_width, cur_width * 4, compressed, tc_flag);
+                GLint internal_format = needs_srgb_format ?
+                    GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT :
+                    GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+                glCompressedTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i,
+                    mip + 1, internal_format, cur_width, cur_width, 0, tex_size,
+                    compressed);
+                delete[] compressed;
+
+                if (cur_width == 1)
+                    break;
+                mip += 1;
+            }
+            imFreeMipmapCascade(&cascade);
         }
         else
         {
+            GLint format = GL_BGRA;
+            if (is_gles)
+                format = GL_RGBA;
+            GLint internal_format = needs_srgb_format ? GL_SRGB8_ALPHA8 : GL_RGBA8;
             glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0,
-                         GL_SRGB_ALPHA, size, size, 0, GL_BGRA,
-                         GL_UNSIGNED_BYTE, (GLvoid*)rgba[i]);
+                internal_format, size, size, 0, format,
+                GL_UNSIGNED_BYTE, (GLvoid*)rgba);
+            delete[] rgba;
         }
-#endif
     }
-    glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
-    for (unsigned i = 0; i < 6; i++)
-        delete[] rgba[i];
+
+    if (!CVS->isTextureCompressionEnabled())
+        glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
 }   // generateCubeMapFromTextures
 
 
 // ----------------------------------------------------------------------------
 void Skybox::generateSpecularCubemap()
 {
-#ifndef ANDROID
     glGenTextures(1, &m_specular_probe);
     glBindTexture(GL_TEXTURE_CUBE_MAP, m_specular_probe);
-    size_t cubemap_size = 256;
+    unsigned int cubemap_size = 256;
     for (int i = 0; i < 6; i++)
     {
+#if !defined(USE_GLES2)
         glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGBA16F,
                      cubemap_size, cubemap_size, 0, GL_BGRA, GL_FLOAT, 0);
+#else
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGBA8,
+                     cubemap_size, cubemap_size, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+#endif
     }
     glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
 
-    if (!CVS->isDefferedEnabled())
+    if (!CVS->isDeferredEnabled())
         return;
 
     GLuint fbo;
@@ -256,7 +338,7 @@ void Skybox::generateSpecularCubemap()
         float *tmp = new float[2048];
         for (unsigned i = 0; i < 1024; i++)
         {
-            std::pair<float, float> sample = 
+            std::pair<float, float> sample =
                 getImportanceSamplingPhong(getHammersleySequence(i, 1024),
                                         roughness);
             tmp[2 * i] = sample.first;
@@ -264,45 +346,37 @@ void Skybox::generateSpecularCubemap()
         }
 
         glBindVertexArray(0);
-        glActiveTexture(GL_TEXTURE0 + 
-                        SpecularIBLGenerator::getInstance()->m_tu_samples);
-        GLuint sampleTex, sampleBuffer;
-        glGenBuffers(1, &sampleBuffer);
-        glBindBuffer(GL_TEXTURE_BUFFER, sampleBuffer);
-        glBufferData(GL_TEXTURE_BUFFER, 2048 * sizeof(float), tmp, 
-                     GL_STATIC_DRAW);
-        glGenTextures(1, &sampleTex);
-        glBindTexture(GL_TEXTURE_BUFFER, sampleTex);
-        glTexBuffer(GL_TEXTURE_BUFFER, GL_RG32F, sampleBuffer);
+        GLuint sample_texture;
+        glGenTextures(1, &sample_texture);
+        glBindTexture(GL_TEXTURE_2D, sample_texture);
+
+        // Upload texture data as 1024x1 RG32F texture
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32F, 1024, 1, 0, GL_RG, GL_FLOAT, tmp);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        delete[] tmp;
         glBindVertexArray(SharedGPUObjects::getFullScreenQuadVAO());
 
         for (unsigned face = 0; face < 6; face++)
         {
 
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, 
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                                    GL_TEXTURE_CUBE_MAP_POSITIVE_X + face,
                                    m_specular_probe, level);
-            GLuint status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-            assert(status == GL_FRAMEBUFFER_COMPLETE);
+            assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
 
-            SpecularIBLGenerator::getInstance()->setTextureUnits(m_cube_map);
+            SpecularIBLGenerator::getInstance()
+                ->setTextureUnits(m_cube_map, sample_texture);
             SpecularIBLGenerator::getInstance()->setUniforms(M[face],
                                                              viewportSize);
 
             glDrawArrays(GL_TRIANGLES, 0, 3);
         }
-        glActiveTexture(  GL_TEXTURE0
-                        + SpecularIBLGenerator::getInstance()->m_tu_samples);
-        glBindBuffer(GL_TEXTURE_BUFFER, 0);
-        glBindTexture(GL_TEXTURE_BUFFER, 0);
-
-        delete[] tmp;
-        glDeleteTextures(1, &sampleTex);
-        glDeleteBuffers(1, &sampleBuffer);
+        glDeleteTextures(1, &sample_texture);
     }
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, irr_driver->getDefaultFramebuffer());
     glDeleteFramebuffers(1, &fbo);
-#endif
+    glActiveTexture(GL_TEXTURE0);
 }   // generateSpecularCubemap
 
 
@@ -317,38 +391,43 @@ Out of legacy the sequence of textures maps to:
 - 6th texture maps to GL_TEXTURE_CUBE_MAP_POSITIVE_Z
 *  \param skybox_textures sequence of 6 textures.
 */
-Skybox::Skybox(const std::vector<video::ITexture *> &skybox_textures)
+Skybox::Skybox(const std::vector<video::IImage *> &skybox_textures)
 {
+    m_cube_map = 0;
     m_skybox_textures = skybox_textures;
-    
-#ifndef ANDROID
+
+#if !defined(USE_GLES2)
     glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
 #endif
 
     if (!skybox_textures.empty())
     {
         generateCubeMapFromTextures();
-        generateSpecularCubemap();
+        if(CVS->isGLSL())
+            generateSpecularCubemap();
     }
 }
 
 Skybox::~Skybox()
 {
     glDeleteTextures(1, &m_cube_map);
-    glDeleteTextures(1, &m_specular_probe);    
+    glDeleteTextures(1, &m_specular_probe);
 }
 
 
 // ----------------------------------------------------------------------------
 void Skybox::render(const scene::ICameraSceneNode *camera) const
 {
-    if (m_skybox_textures.empty())
+    if (m_cube_map == 0)
         return;
     glEnable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
-    assert(m_skybox_textures.size() == 6);
 
-    glDisable(GL_BLEND);
+    if (CVS->isDeferredEnabled())
+    {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE);
+    }
 
     SkyboxShader::getInstance()->use();
     SkyboxShader::getInstance()->bindVertexArray();
@@ -358,6 +437,8 @@ void Skybox::render(const scene::ICameraSceneNode *camera) const
 
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
+    glDisable(GL_BLEND);
 }   // renderSkybox
 
+#endif   // !SERVER_ONLY
 

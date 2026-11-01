@@ -18,49 +18,17 @@
 #ifndef GL_HEADER_HPP
 #define GL_HEADER_HPP
 
-#define GLEW_STATIC
-
-extern "C" {
-#ifndef ANDROID_DEVICE
-#   include <GL/glew.h>
-#endif
-}
-#include <cinttypes>
-
-#if defined(__APPLE__)
-#    include <OpenGL/gl.h>
-#    include <OpenGL/gl3.h>
-#    define OGL32CTX
-#    ifdef GL_ARB_instanced_arrays
-#        ifdef glVertexAttribDivisor
-#            undef glVertexAttribDivisor
-#        endif
-#        define glVertexAttribDivisor glVertexAttribDivisorARB
-#    endif
-#    ifndef GL_TEXTURE_SWIZZLE_RGBA
-#        define GL_TEXTURE_SWIZZLE_RGBA 0x8E46
-#    endif
-#elif defined(ANDROID_DEVICE)
-#    include <GLES3/gl3.h>
-#    include <GLES3/gl31.h>
-#    include <GLES3/gl3ext.h>
-#    define glVertexAttribDivisorARB glVertexAttribDivisor
-#elif defined(WIN32)
-#    define WIN32_LEAN_AND_MEAN
-#    include <windows.h>
+#ifndef SERVER_ONLY
+#include "glad/gl.h"
 #else
-#define GL_GLEXT_PROTOTYPES
-#define DEBUG_OUTPUT_DECLARED
-#    include <GL/gl.h>
-#    include <GL/glext.h>
-#endif
+typedef unsigned int GLuint;
+typedef int GLint;
+typedef unsigned int GLsync;
+typedef unsigned int GLenum;
+#endif   // server only
 
-struct DrawElementsIndirectCommand{
-    GLuint count;
-    GLuint instanceCount;
-    GLuint firstIndex;
-    GLuint baseVertex;
-    GLuint baseInstance;
-};
+#ifndef GL_GPU_MEM_INFO_TOTAL_AVAILABLE_MEM_NVX
+#define GL_GPU_MEM_INFO_TOTAL_AVAILABLE_MEM_NVX 0x9048
+#endif
 
 #endif

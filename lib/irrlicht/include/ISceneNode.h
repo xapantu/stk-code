@@ -18,14 +18,19 @@
 #include "irrList.h"
 #include "IAttributes.h"
 
+#include <memory>
+#include <vector>
+namespace GE
+{
+	class GERenderInfo;
+}
+
 namespace irr
 {
 namespace scene
 {
 	class ISceneManager;
 
-	//! Typedef for list of scene nodes
-	typedef core::list<ISceneNode*> ISceneNodeList;
 	//! Typedef for list of scene node animators
 	typedef core::list<ISceneNodeAnimator*> ISceneNodeAnimatorList;
 
@@ -49,7 +54,8 @@ namespace scene
 			: RelativeTranslation(position), RelativeRotation(rotation), RelativeScale(scale),
 				Parent(0), SceneManager(mgr), TriangleSelector(0), ID(id),
 				AutomaticCullingState(EAC_BOX), DebugDataVisible(EDS_OFF),
-				IsVisible(true), IsDebugObject(false)
+				IsVisible(true), IsDebugObject(false),
+				NeedsUpdateAbsTrans(true), UpdatedAbsTrans(false)
 		{
 			if (parent)
 				parent->addChild(this);
@@ -92,9 +98,8 @@ namespace scene
 		{
 			if (IsVisible)
 			{
-				ISceneNodeList::Iterator it = Children.begin();
-				for (; it != Children.end(); ++it)
-					(*it)->OnRegisterSceneNode();
+				for (unsigned i = 0; i < Children.size(); ++i)
+					Children[i]->OnRegisterSceneNode();
 			}
 		}
 
@@ -127,12 +132,24 @@ namespace scene
 
 				// perform the post render process on all children
 
-				ISceneNodeList::Iterator it = Children.begin();
-				for (; it != Children.end(); ++it)
-					(*it)->OnAnimate(timeMs);
+				for (unsigned i = 0; i < Children.size(); ++i)
+					Children[i]->OnAnimate(timeMs);
 			}
 		}
 
+		virtual void recursiveUpdateAbsolutePosition()
+		{
+			if (IsVisible)
+			{
+				// update absolute position
+				updateAbsolutePosition();
+
+				// perform the post render process on all children
+
+				for (unsigned i = 0; i < Children.size(); ++i)
+					Children[i]->recursiveUpdateAbsolutePosition();
+			}
+		}
 
 		//! Renders the node.
 		virtual void render() = 0;
@@ -171,7 +188,6 @@ namespace scene
 		getTransformedBoundingBox(), which does the same.
 		\return The non-transformed bounding box. */
 		virtual const core::aabbox3d<f32>& getBoundingBox() const = 0;
-
 
 		//! Get the axis aligned, transformed and animated absolute bounding box of this node.
 		/** \return The transformed bounding box. */
@@ -301,16 +317,16 @@ namespace scene
 		e.g. because it couldn't be found in the children list. */
 		virtual bool removeChild(ISceneNode* child)
 		{
-			ISceneNodeList::Iterator it = Children.begin();
-			for (; it != Children.end(); ++it)
-				if ((*it) == child)
+			for (unsigned i = 0; i < Children.size(); ++i)
+			{
+				if (Children[i] == child)
 				{
-					(*it)->Parent = 0;
-					(*it)->drop();
-					Children.erase(it);
+					child->Parent = 0;
+					child->drop();
+					Children.erase(Children.begin() + i);
 					return true;
 				}
-
+			}
 			_IRR_IMPLEMENT_MANAGED_MARSHALLING_BUGFIX;
 			return false;
 		}
@@ -322,13 +338,11 @@ namespace scene
 		*/
 		virtual void removeAll()
 		{
-			ISceneNodeList::Iterator it = Children.begin();
-			for (; it != Children.end(); ++it)
+			for (unsigned i = 0; i < Children.size(); ++i)
 			{
-				(*it)->Parent = 0;
-				(*it)->drop();
+				Children[i]->Parent = 0;
+				Children[i]->drop();
 			}
-
 			Children.clear();
 		}
 
@@ -467,7 +481,10 @@ namespace scene
 		/** \param scale New scale of the node, relative to its parent. */
 		virtual void setScale(const core::vector3df& scale)
 		{
+			if (RelativeScale == scale)
+				return;
 			RelativeScale = scale;
+			NeedsUpdateAbsTrans = true;
 		}
 
 
@@ -487,7 +504,10 @@ namespace scene
 		\param rotation New rotation of the node in degrees. */
 		virtual void setRotation(const core::vector3df& rotation)
 		{
+			if (RelativeRotation == rotation)
+				return;
 			RelativeRotation = rotation;
+			NeedsUpdateAbsTrans = true;
 		}
 
 
@@ -506,7 +526,10 @@ namespace scene
 		\param newpos New relative position of the scene node. */
 		virtual void setPosition(const core::vector3df& newpos)
 		{
+			if (RelativeTranslation == newpos)
+				return;
 			RelativeTranslation = newpos;
+			NeedsUpdateAbsTrans = true;
 		}
 
 
@@ -585,11 +608,17 @@ namespace scene
 
 		//! Returns a const reference to the list of all children.
 		/** \return The list of all children of this node. */
-		const core::list<ISceneNode*>& getChildren() const
+		const std::vector<ISceneNode*>& getChildren() const
 		{
 			return Children;
 		}
 
+		//! Returns a list of all children (non-const version).
+		/** \return The list of all children of this node. */
+		std::vector<ISceneNode*>& getChildren()
+		{
+			return Children;
+		}
 
 		//! Changes the parent of the scene node.
 		/** \param newParent The new parent to be used. */
@@ -651,15 +680,27 @@ namespace scene
 			hierarchy you might want to update the parents first.*/
 		virtual void updateAbsolutePosition()
 		{
+			bool updated_trans = false;
 			if (Parent)
 			{
-				AbsoluteTransformation =
-					Parent->getAbsoluteTransformation() * getRelativeTransformation();
+				if (Parent->UpdatedAbsTrans || NeedsUpdateAbsTrans)
+				{
+					AbsoluteTransformation =
+						Parent->getAbsoluteTransformation() * getRelativeTransformation();
+					updated_trans = true;
+				}
 			}
 			else
-				AbsoluteTransformation = getRelativeTransformation();
+			{
+				if (NeedsUpdateAbsTrans)
+				{
+					AbsoluteTransformation = getRelativeTransformation();
+					updated_trans = true;
+				}
+			}
+			UpdatedAbsTrans = updated_trans;
+			NeedsUpdateAbsTrans = false;
 		}
-
 
 		//! Returns the parent of this scene node
 		/** \return A pointer to the parent. */
@@ -747,6 +788,13 @@ namespace scene
 		/** \return The node's scene manager. */
 		virtual ISceneManager* getSceneManager(void) const { return SceneManager; }
 
+		//! STK addition to optimize updateAbsolutePosition, only do that if changed transformation.
+		bool getNeedsUpdateAbsTrans() const { return NeedsUpdateAbsTrans; }
+		bool getUpdatedAbsTrans() const { return UpdatedAbsTrans; }
+		void setNeedsUpdateAbsTrans(bool val) { NeedsUpdateAbsTrans = val; }
+		void setUpdatedAbsTrans(bool val) { UpdatedAbsTrans = val; }
+		virtual void resetFirstRenderInfo(std::shared_ptr<GE::GERenderInfo> ri) {}
+
 	protected:
 
 		//! A clone function for the ISceneNode members.
@@ -767,6 +815,8 @@ namespace scene
 			DebugDataVisible = toCopyFrom->DebugDataVisible;
 			IsVisible = toCopyFrom->IsVisible;
 			IsDebugObject = toCopyFrom->IsDebugObject;
+			NeedsUpdateAbsTrans = true;
+			UpdatedAbsTrans = false;
 
 			if (newManager)
 				SceneManager = newManager;
@@ -775,10 +825,8 @@ namespace scene
 
 			// clone children
 
-			ISceneNodeList::Iterator it = toCopyFrom->Children.begin();
-			for (; it != toCopyFrom->Children.end(); ++it)
-				(*it)->clone(this, newManager);
-
+			for (unsigned i = 0; i < Children.size(); ++i)
+				Children[i]->clone(this, newManager);
 			// clone animators
 
 			ISceneNodeAnimatorList::Iterator ait = toCopyFrom->Animators.begin();
@@ -799,9 +847,9 @@ namespace scene
 		{
 			SceneManager = newManager;
 
-			ISceneNodeList::Iterator it = Children.begin();
-			for (; it != Children.end(); ++it)
-				(*it)->setSceneManager(newManager);
+			for (unsigned i = 0; i < Children.size(); ++i)
+				Children[i]->setSceneManager(newManager);
+
 		}
 
 		//! Name of the scene node.
@@ -823,7 +871,7 @@ namespace scene
 		ISceneNode* Parent;
 
 		//! List of all children of this node
-		core::list<ISceneNode*> Children;
+		std::vector<ISceneNode*> Children;
 
 		//! List of all animator nodes
 		core::list<ISceneNodeAnimator*> Animators;
@@ -848,6 +896,8 @@ namespace scene
 
 		//! Is debug object?
 		bool IsDebugObject;
+
+		bool NeedsUpdateAbsTrans, UpdatedAbsTrans;
 	};
 
 

@@ -102,8 +102,8 @@ may be simultaneously open.
     client = enet_host_create (NULL /* create a client host */,
                 1 /* only allow 1 outgoing connection */,
                 2 /* allow up 2 channels to be used, 0 and 1 */,
-                57600 / 8 /* 56K modem with 56 Kbps downstream bandwidth */,
-                14400 / 8 /* 56K modem with 14 Kbps upstream bandwidth */);
+                0 /* assume any amount of incoming bandwidth */,
+                0 /* assume any amount of outgoing bandwidth */);
 
     if (client == NULL)
     {
@@ -126,6 +126,15 @@ control how long ENet will poll; if a timeout of 0 is specified,
 enet_host_service() will return immediately if there are no events to
 dispatch. enet_host_service() will return 1 if an event was dispatched
 within the specified timeout.
+
+Beware that most processing of the network with the ENet stack is done 
+inside enet_host_service(). Both hosts that make up the sides of a connection 
+must regularly call this function to ensure packets are actually sent and
+received. A common symptom of not actively calling enet_host_service()
+on both ends is that one side receives events while the other does not.
+The best way to schedule this activity to ensure adequate service is, for
+example, to call enet_host_service() with a 0 timeout (meaning non-blocking)
+at the beginning of every frame in a game loop.
 
 Currently there are only four types of significant events in ENet:
 
@@ -182,7 +191,7 @@ disconnect event and must be explicitly reset.
             break;
            
         case ENET_EVENT_TYPE_DISCONNECT:
-            printf ("%s disconected.\n", event.peer -> data);
+            printf ("%s disconnected.\n", event.peer -> data);
 
             /* Reset the peer's client information. */
 
@@ -204,7 +213,7 @@ Certain flags may also be supplied to enet_packet_create() to control
 various packet features:
 
 ENET_PACKET_FLAG_RELIABLE specifies that the packet must use reliable
-delivery.  A reliable packet is guarenteed to be delivered, and a
+delivery.  A reliable packet is guaranteed to be delivered, and a
 number of retry attempts will be made until an acknowledgement is
 received from the foreign host the packet is sent to. If a certain
 number of retry attempts is reached without any acknowledgement, ENet

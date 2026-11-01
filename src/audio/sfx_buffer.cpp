@@ -21,19 +21,18 @@
 #include "config/user_config.hpp"
 #include "io/file_manager.hpp"
 #include "utils/constants.hpp"
+#include "utils/file_utils.hpp"
 #include "utils/log.hpp"
 
-#if HAVE_OGGVORBIS
+#ifdef ENABLE_SOUND
 #  include <vorbis/codec.h>
 #  include <vorbis/vorbisfile.h>
-#  ifdef __APPLE__
-#    include <OpenAL/al.h>
-#    include <OpenAL/alc.h>
-#  else
-#    include <AL/al.h>
-#    include <AL/alc.h>
+#  ifdef HAVE_OPUS
+#    include <opusfile.h>
 #  endif
 #endif
+
+#include "utils/string_utils.hpp"
 
 //----------------------------------------------------------------------------
 /** Creates a sfx. The parameter are taken from the parameters:
@@ -88,7 +87,7 @@ SFXBuffer::SFXBuffer(const std::string& file,
 
 //----------------------------------------------------------------------------
 /** \brief load the buffer from file into OpenAL.
- *  \note If this buffer is already loaded, this call does nothing and 
+ *  \note If this buffer is already loaded, this call does nothing and
   *       returns false.
  *  \return Whether loading was successful.
  */
@@ -96,25 +95,36 @@ bool SFXBuffer::load()
 {
     if (UserConfigParams::m_sfx == false) return false;
     
-#if HAVE_OGGVORBIS
-    if (m_loaded) return false;
-
-    alGetError(); // clear errors from previously
-
-    alGenBuffers(1, &m_buffer);
-    if (!SFXManager::checkError("generating a buffer"))
+#ifdef ENABLE_SOUND
+    if (UserConfigParams::m_enable_sound)
     {
-        return false;
-    }
+        if (m_loaded) return false;
+    
+        alGetError(); // clear errors from previously
+    
+        alGenBuffers(1, &m_buffer);
+        if (!SFXManager::checkError("generating a buffer"))
+        {
+            return false;
+        }
+    
+        assert(alIsBuffer(m_buffer));
+    
+        bool load_success = false;
+#ifdef HAVE_OPUS
+        if (StringUtils::getExtension(m_file) == "opus")
+            load_success = loadOpusBuffer(m_file, m_buffer);
+        else
+#endif
+            load_success = loadVorbisBuffer(m_file, m_buffer);
 
-    assert( alIsBuffer(m_buffer) );
-
-    if (!loadVorbisBuffer(m_file, m_buffer))
-    {
-        Log::error("SFXBuffer", "Could not load sound effect %s",
-                   m_file.c_str());
-        // TODO: free al buffer here?
-        return false;
+        if (!load_success)
+        {
+            Log::error("SFXBuffer", "Could not load sound effect %s",
+                       m_file.c_str());
+            // TODO: free al buffer here?
+            return false;
+        }
     }
 #endif
 
@@ -130,11 +140,14 @@ bool SFXBuffer::load()
 
 void SFXBuffer::unload()
 {
-#if HAVE_OGGVORBIS
-    if (m_loaded)
+#ifdef ENABLE_SOUND
+    if (UserConfigParams::m_enable_sound)
     {
-        alDeleteBuffers(1, &m_buffer);
-        m_buffer = 0;
+        if (m_loaded)
+        {
+            alDeleteBuffers(1, &m_buffer);
+            m_buffer = 0;
+        }
     }
 #endif
     m_loaded = false;
@@ -147,7 +160,10 @@ void SFXBuffer::unload()
  */
 bool SFXBuffer::loadVorbisBuffer(const std::string &name, ALuint buffer)
 {
-#if HAVE_OGGVORBIS
+#ifdef ENABLE_SOUND
+    if (!UserConfigParams::m_enable_sound)
+        return false;
+        
     const int ogg_endianness = (IS_LITTLE_ENDIAN ? 0 : 1);
 
 
@@ -162,7 +178,7 @@ bool SFXBuffer::loadVorbisBuffer(const std::string &name, ALuint buffer)
         return false;
     }
 
-    file = fopen(name.c_str(), "rb");
+    file = FileUtils::fopenU8Path(name, "rb");
 
     if(!file)
     {
@@ -183,17 +199,11 @@ bool SFXBuffer::loadVorbisBuffer(const std::string &name, ALuint buffer)
     // always 16 bit data
     long len = (long)ov_pcm_total(&oggFile, -1) * info->channels * 2;
 
-    char *data = (char *) malloc(len);
-    if(!data)
-    {
-        ov_clear(&oggFile);
-        Log::error("SFXBuffer", "[SFXBuffer] Could not allocate decode buffer.");
-        return false;
-    }
+    std::unique_ptr<char []> data = std::unique_ptr<char []>(new char[len]);
 
     int bs = -1;
     long todo = len;
-    char *bufpt = data;
+    char *bufpt = data.get();
 
     while (todo)
     {
@@ -204,10 +214,19 @@ bool SFXBuffer::loadVorbisBuffer(const std::string &name, ALuint buffer)
 
     alBufferData(buffer, (info->channels == 1) ? AL_FORMAT_MONO16
                  : AL_FORMAT_STEREO16,
-                 data, len, info->rate);
+                 data.get(), len, info->rate);
     success = true;
 
-    free(data);
+    if (m_positional && info->channels > 1)
+        Log::error("SFXBuffer", "Positional audio is not supported with stereo files, "
+            "but %s is stereo", m_file.c_str());
+
+    int buffer_size, frequency, bits_per_sample, channels;
+    buffer_size = len;
+    frequency = info->rate;
+    // We use AL_FORMAT_MONO16 or AL_FORMAT_STEREO16 so it's always 16
+    bits_per_sample = 16;
+    channels = info->channels;
 
     ov_clear(&oggFile);
     fclose(file);
@@ -216,12 +235,7 @@ bool SFXBuffer::loadVorbisBuffer(const std::string &name, ALuint buffer)
     // duration (which is the norm), compute it:
     if(m_duration < 0)
     {
-        ALint buffer_size, frequency, bits_per_sample, channels;
-        alGetBufferi(buffer, AL_SIZE,      &buffer_size    );
-        alGetBufferi(buffer, AL_FREQUENCY, &frequency      );
-        alGetBufferi(buffer, AL_CHANNELS,  &channels       );
-        alGetBufferi(buffer, AL_BITS,      &bits_per_sample);
-        m_duration = float(buffer_size) 
+        m_duration = float(buffer_size)
                    / (frequency*channels*(bits_per_sample / 8));
     }
     return success;
@@ -229,4 +243,81 @@ bool SFXBuffer::loadVorbisBuffer(const std::string &name, ALuint buffer)
     return false;
 #endif
 }   // loadVorbisBuffer
+
+//----------------------------------------------------------------------------
+#if defined(ENABLE_SOUND) && defined(HAVE_OPUS)
+/** Load an Opus file into an OpenAL buffer.
+ *  Opus always decodes at 48000 Hz.
+ */
+bool SFXBuffer::loadOpusBuffer(const std::string &name, ALuint buffer)
+{
+    if (!UserConfigParams::m_enable_sound)
+        return false;
+
+    if (alIsBuffer(buffer) == AL_FALSE)
+    {
+        Log::error("SFXBuffer", "Error, bad OpenAL buffer");
+        return false;
+    }
+
+    int error = 0;
+    OggOpusFile *of = op_open_file(name.c_str(), &error);
+    if (error != 0 || of == NULL)
+    {
+        Log::error("SFXBuffer",
+                   "loadOpusBuffer() - couldn't open file %s (error %d)",
+                   name.c_str(), error);
+        return false;
+    }
+
+    const OpusHead *head = op_head(of, -1);
+    int channels = head->channel_count;
+    int frequency = 48000;  // Opus always decodes at 48 kHz
+
+    // Total samples (per channel) across all links
+    ogg_int64_t total_samples = op_pcm_total(of, -1);
+
+    std::unique_ptr<opus_int16[]> data(new opus_int16[total_samples * channels]);
+
+    int total_read = 0;
+    while (total_read < (int)total_samples)
+    {
+        int result = op_read(of,
+                             data.get() + total_read * channels,
+                             (int)(total_samples - total_read),
+                             NULL);
+        if (result > 0)
+            total_read += result;
+        else if (result < 0)
+        {
+            Log::error("SFXBuffer",
+                       "loadOpusBuffer() - op_read error %d in %s",
+                       result, name.c_str());
+            op_free(of);
+            return false;
+        }
+        else
+            break;
+    }
+
+    long actual_bytes = (long)(total_read * channels * 2);
+    alBufferData(buffer,
+                 (channels == 1) ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16,
+                 data.get(), actual_bytes, frequency);
+
+    if (m_positional && channels > 1)
+        Log::error("SFXBuffer",
+                   "Positional audio is not supported with stereo files, "
+                   "but %s is stereo", m_file.c_str());
+
+    op_free(of);
+
+    // Compute duration if not overridden by XML
+    if (m_duration < 0)
+    {
+        m_duration = (float)total_read / (float)frequency;
+    }
+    return true;
+}   // loadOpusBuffer
+#endif // ENABLE_SOUND && HAVE_OPUS
 

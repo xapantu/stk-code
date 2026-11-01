@@ -18,9 +18,10 @@
 #include "states_screens/dialogs/registration_dialog.hpp"
 
 #include "guiengine/engine.hpp"
-#include "guiengine/widgets.hpp"
+#include "guiengine/widgets/label_widget.hpp"
+#include "guiengine/widgets/ribbon_widget.hpp"
 #include "states_screens/state_manager.hpp"
-#include "states_screens/register_screen.hpp"
+#include "states_screens/online/register_screen.hpp"
 #include "utils/translation.hpp"
 #include "utils/string_utils.hpp"
 
@@ -39,14 +40,13 @@ RegistrationDialog::RegistrationDialog() :
     loadFromFile("online/registration_terms.stkgui");
     LabelWidget* terms_widget = getWidget<LabelWidget>("terms");
 
-    core::stringw terms = _(L"Please read the terms and conditions "
-        L"for SuperTuxKart at '%s'. You must agree "
-        L"to these terms in order to register an account for STK. "
-        L"By checking the box below, you are confirming that you understand "
-        L"these terms. If you have any questions or comments regarding these "
-        L"terms, one of the members of the development team would gladly "
-        L"assist you.",
-        L"http://terms.supertuxkart.net");
+    core::stringw terms = _("Please read the terms and conditions "
+        "for SuperTuxKart at '%s'. You must agree "
+        "to these terms in order to register an account for STK. "
+        "If you have any questions or comments regarding these "
+        "terms, one of the members of the development team would gladly "
+        "assist you.",
+        StringUtils::utf8ToWide(stk_config->m_terms_url));
     terms_widget->setText(terms, false);
 
    // showRegistrationTerms();

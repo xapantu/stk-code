@@ -42,7 +42,8 @@ public:
 	//! Creates a surface from the file
 	/** \param file File handle to check.
 	\return Pointer to newly created image, or 0 upon error. */
-	virtual IImage* loadImage(io::IReadFile* file) const = 0;
+	virtual IImage* loadImage(io::IReadFile* file, bool skip_checking = false) const = 0;
+	virtual bool getImageSize(io::IReadFile* file, core::dimension2du* dim) const { return false; }
 };
 
 

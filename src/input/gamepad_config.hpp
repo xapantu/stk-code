@@ -27,9 +27,14 @@
 
 #include <iosfwd>
 #include <irrString.h>
+#include <map>
+#include <set>
 #include <string>
+#include <string>
+#include <tuple>
 
 using namespace irr;
+class SDLController;
 
 /** \brief specialisation of DeviceConfig for gamepad type devices
  *  \ingroup config
@@ -41,25 +46,30 @@ private:
     /** Number of axis this device has. */
     int m_axis_count;
 
+    /** Number of hat this device has. */
+    int m_hat_count;
+
     /** Number of buttons this device has. */
     int m_button_count;
 
     /** Deadzone of this gamepad. */
     int m_deadzone;
 
-    /** If this device has analog axis, steering etc. must be set immediately
-     *  from the input values, not having a delayed time (time-full-steer). */
-    bool m_is_analog;
-
     /** If set to true, map any analog axis from x in [0,1] to x^x --> at
      *  values close to 0 the joystick will react less sensitive. */
     bool m_desensitize;
 
-    /** A type to keep track if the gamepad has been identified (which is
-     *  used to display better button names and better defaults). */
-    enum {GP_UNIDENTIFIED, GP_XBOX360, GP_XBOX_ORIGINAL} m_type;
+    bool m_use_force_feedback;
+    int m_auto_center;
 
-    void detectType();
+    std::map<std::tuple<int, Input::AxisDirection>, int> m_sdl_mapping;
+
+    std::set<int> m_digital_axes;
+
+    bool getMappingTuple(const std::string& rhs,
+                         std::tuple<int, Input::AxisDirection>& t);
+    void setBindingFromTuple(const PlayerAction action,
+                             std::tuple<int, Input::AxisDirection>& t);
 public:
 
              GamepadConfig           ();
@@ -76,7 +86,7 @@ public:
     virtual bool load(const XMLNode *config) OVERRIDE;
     // ------------------------------------------------------------------------
     /** Returns if this device uses analog axes. */
-    virtual bool isAnalog() const OVERRIDE { return m_is_analog; }
+    virtual bool isAnalog(Input::InputType type, int id) const OVERRIDE;
 
     // ------------------------------------------------------------------------
     /** Returns true if this device should desensitize its input at values
@@ -106,7 +116,19 @@ public:
     virtual bool isGamePad()  const OVERRIDE { return true; }
     // ------------------------------------------------------------------------
     virtual bool isKeyboard() const OVERRIDE { return false; }
-
+    // ------------------------------------------------------------------------
+    void initSDLController(const std::string& mapping, int buttons, int axes,
+                           int hats);
+    // ------------------------------------------------------------------------
+    void initSDLMapping();
+    // ------------------------------------------------------------------------
+    bool useForceFeedback() const             { return m_use_force_feedback; }
+    // ------------------------------------------------------------------------
+    void setForceFeedback(bool val)            { m_use_force_feedback = val; }
+    // ------------------------------------------------------------------------
+    int getAutoCenterStrength() const                { return m_auto_center; }
+    // ------------------------------------------------------------------------
+    void setAutoCenter(bool val)               { m_auto_center = val; }
 };   // class GamepadConfig
 
 #endif

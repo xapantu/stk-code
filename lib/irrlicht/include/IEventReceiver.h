@@ -34,8 +34,8 @@ namespace irr
 		IrrlichtDevice::postEventFromUser. They take the same path as mouse events. */
 		EET_KEY_INPUT_EVENT,
         
-        //! A multi touch event.
-		EET_MULTI_TOUCH_EVENT,
+        //! A touch input event.
+		EET_TOUCH_INPUT_EVENT,
         
         //! A accelerometer event.
         EET_ACCELEROMETER_EVENT,
@@ -61,14 +61,6 @@ namespace irr
 		user receiver then no text will be sent to the console. */
 		EET_LOG_TEXT_EVENT,
 
-#if defined(_IRR_COMPILE_WITH_WINDOWS_DEVICE_)
-		//! A input method event
-		/** Input method events are created by the input method message and passed to IrrlichtDevice::postEventFromUser.
-		Windows: Implemented.
-		Linux / Other: Not yet implemented. */
-		EET_IMPUT_METHOD_EVENT,
-#endif
-
 		//! A user event with user data.
 		/** This is not used by Irrlicht and can be used to send user
 		specific data though the system. The Irrlicht 'window handle'
@@ -83,6 +75,15 @@ namespace irr
 		MacOS: Not yet implemented
 		*/
 		EET_USER_EVENT,
+		
+		//! Pass on raw events from the OS
+		EET_SYSTEM_EVENT,
+		
+		//! Application state events like a resume, pause etc.
+		EET_APPLICATION_EVENT,
+
+		//! SDL text event
+		EET_SDL_TEXT_EVENT,
 
 		//! This enum is never used, it only forces the compiler to
 		//! compile these enumeration values to 32 bit.
@@ -161,38 +162,57 @@ namespace irr
 
 		EMBSM_FORCE_32_BIT = 0x7fffffff
 	};
-
-#if defined(_IRR_COMPILE_WITH_WINDOWS_DEVICE_)
-	//! Enumeration for all input method events
-	enum EINPUT_METHOD_EVENT
-	{
-		//! a character from input method.
-		EIME_CHAR_INPUT = 0,
-
-		//! change position of composition window
-		EIME_CHANGE_POS,
-
-		EIME_FORCE_32_BIT = 0x7fffffff
-	}
-#endif
     
     //! Enumeration for all touch input events
-	enum EMULTI_TOUCH_INPUT_EVENT
+	enum ETOUCH_INPUT_EVENT
 	{
-		//! Max multi touch count
-		NUMBER_OF_MULTI_TOUCHES = 10,
-        
 		//! Touch was pressed down.
-		EMTIE_PRESSED_DOWN = 0,
-        
+		ETIE_PRESSED_DOWN = 0,
+
 		//! Touch was left up.
-		EMTIE_LEFT_UP,
-        
+		ETIE_LEFT_UP,
+
 		//! The touch changed its position.
-		EMTIE_MOVED,
-        
+		ETIE_MOVED,
+
 		//! No real event. Just for convenience to get number of events
-		EMTIE_COUNT
+		ETIE_COUNT
+	};
+	
+	enum ESYSTEM_EVENT_TYPE
+	{
+		//! From Android command handler for native activity messages
+		ESET_ANDROID_CMD = 0,
+
+		// TODO: for example ESET_WINDOWS_MESSAGE for win32 message loop events
+
+		//! No real event, but to get number of event types
+		ESET_COUNT
+	};
+	
+	//! Enumeration for a commonly used application state events (it's useful mainly for mobile devices)
+	enum EAPPLICATION_EVENT_TYPE
+	{
+		//! The application will be resumed.
+		EAET_WILL_RESUME = 0,
+		
+		//! The application has been resumed.
+		EAET_DID_RESUME,
+		
+		//! The application will be paused.
+		EAET_WILL_PAUSE,
+		
+		//! The application has been paused.
+		EAET_DID_PAUSE,
+
+		//! The application will be terminated.
+		EAET_WILL_TERMINATE,
+		
+		//! The application received a memory warning.
+		EAET_MEMORY_WARNING,
+
+		//! No real event, but to get number of event types.
+		EAET_COUNT
 	};
 
 	namespace gui
@@ -368,11 +388,15 @@ struct SEvent
 	//! Any kind of keyboard event.
 	struct SKeyInput
 	{
-		//! Character corresponding to the key (0, if not a character)
-		wchar_t Char;
+		//! Character corresponding to the key (0, if not a character, value undefined in key releases)
+		char32_t Char;
 
 		//! Key which has been pressed or released
 		EKEY_CODE Key;
+
+		//! System dependent code. Only set for systems which are described below, otherwise undefined.
+		//! Android: int32_t with physical key as returned by AKeyEvent_getKeyCode
+		u32 SystemKeyCode;
 
 		//! If not true, then the key was left up
 		bool PressedDown:1;
@@ -384,54 +408,22 @@ struct SEvent
 		bool Control:1;
 	};
     
-    //! Any kind of multi touch event.
-	struct SMultiTouchInput
+    //! Any kind of touch event.
+	struct STouchInput
 	{
-		//! A helper function to check if a button is pressed.
-		u32 touchedCount() const
-		{
-			u32 count = 0;
-            
-			for (u16 i = 0; i < NUMBER_OF_MULTI_TOUCHES; ++i)
-            {
-				if (Touched[i])
-                    count++;
-			}
-            
-			return count;
-		}
-        
-        //! Reset variables.
-		void clear()
-		{
-			for (u16 i = 0; i < NUMBER_OF_MULTI_TOUCHES; ++i)
-            {
-				Touched[i] = 0;
-				X[i] = 0;
-				Y[i] = 0;
-				PrevX[i] = 0;
-				PrevY[i] = 0;
-			}
-		}
-        
-        // Status of simple touch.
-        u8 Touched[NUMBER_OF_MULTI_TOUCHES];
-        
+        // Touch ID.
+        size_t ID;
+
         // X position of simple touch.
-		s32 X[NUMBER_OF_MULTI_TOUCHES];
-        
+		s32 X;
+
         // Y position of simple touch.
-		s32 Y[NUMBER_OF_MULTI_TOUCHES];
-        
-        // Previous X position of simple touch.
-		s32 PrevX[NUMBER_OF_MULTI_TOUCHES];
-        
-        // Previous Y position of simple touch.
-		s32 PrevY[NUMBER_OF_MULTI_TOUCHES];
-        
-		//! Type of multi touch event
-		EMULTI_TOUCH_INPUT_EVENT Event;
+		s32 Y;
+
+		//! Type of touch event.
+		ETOUCH_INPUT_EVENT Event;
 	};
+
     
     //! Any kind of accelerometer event.
 	struct SAccelerometerEvent
@@ -498,10 +490,6 @@ struct SEvent
 			NUMBER_OF_AXES = 32
 		};
 
-		/** A bitmap of button states.  You can use IsButtonPressed() to
-		 ( check the state of each button from 0 to (NUMBER_OF_BUTTONS - 1) */
-		u32 ButtonStates;
-
 		/** For AXIS_X, AXIS_Y, AXIS_Z, AXIS_R, AXIS_U and AXIS_V
 		 * Values are in the range -32768 to 32767, with 0 representing
 		 * the center position.  You will receive the raw value from the
@@ -512,17 +500,28 @@ struct SEvent
 		 */
 		s16 Axis[NUMBER_OF_AXES];
 
-		/** The POV represents the angle of the POV hat in degrees * 100,
-		 * from 0 to 35,900.  A value of 65535 indicates that the POV hat
-		 * is centered (or not present).
-		 * This value is only supported on Windows.  On Linux, the POV hat
-		 * will be sent as 2 axes instead. */
-		u16 POV;
+		//! The ID of the joystick which generated this event.
+		/** This is an internal Irrlicht index; it does not map directly
+		 * to any particular hardware joystick. */
+		u32 AxisChanged;
+
+		/** A bitmap of button states.  You can use IsButtonPressed() to
+		 ( check the state of each button from 0 to (NUMBER_OF_BUTTONS - 1) */
+		u32 ButtonStates;
 
 		//! The ID of the joystick which generated this event.
 		/** This is an internal Irrlicht index; it does not map directly
 		 * to any particular hardware joystick. */
-		u8 Joystick;
+		u32 Joystick;
+
+		//! A helper function to check if a button is pressed.
+		bool IsAxisChanged(u32 axis) const
+		{
+			if(axis >= (u32)NUMBER_OF_AXES)
+				return false;
+
+			return (AxisChanged & (1 << axis)) ? true : false;
+		}
 
 		//! A helper function to check if a button is pressed.
 		bool IsButtonPressed(u32 button) const
@@ -553,21 +552,40 @@ struct SEvent
 		//! Another user specified data as int
 		s32 UserData2;
 	};
-
-#if defined(_IRR_COMPILE_WITH_WINDOWS_DEVICE_)
-	struct SInputMethodEvent
+	
+	// Raw events from the OS
+	struct SSystemEvent
 	{
-		//! Parent window handle for IMM functions (Windows only)
-		void* Handle;
+		//! Android command handler native activity messages.
+		struct SAndroidCmd
+		{
+			//!  APP_CMD_ enums defined in android_native_app_glue.h from the Android NDK
+			s32 Cmd;
+		};
 
-		//! Character from Input Method
-		wchar_t Char;
+		// TOOD: more structs for iphone, Windows, X11, etc.
 
-		//! Type of input method event
-		EINPUT_METHOD_EVENT Event;
+		ESYSTEM_EVENT_TYPE EventType;
+		union
+		{
+			struct SAndroidCmd AndroidCmd;
+		};
 	};
-#endif
+	
+	// Application state event
+	struct SApplicationEvent
+	{
+		EAPPLICATION_EVENT_TYPE EventType;
+	};
 
+	// Application state event
+	struct SSDLTextEvent
+	{
+		u32 Type; // SDL_TEXTEDITING or SDL_TEXTINPUT
+		c8 Text[32];
+		s32 Start; // SDL_TEXTEDITING usage
+		s32 Length; // SDL_TEXTEDITING usage
+	};
 
 	EEVENT_TYPE EventType;
 	union
@@ -575,13 +593,16 @@ struct SEvent
 		struct SGUIEvent GUIEvent;
 		struct SMouseInput MouseInput;
 		struct SKeyInput KeyInput;
-        struct SMultiTouchInput MultiTouchInput;
+        struct STouchInput TouchInput;
         struct SAccelerometerEvent AccelerometerEvent;
         struct SGyroscopeEvent GyroscopeEvent;
         struct SDeviceMotionEvent DeviceMotionEvent;
 		struct SJoystickEvent JoystickEvent;
 		struct SLogEvent LogEvent;
 		struct SUserEvent UserEvent;
+		struct SSystemEvent SystemEvent;
+		struct SApplicationEvent ApplicationEvent;
+		struct SSDLTextEvent SDLTextEvent;
 	};
 
 };

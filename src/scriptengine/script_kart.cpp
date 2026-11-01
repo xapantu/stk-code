@@ -19,8 +19,11 @@
 #include "script_kart.hpp"
 
 #include "karts/kart.hpp"
+#include "karts/kart_model.hpp"
+#include "karts/kart_properties.hpp"
 #include "modes/world.hpp"
 #include "scriptvec3.hpp"
+#include "scriptengine/aswrappedcall.hpp"
 
 #include <assert.h>
 #include <angelscript.h>
@@ -59,6 +62,18 @@ namespace Scripting
             s.setRotation(btQuaternion(btVector3(0.0f, 1.0f, 0.0f), 0.0f));
             World::getWorld()->moveKartTo(kart, s);
         }
+        
+        /** Teleports the kart to the specified Vec3 location */
+        void teleportExact(int idKart, SimpleVec3* position)
+        {
+            AbstractKart* kart = World::getWorld()->getKart(idKart);
+            Vec3 v(position->getX(), position->getY(), position->getZ());
+            kart->setXYZ(v);
+            btTransform s;
+            s.setRotation(kart->getRotation());
+            s.setOrigin(v);
+            World::getWorld()->moveKartTo(kart, s);
+        }
 
         /** Attempts to project kart to the given 2D location, to the position
           * with height 0, at a 45 degree angle.
@@ -87,7 +102,7 @@ namespace Scripting
         //    float normalized_dy = dy / d;
         //    float g = 9.81f;
         //    float velocity = sqrtf(d * g);
-        //    
+        //
         //    kart->setVelocity(btVector3(velocity * normalized_dx, velocity, velocity * normalized_dy));
         //}
         
@@ -125,20 +140,61 @@ namespace Scripting
             return kart->getKartProperties()->getEngineMaxSpeed();
         }
 
-        /** @}*/
-        /** @}*/
+        /** Gets the maximum speed (velocity) a kart can reach */
+        void changeKart(int idKart, std::string* new_id)
+        {
+            AbstractKart* kart = World::getWorld()->getKart(idKart);
+            HandicapLevel hl = kart->getHandicap();
+            auto ri = kart->getKartModel()->getRenderInfo();
+            kart->changeKart(*new_id, hl, ri);
+        }
 
+        /** @}*/
+        /** @}*/
+        
         void registerScriptFunctions(asIScriptEngine *engine)
         {
-            int r; // of type asERetCodes
             engine->SetDefaultNamespace("Kart");
-            r = engine->RegisterGlobalFunction("void squash(int id, float time)", asFUNCTION(squash), asCALL_CDECL); assert(r >= 0);
-            r = engine->RegisterGlobalFunction("void teleport(int id, const Vec3 &in)", asFUNCTION(teleport), asCALL_CDECL); assert(r >= 0);
-            r = engine->RegisterGlobalFunction("void setVelocity(int id, const Vec3 &in)", asFUNCTION(setVelocity), asCALL_CDECL); assert(r >= 0);
-            //r = engine->RegisterGlobalFunction("void jumpTo(int id, float x, float y)", asFUNCTION(jumpTo), asCALL_GENERIC); assert(r >= 0);
-            r = engine->RegisterGlobalFunction("Vec3 getLocation(int id)", asFUNCTION(getLocation), asCALL_CDECL); assert(r >= 0);
-            r = engine->RegisterGlobalFunction("Vec3 getVelocity(int id)", asFUNCTION(getVelocity), asCALL_CDECL); assert(r >= 0);
-            r = engine->RegisterGlobalFunction("float getMaxSpeed(int id)", asFUNCTION(getMaxSpeed), asCALL_CDECL); assert(r >= 0);
+            
+            bool mp = strstr(asGetLibraryOptions(), "AS_MAX_PORTABILITY");
+            asDWORD call_conv = mp ? asCALL_GENERIC : asCALL_CDECL;
+            int r; // of type asERetCodes
+            
+            r = engine->RegisterGlobalFunction("void squash(int id, float time)",
+                                               mp ? WRAP_FN(squash) : asFUNCTION(squash),
+                                               call_conv); assert(r >= 0);
+                                               
+            r = engine->RegisterGlobalFunction("void teleport(int id, const Vec3 &in)",
+                                               mp ? WRAP_FN(teleport) : asFUNCTION(teleport),
+                                               call_conv); assert(r >= 0);
+                                               
+            r = engine->RegisterGlobalFunction("void teleportExact(int id, const Vec3 &in)",
+                                               mp ? WRAP_FN(teleportExact) : asFUNCTION(teleportExact),
+                                               call_conv); assert(r >= 0);
+                                               
+            r = engine->RegisterGlobalFunction("void setVelocity(int id, const Vec3 &in)",
+                                               mp ? WRAP_FN(setVelocity) : asFUNCTION(setVelocity),
+                                               call_conv); assert(r >= 0);
+                                               
+            //r = engine->RegisterGlobalFunction("void jumpTo(int id, float x, float y)",
+            //                                   mp ? WRAP_FN(jumpTo) : asFUNCTION(jumpTo),
+            //                                   call_conv); assert(r >= 0);
+            
+            r = engine->RegisterGlobalFunction("Vec3 getLocation(int id)",
+                                               mp ? WRAP_FN(getLocation) : asFUNCTION(getLocation),
+                                               call_conv); assert(r >= 0);
+                                               
+            r = engine->RegisterGlobalFunction("Vec3 getVelocity(int id)",
+                                               mp ? WRAP_FN(getVelocity) : asFUNCTION(getVelocity),
+                                               call_conv); assert(r >= 0);
+                                               
+            r = engine->RegisterGlobalFunction("float getMaxSpeed(int id)",
+                                               mp ? WRAP_FN(getMaxSpeed) : asFUNCTION(getMaxSpeed),
+                                               call_conv); assert(r >= 0);
+
+            r = engine->RegisterGlobalFunction("void changeKart(int id, string &in)",
+                                               mp ? WRAP_FN(changeKart) : asFUNCTION(changeKart),
+                                               call_conv); assert(r >= 0);
         }
 
         void registerScriptEnums(asIScriptEngine *engine)

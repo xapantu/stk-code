@@ -26,9 +26,12 @@
 #include <string>
 
 class AbstractKart;
-class ParticleEmitter;
 class ParticleKind;
 class Vec3;
+
+#ifndef SERVER_ONLY
+class ParticleEmitter;
+#endif
 
 namespace irr {
     namespace scene {
@@ -40,9 +43,9 @@ class KartGFX
 {
 public:
     /** All particle effects supported by this object.
-     *  Nitro, zipper, terrain, and skidding effects.  Two different
+     *  Nitro, zipper, terrain, and skidding effects.  Three different
      *  skid types are supported, but only one emitter node will be
-     *  created. So KGFX_SKID1/2 store the two types, and KGFX_SKID
+     *  created. So KGFX_SKID1/2/3 store the two types, and KGFX_SKID
      *  = KGFX_SKID1 stores the actual emitter node. KGFX_COUNT
      *  is the number of entries and must therefore be last. */
     enum KartGFXType { KGFX_NITRO1=0,
@@ -57,23 +60,35 @@ public:
                        KGFX_SKID1R = KGFX_SKIDR,
                        KGFX_SKID2L,
                        KGFX_SKID2R,
+                       KGFX_SKID0L,
+                       KGFX_SKID0R,
+                       KGFX_EXHAUST1,
+                       KGFX_EXHAUST2,
                        KGFX_COUNT};
 
 private:
+    /** The particle kind for skidding bonus level 0. */
+    const ParticleKind *m_skid_kind0;
+
     /** The particle kind for skidding bonus level 1. */
     const ParticleKind *m_skid_kind1;
 
     /** The particle kind for skidding bonus level 2. */
     const ParticleKind *m_skid_kind2;
 
+#ifndef SERVER_ONLY
     /** Vector of all particle emitters. */
     std::vector<ParticleEmitter*> m_all_emitters;
+#endif
 
     /** Pointer to the owner of this kart. */
     const AbstractKart *m_kart;
 
     /** Used to alternate particle effects from the rear wheels. */
     int         m_wheel_toggle;
+    
+    /** A skid level that is currently in use */
+    int m_skid_level;
 
     /** A light that's shown when the kart uses nitro. */
     irr::scene::ISceneNode* m_nitro_light;
@@ -88,8 +103,9 @@ private:
                    const Vec3 &position, bool important);
     void resizeBox(const KartGFXType type, float new_size);
 
+    bool supportsLight() const;
 public:
-         KartGFX(const AbstractKart *kart);
+         KartGFX(const AbstractKart *kart, bool is_day);
         ~KartGFX();
     void reset();
     void setSkidLevel(const unsigned int level);
@@ -101,6 +117,11 @@ public:
     void update(float dt);
     void updateNitroGraphics(float f);
     void updateSkidLight(unsigned int level);
+    void getGFXStatus(int* nitro, bool* zipper,
+                      int* skidding, bool* red_skidding) const;
+    void setGFXFromReplay(int nitro, bool zipper,
+                          int skidding, bool red_skidding);
+    void setGFXInvisible();
 
 };   // KartWGFX
 #endif

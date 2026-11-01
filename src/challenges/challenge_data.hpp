@@ -44,6 +44,17 @@ public:
         UNLOCK_KART,
         UNLOCK_DIFFICULTY
     };
+
+    /** The level of completion of a GP challenge
+    */
+    enum GPLevel
+    {
+        GP_NONE,
+        GP_EASY,
+        GP_MEDIUM,
+        GP_HARD,
+        GP_BEST
+    };
     // ------------------------------------------------------------------------
     class UnlockableFeature
     {
@@ -73,6 +84,13 @@ public:
         CM_ANY
     };
 
+    /** The type of value stored by m_unlock_special_value */
+    enum SpecialUnlockType
+    {
+        SPECIAL_NONE,
+        SPECIAL_MAX_REQ_IN_LOWER_DIFF
+    };
+
 
 private:
 
@@ -83,9 +101,11 @@ private:
     RaceManager::MinorRaceModeType m_minor;
 
     int                            m_num_laps;
+    bool                           m_reverse;
     int                            m_position[RaceManager::DIFFICULTY_COUNT];
-    int                            m_num_karts[RaceManager::DIFFICULTY_COUNT];
+    int                            m_default_num_karts[RaceManager::DIFFICULTY_COUNT];
     std::string                    m_ai_kart_ident[RaceManager::DIFFICULTY_COUNT];
+    std::string                    m_replay_files[RaceManager::DIFFICULTY_COUNT];
     float                          m_time[RaceManager::DIFFICULTY_COUNT];
     int                            m_energy[RaceManager::DIFFICULTY_COUNT];
     RaceManager::AISuperPower      m_ai_superpower[RaceManager::DIFFICULTY_COUNT];
@@ -94,6 +114,8 @@ private:
     std::string                    m_filename;
     /** Version number of the challenge. */
     int                            m_version;
+    bool                           m_is_unlock_list;
+    bool                           m_is_ghost_replay;
 
     void setUnlocks(const std::string &id,
                     ChallengeData::RewardType reward);
@@ -107,8 +129,13 @@ private:
 
     /** Number of trophies required to access this challenge */
     int m_num_trophies;
+    /** Number of completed challenges required to access this challenge
+      * (esp. useful for the final challenge) */
+    int m_num_completed_challenges;
 
-    irr::core::stringw m_challenge_description;
+    /** Variables only used by unlock lists */
+    SpecialUnlockType m_unlock_special_type;
+    int               m_unlock_special_value;
 
 public:
                  ChallengeData(const std::string& filename);
@@ -119,8 +146,8 @@ public:
     void         setRace(RaceManager::Difficulty d) const;
 
     virtual void check() const;
-    virtual bool isChallengeFulfilled() const;
-    virtual bool isGPFulfilled() const;
+    virtual bool isChallengeFulfilled(bool check_best=false) const;
+    virtual GPLevel isGPFulfilled() const;
     void  addUnlockTrackReward(const std::string &track_name);
     void  addUnlockModeReward(const std::string &internal_mode_name,
                               const irr::core::stringw &user_mode_name);
@@ -142,11 +169,11 @@ public:
 
     // ------------------------------------------------------------------------
     /** Returns the id of the challenge. */
-    const std::string &getId() const { return m_id; }
+    const std::string &getChallengeId() const { return m_id; }
 
     // ------------------------------------------------------------------------
     /** Sets the id of this challenge. */
-    void  setId(const std::string& s) { m_id = s; }
+    void  setChallengeId(const std::string& s) { m_id = s; }
 
     // ------------------------------------------------------------------------
     /** Returns the track associated with this challenge. */
@@ -173,14 +200,32 @@ public:
     }   // getNumLaps
 
     // ------------------------------------------------------------------------
+    /** Return reverse mode. */
+    bool getReverse() const { return m_reverse; }
+    // ------------------------------------------------------------------------
     /** Get number of required trophies to start this challenge */
     int getNumTrophies() const { return m_num_trophies; }
+    // ------------------------------------------------------------------------
+    /** Get number of required completed challenges to start this challenge */
+    int getNumChallenges() const { return m_num_completed_challenges; }
     // ------------------------------------------------------------------------
     /** Returns if this challenge is a grand prix. */
     bool isGrandPrix() const { return m_mode == CM_GRAND_PRIX; }
     // ------------------------------------------------------------------------
     /** Returns if this challenge is a grand prix. */
     bool isSingleRace() const { return m_mode == CM_SINGLE_RACE; }
+    // ------------------------------------------------------------------------
+    /** Returns if this challenge is using ghost replay. */
+    bool isGhostReplay() const { return m_is_ghost_replay; }
+    // ------------------------------------------------------------------------
+    /** Returns if this challenge is an unlock list. */
+    bool isUnlockList() const { return m_is_unlock_list; }
+    // ------------------------------------------------------------------------
+    /** Returns the special unlock list value */
+    SpecialUnlockType getSpecialType() const { return m_unlock_special_type; }
+    // ------------------------------------------------------------------------
+    /** Returns the special unlock list value */
+    int getSpecialValue() const { return m_unlock_special_value; }
     // ------------------------------------------------------------------------
     /** Returns the challenge mode of this challenge. */
     ChallengeModeType getMode() const { return m_mode; }
@@ -190,15 +235,12 @@ public:
     // ------------------------------------------------------------------------
     /** Returns the description of this challenge.
      */
-    const irr::core::stringw& getChallengeDescription() const
-    {
-        return m_challenge_description;
-    }   // getChallengeDescription
+    const irr::core::stringw getChallengeDescription() const;
 
     // ------------------------------------------------------------------------
-    /** Returns the minimum position the player must have in order to win.
+    /** Returns the maximum position the player must have in order to win.
      */
-    int getPosition(RaceManager::Difficulty difficulty) const
+    int getMaxPosition(RaceManager::Difficulty difficulty) const
     {
         return m_position[difficulty];
     }   // getPosition
@@ -208,15 +250,15 @@ public:
      */
     int getNumKarts(RaceManager::Difficulty difficulty) const
     {
-        return m_num_karts[difficulty];
+        return m_default_num_karts[difficulty];
     }   // getNumKarts
     // ------------------------------------------------------------------------
     /** Returns the maximum time in which the kart must finish.
      */
-    float getTime(RaceManager::Difficulty difficulty) const
+    float getTimeRequirement(RaceManager::Difficulty difficulty) const
     {
         return m_time[difficulty];
-    }   // getTime
+    }   // getTimeRequirement
     // ------------------------------------------------------------------------
     /** Return the energy that a kart must at least have at the end of a race.
      */

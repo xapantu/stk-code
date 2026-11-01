@@ -19,8 +19,12 @@
 #ifndef HEADER_ADDONS_MANAGER_HPP
 #define HEADER_ADDONS_MANAGER_HPP
 
+#ifndef SERVER_ONLY
+
+#include <atomic>
 #include <string>
 #include <map>
+#include <memory>
 #include <vector>
 
 #include "addons/addon.hpp"
@@ -51,9 +55,15 @@ private:
     // Synchronise the state between threads (e.g. GUI and update thread)
     Synchronised<STATE_TYPE> m_state;
 
-    void  saveInstalled();
+    /* Return true if any icons have been downloaded, so we need to call
+     * saveInstalled in mobile stk when pressing home button, so the icons
+     * won't need to be redownload when stk is killed by OS in the
+     * background. */
+    bool m_downloaded_icons;
+
+    std::atomic_bool m_has_new_addons;
+
     void  loadInstalledAddons();
-    void  downloadIcons();
 
 public:
                  AddonsManager();
@@ -61,12 +71,14 @@ public:
     void         init(const XMLNode *xml, bool force_refresh);
     void         initAddons(const XMLNode *xml);
     void         checkInstalledAddons();
-    const Addon* getAddon(const std::string &id) const;
+    Addon* getAddon(const std::string &id);
     int          getAddonIndex(const std::string &id) const;
     bool         install(const Addon &addon);
     bool         uninstall(const Addon &addon);
     void         reInit();
     bool         anyAddonsInstalled() const;
+    void         downloadIconForAddon(const std::string& addon_id,
+                                      std::weak_ptr<bool> result);
     // ------------------------------------------------------------------------
     /** Returns true if the list of online addons has been downloaded. This is
      *  used to grey out the 'addons' entry till a network connections could be
@@ -80,14 +92,20 @@ public:
     /** Marks addon as not being available. */
     void         setErrorState() { m_state.setAtomic(STATE_ERROR); }
     // ------------------------------------------------------------------------
+    void         saveInstalled();
+    // ------------------------------------------------------------------------
     /** Returns the list of addons (installed and uninstalled). */
     unsigned int getNumAddons() const { return (unsigned int) m_addons_list.getData().size();}
     // ------------------------------------------------------------------------
     /** Returns the i-th addons. */
     const Addon& getAddon(unsigned int i) { return m_addons_list.getData()[i];}
-
+    // ------------------------------------------------------------------------
+    bool hasDownloadedIcons() const { return m_downloaded_icons; }
+    // ------------------------------------------------------------------------
+    bool hasNewAddons() const { return m_has_new_addons; }
 };   // class AddonsManager
 
 extern AddonsManager *addons_manager;
-#endif
 
+#endif
+#endif

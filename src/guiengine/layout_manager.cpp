@@ -19,6 +19,7 @@
 
 #include <iostream>
 
+#include <IrrlichtDevice.h>
 #include <IGUIFont.h>
 #include <ITexture.h>
 
@@ -26,6 +27,7 @@
 #include "guiengine/abstract_top_level_container.hpp"
 #include "guiengine/engine.hpp"
 #include "guiengine/scalable_font.hpp"
+#include "guiengine/skin.hpp"
 #include "guiengine/widget.hpp"
 #include "io/file_manager.hpp"
 #include "utils/ptr_vector.hpp"
@@ -62,6 +64,11 @@ bool LayoutManager::convertToCoord(std::string& x, int* absolute /* out */, int*
     if( x[x.size()-1] == '%' ) // percentage
     {
         *percentage = i;
+        return true;
+    }
+    else if( x[x.size()-1] == 'f' ) // font height
+    {
+        *absolute = i * GUIEngine::getFontHeight();
         return true;
     }
     else // absolute number
@@ -151,9 +158,9 @@ void LayoutManager::readCoords(Widget* self)
 
     if (self->m_properties[PROP_ICON].size() > 0)
     {
-        // PROP_ICON includes paths (e.g. gui/logo.png)
-        ITexture* texture = irr_driver->getTexture(file_manager->getAsset(
-                                                    self->m_properties[PROP_ICON]));
+        // PROP_ICON includes paths (e.g. gui/icons/logo.png)
+        ITexture* texture = irr_driver->getTexture(
+            GUIEngine::getSkin()->getThemedIcon(self->m_properties[PROP_ICON]));
 
         if (texture != NULL)
         {
@@ -242,7 +249,7 @@ void LayoutManager::readCoords(Widget* self)
         //Add padding to <box> elements
         if (self->getType() == WTYPE_DIV && self->m_show_bounding_box)
         {
-            int padding = 15;
+            int padding = GUIEngine::getFontHeight() / 2;
             if (self->m_properties[PROP_DIV_PADDING].length() > 0)
                 padding = atoi(self->m_properties[PROP_DIV_PADDING].c_str());
             child_max_height += padding * 2;
@@ -288,6 +295,18 @@ void LayoutManager::readCoords(Widget* self)
         else if (texture_h > -1)                 self->m_absolute_h = texture_h;
         else if (label_h > -1)                   self->m_absolute_h = label_h;
     }
+
+    if (self->getType() != WTYPE_RIBBON) // Ribbons have their own handling
+    {
+        // Set vertical inner padding
+        self->m_absolute_h += self->m_absolute_h * SkinConfig::getVerticalInnerPadding(self->getType(), self);
+//        self->m_relative_h += self->m_relative_h * SkinConfig::getVerticalInnerPadding(self->getType(), self);
+
+        // Set horizontal inner padding
+        self->m_absolute_w += self->m_absolute_w * SkinConfig::getHorizontalInnerPadding(self->getType(), self);
+//        self->m_relative_w += self->m_relative_w * SkinConfig::getHorizontalInnerPadding(self->getType(), self);
+    }
+
 }
 
 // ----------------------------------------------------------------------------
@@ -303,8 +322,17 @@ void LayoutManager::applyCoords(Widget* self, AbstractTopLevelContainer* topLeve
         //parent_w = frame_size.Width;
         //parent_h = frame_size.Height;
         parent_w = topLevelContainer->getWidth();
+        int left_padding = irr_driver->getDevice()->getLeftPadding();
+        int right_padding = irr_driver->getDevice()->getRightPadding();
+        if (!topLevelContainer->enableScreenPadding())
+            left_padding = right_padding = 0;
+        int total_padding = left_padding + right_padding;
+        if (parent_w - total_padding > 0)
+            parent_w -= total_padding;
         parent_h = topLevelContainer->getHeight();
         parent_x = 0;
+        if (left_padding > 0)
+            parent_x = left_padding;
         parent_y = 0;
     }
     else
@@ -317,7 +345,7 @@ void LayoutManager::applyCoords(Widget* self, AbstractTopLevelContainer* topLeve
     
     if (parent != NULL && parent->getType() == WTYPE_DIV && parent->m_show_bounding_box)
     {
-        int padding = 15;
+        int padding = GUIEngine::getFontHeight() / 2;
         if (parent->m_properties[PROP_DIV_PADDING].length() > 0)
             padding = atoi(parent->m_properties[PROP_DIV_PADDING].c_str());
             
@@ -392,6 +420,7 @@ void LayoutManager::recursivelyReadCoords(PtrVector<Widget>& widgets)
     // ----- read x/y/size parameters
     for (unsigned short n=0; n<widgets_amount; n++)
     {
+        widgets.get(n)->resetCoordinates();
         readCoords(widgets.get(n));
     }//next widget
 }
@@ -443,7 +472,7 @@ void LayoutManager::doCalculateLayout(PtrVector<Widget>& widgets, AbstractTopLev
 
         if (parent != NULL && parent->getType() == WTYPE_DIV && parent->m_show_bounding_box)
         {
-            int padding = 15;
+            int padding = GUIEngine::getFontHeight() / 2;
             if (parent->m_properties[PROP_DIV_PADDING].length() > 0)
                 padding = atoi(parent->m_properties[PROP_DIV_PADDING].c_str());
             
@@ -507,6 +536,10 @@ void LayoutManager::doCalculateLayout(PtrVector<Widget>& widgets, AbstractTopLev
                             {
                                 prop_y = prop_y.substr(0, prop_y.size() - 1);
                                 widgets[n].m_y = (int)(y + atoi_p(prop_y.c_str())/100.0f * h);
+                            }
+                            else if(prop_y[ prop_y.size()-1 ] == 'f')
+                            {
+                                widgets[n].m_y = y + atoi_p(prop_y.c_str()) * GUIEngine::getFontHeight();
                             }
                             else
                             {
@@ -583,6 +616,10 @@ void LayoutManager::doCalculateLayout(PtrVector<Widget>& widgets, AbstractTopLev
                                 prop_x = prop_x.substr(0, prop_x.size() - 1);
                                 widgets[n].m_x = (int)(x + atoi_p(prop_x.c_str())/100.0f * w);
                             }
+                            else if(prop_x[ prop_x.size()-1 ] == 'f')
+                            {
+                                widgets[n].m_x = x + atoi_p(prop_x.c_str()) * GUIEngine::getFontHeight();
+                            }
                             else
                             {
                                 widgets[n].m_x = x + atoi_p(prop_x.c_str());
@@ -637,6 +674,10 @@ void LayoutManager::doCalculateLayout(PtrVector<Widget>& widgets, AbstractTopLev
                                 prop_y = prop_y.substr(0, prop_y.size() - 1);
                                 widgets[n].m_y = (int)(y + atoi_p(prop_y.c_str())/100.0f * h);
                             }
+                            else if(prop_y[ prop_y.size()-1 ] == 'f')
+                            {
+                                widgets[n].m_y = y + atoi_p(prop_y.c_str()) * GUIEngine::getFontHeight();
+                            }
                             else
                             {
                                 widgets[n].m_y = y + atoi_p(prop_y.c_str());
@@ -682,6 +723,10 @@ void LayoutManager::doCalculateLayout(PtrVector<Widget>& widgets, AbstractTopLev
                             {
                                 prop_x = prop_x.substr(0, prop_x.size() - 1);
                                 widgets[n].m_x = (int)(x + atoi_p(prop_x.c_str())/100.0f * w);
+                            }
+                            else if(prop_x[ prop_x.size()-1 ] == 'f')
+                            {
+                                widgets[n].m_x = x + atoi_p(prop_x.c_str()) * GUIEngine::getFontHeight();
                             }
                             else
                             {

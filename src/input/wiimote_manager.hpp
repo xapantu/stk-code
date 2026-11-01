@@ -25,9 +25,9 @@
 #include "states_screens/dialogs/message_dialog.hpp"
 #include "utils/cpp2011.hpp"
 
-#include "IEventReceiver.h"
+#include <thread>
 
-#include <pthread.h>
+#include "IEventReceiver.h"
 
 #define MAX_WIIMOTES  4
 
@@ -50,14 +50,13 @@ private:
 
     /** WiiUse wiimote handles */
     wiimote_t**     m_all_wiimote_handles;
-    int             m_number_wiimotes;
 
     // While the wiimote code can technically work without threading,
     // its too slow (high latency), but it is useful for debugging.
 #define WIIMOTE_THREADING
 #ifdef WIIMOTE_THREADING
     /** Wiimote state update thread */
-    pthread_t       m_thread;
+    std::thread     m_thread;
 
     /** Shut the update thread? */
     bool            m_shut;
@@ -68,7 +67,6 @@ private:
 
     /** Wiimotes update thread */
     void threadFunc();
-    static void* threadFuncWrapper(void* data);
     void            setWiimoteBindings(GamepadConfig* gamepad_config);
 
 public:

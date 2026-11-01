@@ -16,16 +16,18 @@
 #include "IImagePresenter.h"
 #include "ICursorControl.h"
 
-#include <SDL/SDL.h>
-#include <SDL/SDL_syswm.h>
+#include <SDL.h>
+#include <SDL_syswm.h>
+#include <map>
+#include <set>
 
 namespace irr
 {
+class MoltenVK;
 
 	class CIrrDeviceSDL : public CIrrDeviceStub, video::IImagePresenter
 	{
 	public:
-
 		//! constructor
 		CIrrDeviceSDL(const SIrrlichtCreationParameters& param);
 
@@ -43,6 +45,9 @@ namespace irr
 
 		//! sets the caption of the window
 		virtual void setWindowCaption(const wchar_t* text);
+
+		//! sets the class of the window
+		virtual void setWindowClass(const char* text) {}
 
 		//! returns if window is active. if not, nothing need to be drawn
 		virtual bool isWindowActive() const;
@@ -68,6 +73,8 @@ namespace irr
 		//! Sets if the window should be resizable in windowed mode.
 		virtual void setResizable(bool resize=false);
 
+		virtual bool isResizable() const;
+
 		//! Minimizes the window.
 		virtual void minimizeWindow();
 
@@ -76,6 +83,15 @@ namespace irr
 
 		//! Restores the window size.
 		virtual void restoreWindow();
+		
+		//! Move window to requested position
+		virtual bool moveWindow(int x, int y);
+
+		//! Get current window position.
+		virtual bool getWindowPosition(int* x, int* y);
+
+		//! Get DPI of current display.
+		virtual bool getDisplayDPI(float* ddpi, float* hdpi, float* vdpi);
 
 		//! Activate any joysticks, and generate events for them.
 		virtual bool activateJoysticks(core::array<SJoystickInfo> & joystickInfo);
@@ -86,11 +102,50 @@ namespace irr
 		//! Get the current Gamma Value for the Display
 		virtual bool getGammaRamp( f32 &red, f32 &green, f32 &blue, f32 &brightness, f32 &contrast );
 
+		virtual void setWindowMinimumSize(u32 width, u32 height);
+
+		virtual bool supportsTouchDevice() const;
+
 		//! Get the device type
 		virtual E_DEVICE_TYPE getType() const
 		{
-				return EIDT_SDL;
+			return EIDT_SDL;
 		}
+
+		SDL_Window* getWindow() const { return Window; }
+
+#ifdef IOS_STK
+		const SDL_SysWMinfo& getWMInfo() const { return Info; }
+#endif
+
+		virtual s32 getTopPadding();
+
+		virtual s32 getBottomPadding();
+
+		virtual s32 getLeftPadding();
+
+		virtual s32 getRightPadding();
+
+		virtual f32 getNativeScaleX() const;
+		virtual f32 getNativeScaleY() const;
+
+		virtual bool hasOnScreenKeyboard() const;
+
+		virtual u32 getOnScreenKeyboardHeight() const;
+
+		virtual s32 getMovedHeight() const;
+
+		virtual bool activateAccelerometer(float updateInterval);
+		virtual bool deactivateAccelerometer();
+		virtual bool isAccelerometerActive();
+		virtual bool isAccelerometerAvailable();
+		virtual bool activateGyroscope(float updateInterval);
+		virtual bool deactivateGyroscope();
+		virtual bool isGyroscopeActive();
+		virtual bool isGyroscopeAvailable();
+
+		virtual void resetPaused() { clearAllTouchIds(); }
+		void handleNewSize(u32 width, u32 height);
 
 		//! Implementation of the linux cursor control
 		class CCursorControl : public gui::ICursorControl
@@ -127,7 +182,7 @@ namespace irr
 			//! Sets the new position of the cursor.
 			virtual void setPosition(f32 x, f32 y)
 			{
-				setPosition((s32)(x*Device->Width), (s32)(y*Device->Height));
+				setPosition((s32)(x*Device->getRealScreenSize().Width), (s32)(y*Device->getRealScreenSize().Height));
 			}
 
 			//! Sets the new position of the cursor.
@@ -139,7 +194,7 @@ namespace irr
 			//! Sets the new position of the cursor.
 			virtual void setPosition(s32 x, s32 y)
 			{
-				SDL_WarpMouse( x, y );
+				SDL_WarpMouseGlobal( x, y );
 			}
 
 			//! Returns the current position of the mouse cursor.
@@ -153,8 +208,8 @@ namespace irr
 			virtual core::position2d<f32> getRelativePosition()
 			{
 				updateCursorPos();
-				return core::position2d<f32>(CursorPos.X / (f32)Device->Width,
-					CursorPos.Y / (f32)Device->Height);
+				return core::position2d<f32>(CursorPos.X / (f32)Device->getRealScreenSize().Width,
+					CursorPos.Y / (f32)Device->getRealScreenSize().Height);
 			}
 
 			virtual void setReferenceRect(core::rect<s32>* rect=0)
@@ -170,12 +225,12 @@ namespace irr
 
 				if (CursorPos.X < 0)
 					CursorPos.X = 0;
-				if (CursorPos.X > (s32)Device->Width)
-					CursorPos.X = Device->Width;
+				if (CursorPos.X > (s32)Device->getRealScreenSize().Width)
+					CursorPos.X = Device->getRealScreenSize().Width;
 				if (CursorPos.Y < 0)
 					CursorPos.Y = 0;
-				if (CursorPos.Y > (s32)Device->Height)
-					CursorPos.Y = Device->Height;
+				if (CursorPos.Y > (s32)Device->getRealScreenSize().Height)
+					CursorPos.Y = Device->getRealScreenSize().Height;
 			}
 
 			CIrrDeviceSDL* Device;
@@ -192,20 +247,63 @@ namespace irr
 
 		void createKeyMap();
 
-		SDL_Surface* Screen;
-		int SDL_Flags;
-#if defined(_IRR_COMPILE_WITH_JOYSTICK_EVENTS_)
-		core::array<SDL_Joystick*> Joysticks;
-#endif
+		SDL_Window* Window;
+		SDL_GLContext Context;
 
 		s32 MouseX, MouseY;
 		u32 MouseButtonStates;
 
 		u32 Width, Height;
+		std::map<SDL_FingerID, size_t> TouchIDMap;
 
-		bool Resizable;
+		//! Get a unique touch id per touch, create one if it's a new touch
+		size_t getTouchId(SDL_FingerID touch)
+		{
+			auto it = TouchIDMap.find(touch);
+			if (it == TouchIDMap.end())
+			{
+				std::set<size_t> ids;
+				for (auto& p : TouchIDMap)
+					ids.insert(p.second);
+				size_t cur_id = 0;
+				while (true)
+				{
+					if (ids.find(cur_id) == ids.end())
+						break;
+					 cur_id++;
+				}
+				TouchIDMap[touch] = cur_id;
+				return cur_id;
+			}
+			return it->second;
+		}
+
+		//! Remove a unique touch id, free it for future usage
+		void removeTouchId(SDL_FingerID touch)
+		{
+			TouchIDMap.erase(touch);
+		}
+
+		//! Clear all unique touch ids, used when the app out focused
+		void clearAllTouchIds()
+		{
+			TouchIDMap.clear();
+		}
+
+		f32 TopPadding;
+		f32 BottomPadding;
+		f32 LeftPadding;
+		f32 RightPadding;
+		int InitialOrientation;
+
 		bool WindowHasFocus;
 		bool WindowMinimized;
+		bool Resizable;
+
+		s32 AccelerometerIndex;
+		s32 AccelerometerInstance;
+		s32 GyroscopeIndex;
+		s32 GyroscopeInstance;
 
 		struct SKeyMap
 		{
@@ -225,7 +323,14 @@ namespace irr
 		};
 
 		core::array<SKeyMap> KeyMap;
+		std::map<SDL_Scancode, irr::EKEY_CODE> ScanCodeMap;
 		SDL_SysWMinfo Info;
+		void tryCreateOpenGLContext(u32 flags);
+#ifdef DLOPEN_MOLTENVK
+		MoltenVK* m_moltenvk;
+#endif
+		void createGUIAndVulkanScene();
+		const core::dimension2du& getRealScreenSize() const;
 	};
 
 } // end namespace irr

@@ -58,6 +58,9 @@ IImageLoader* createImageLoaderPPM();
 //! creates a loader which is able to load rgb images
 IImageLoader* createImageLoaderRGB();
 
+//! creates a loader which is able to load svg images
+IImageLoader* createImageLoaderSVG();
+
 
 //! creates a writer which is able to save bmp images
 IImageWriter* createImageWriterBMP();
@@ -103,6 +106,7 @@ CNullDriver::CNullDriver(io::IFileSystem* io, const core::dimension2d<u32>& scre
 //	DriverAttributes->addInt("MaxGeometryVerticesOut", 0);
 //	DriverAttributes->addFloat("MaxTextureLODBias", 0.f);
 	DriverAttributes->addInt("Version", 1);
+	DriverAttributes->setAttribute("MAX_TEXTURE_SIZE", core::dimension2du(2048, 2048));
 //	DriverAttributes->addInt("ShaderLanguageVersion", 0);
 //	DriverAttributes->addInt("AntiAlias", 0);
 
@@ -130,6 +134,8 @@ CNullDriver::CNullDriver(io::IFileSystem* io, const core::dimension2d<u32>& scre
 #ifdef _IRR_COMPILE_WITH_BMP_LOADER_
 	SurfaceLoader.push_back(video::createImageLoaderBMP());
 #endif
+SurfaceLoader.push_back(video::createImageLoaderSVG());
+
 #ifdef _IRR_COMPILE_WITH_JPG_WRITER_
 	SurfaceWriter.push_back(video::createImageWriterJPG());
 #endif
@@ -941,8 +947,9 @@ const SLight& CNullDriver::getDynamicLight(u32 idx) const
 {
 	if ( idx < Lights.size() )
 		return Lights[idx];
-	else
-		return *((SLight*)0);
+        static const SLight defaultLight;
+        os::Printer::log("Error: CNullDriver::getDynamicLight was invoked with an invalid index.", ELL_ERROR);
+        return defaultLight;
 }
 
 
@@ -1222,7 +1229,7 @@ bool CNullDriver::checkPrimitiveCount(u32 prmCount) const
 	if (prmCount > m)
 	{
 		char tmp[1024];
-		sprintf(tmp,"Could not draw triangles, too many primitives(%u), maxium is %u.", prmCount, m);
+		sprintf(tmp,"Could not draw triangles, too many primitives(%u), maximum is %u.", prmCount, m);
 		os::Printer::log(tmp, ELL_ERROR);
 		return false;
 	}
@@ -1278,7 +1285,7 @@ IImage* CNullDriver::createImageFromFile(const io::path& filename)
 
 
 //! Creates a software image from a file.
-IImage* CNullDriver::createImageFromFile(io::IReadFile* file)
+IImage* CNullDriver::createImageFromFile(io::IReadFile* file, video::IImageLoader** loader)
 {
 	if (!file)
 		return 0;
@@ -1294,6 +1301,17 @@ IImage* CNullDriver::createImageFromFile(io::IReadFile* file)
 		{
 			// reset file position which might have changed due to previous loadImage calls
 			file->seek(0);
+			if (loader)
+			{
+				if (SurfaceLoader[i]->isALoadableFileFormat(file))
+				{
+					file->seek(0);
+					*loader = SurfaceLoader[i];
+					return 0;
+				}
+				else
+					continue;
+			}
 			image = SurfaceLoader[i]->loadImage(file);
 			if (image)
 				return image;
@@ -1308,6 +1326,11 @@ IImage* CNullDriver::createImageFromFile(io::IReadFile* file)
 		if (SurfaceLoader[i]->isALoadableFileFormat(file))
 		{
 			file->seek(0);
+			if (loader)
+			{
+				*loader = SurfaceLoader[i];
+				return 0;
+			}
 			image = SurfaceLoader[i]->loadImage(file);
 			if (image)
 				return image;
@@ -1317,9 +1340,28 @@ IImage* CNullDriver::createImageFromFile(io::IReadFile* file)
 	return 0; // failed to load
 }
 
+video::IImageLoader* CNullDriver::getImageLoaderForFile(const io::path& filename)
+{
+	if (!filename.size())
+		return 0;
+
+	s32 i;
+
+	// try to load file based on file extension
+	for (i=SurfaceLoader.size()-1; i>=0; --i)
+	{
+		if (SurfaceLoader[i]->isALoadableFileExtension(filename))
+		{
+			return SurfaceLoader[i];
+		}
+	}
+	return 0; // failed to load
+}
+
+
 
 //! Writes the provided image to disk file
-bool CNullDriver::writeImageToFile(IImage* image, const io::path& filename,u32 param)
+bool CNullDriver::writeImageToFile(IImage* image, const io::path& filename, u32 param)
 {
 	io::IWriteFile* file = FileSystem->createAndWriteFile(filename);
 	if(!file)
@@ -1332,7 +1374,7 @@ bool CNullDriver::writeImageToFile(IImage* image, const io::path& filename,u32 p
 }
 
 //! Writes the provided image to a file.
-bool CNullDriver::writeImageToFile(IImage* image, io::IWriteFile * file, u32 param)
+bool CNullDriver::writeImageToFile(IImage* image, io::IWriteFile* file, u32 param)
 {
 	if(!file)
 		return false;
@@ -1353,7 +1395,7 @@ bool CNullDriver::writeImageToFile(IImage* image, io::IWriteFile * file, u32 par
 //! Creates a software image from a byte array.
 IImage* CNullDriver::createImageFromData(ECOLOR_FORMAT format,
 					const core::dimension2d<u32>& size,
-					void *data, bool ownForeignMemory,
+					void* data, bool ownForeignMemory,
 					bool deleteMemory)
 {
 	if(IImage::isRenderTargetOnlyFormat(format))
@@ -1380,7 +1422,7 @@ IImage* CNullDriver::createImage(ECOLOR_FORMAT format, const core::dimension2d<u
 
 
 //! Creates a software image from another image.
-IImage* CNullDriver::createImage(ECOLOR_FORMAT format, IImage *imageToCopy)
+IImage* CNullDriver::createImage(ECOLOR_FORMAT format, IImage* imageToCopy)
 {
 	os::Printer::log("Deprecated method, please create an empty image instead and use copyTo().", ELL_WARNING);
 	if(IImage::isRenderTargetOnlyFormat(format))

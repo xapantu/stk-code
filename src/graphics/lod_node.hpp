@@ -32,6 +32,7 @@ namespace irr
 using namespace irr;
 
 #include <set>
+#include <memory>
 
 namespace irr
 {
@@ -62,17 +63,17 @@ private:
      *  m_forced_lod is >=0, only this level is be used. */
     int m_forced_lod;
 
-    enum PreviousVisibility
-    {
-        FIRST_PASS,
-        WAS_SHOWN,
-        WAS_HIDDEN
-    };
+    int m_current_level;
+    bool m_current_level_dirty;
 
-    PreviousVisibility m_previous_visibility;
+    // Distance below which switching between two levels of detail is avoided
+    int m_min_switch_distance;
 
-    u32 m_last_tick;
+    // Area of the bounding box (for autoLOD computation)
+    float m_area;
 
+    bool m_update_box_every_frame;
+    bool m_lod_distances_updated;
 public:
 
     LODNode(std::string group_name, scene::ISceneNode* parent, scene::ISceneManager* mgr, s32 id=-1);
@@ -83,7 +84,7 @@ public:
 
     int getLevel();
 
-    void updateVisibility(bool* shown = NULL);
+    void updateVisibility();
 
     /*
     //! Returns a reference to the current relative transformation matrix.
@@ -104,6 +105,11 @@ public:
       */
     void add(int level, scene::ISceneNode* node, bool reparent);
 
+    /**
+      * This method can be used to automatically compute LoD level
+      */
+    void autoComputeLevel(float scale);
+
     void forceLevelOfDetail(int n);
 
     /** Get the highest level of detail node */
@@ -114,6 +120,7 @@ public:
     }
 
     std::vector<scene::ISceneNode*>& getAllNodes() { return m_nodes; }
+    std::set<scene::ISceneNode*>& getNodesSet() { return m_nodes_set; }
 
     //! OnAnimate() is called just before rendering the whole scene.
     /** This method will be called once per frame, independent
@@ -129,4 +136,3 @@ public:
 };
 
 #endif
-

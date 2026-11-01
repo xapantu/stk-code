@@ -35,62 +35,75 @@
  */
 void ChallengeStatus::load(const XMLNode* challenges_node)
 {
-    const XMLNode* node = challenges_node->getNode( m_data->getId() );
+    const XMLNode* node = challenges_node->getNode( m_data->getChallengeId() );
     if(node == NULL)
     {
         Log::info("ChallengeStatus", "Couldn't find node <%s> in challenge list."
                 "(If this is the first time you play this is normal)\n",
-                m_data->getId().c_str());
+                m_data->getChallengeId().c_str());
         return;
     }
 
-    m_state[0] = CH_INACTIVE;
-    m_state[1] = CH_INACTIVE;
-    m_state[2] = CH_INACTIVE;
+    m_active = 0;
+    m_solved = 0;
 
     std::string solved;
     if (node->get("solved", &solved))
     {
+        // Solving at a difficulty also marks lower difficulties as solved
         if (solved == "easy")
-            m_state[0] = CH_SOLVED;
+            m_solved = 0x01;
         else if (solved == "medium")
-        {
-            m_state[0] = CH_SOLVED;
-            m_state[1] = CH_SOLVED;
-        }
+            m_solved = 0x03;
         else if (solved == "hard")
-        {
-            m_state[0] = CH_SOLVED;
-            m_state[1] = CH_SOLVED;
-            m_state[2] = CH_SOLVED;
-        }
+            m_solved = 0x07;
+        else if (solved == "best")
+            m_solved = 0x0F;
     }   // if has 'solved' attribute
-
+    if (!node->get("best_while_slower", &m_max_req_in_lower_diff))
+        m_max_req_in_lower_diff = false;
 }   // load
 
 //-----------------------------------------------------------------------------
-
+// Solve not only the current difficulty but all those before
+// e.g. if you solved hard then you also get easy.
+// Also resets active flag.
 void ChallengeStatus::setSolved(RaceManager::Difficulty d)
 {
-    // solve not only the current difficulty but all those before
-    // e.g. if you solved hard then you also get easy
-    for (int curr = 0; curr <= d; curr++)
+    if ((int) d <= 3)
     {
-        m_state[curr] = CH_SOLVED;
+        m_solved |= (0x0F >> (3 - (int) d)); // Sets the last d+1 bits to 1
+        m_active &= ~m_solved; // Sets to 0 all bits which are at 1 in m_solved
     }
-}
+} // setSolved
+
+// ------------------------------------------------------------------------
+bool ChallengeStatus::isUnlockList()
+{
+    return m_data->isUnlockList();
+} // isUnlockList
+
+// ------------------------------------------------------------------------
+bool ChallengeStatus::isGrandPrix()
+{
+    return m_data->isGrandPrix();
+} // isUnlockList
 
 //-----------------------------------------------------------------------------
 
 void ChallengeStatus::save(UTFWriter& writer)
 {
-    writer << L"        <" << m_data->getId();
-    if (isSolved(RaceManager::DIFFICULTY_HARD))
-        writer << L" solved=\"hard\"/>\n";
+    writer << "        <" << m_data->getChallengeId();
+    if (isSolved(RaceManager::DIFFICULTY_BEST))
+        writer << " solved=\"best\"";
+    else if (isSolved(RaceManager::DIFFICULTY_HARD))
+        writer << " solved=\"hard\"";
     else if (isSolved(RaceManager::DIFFICULTY_MEDIUM))
-        writer << L" solved=\"medium\"/>\n";
+        writer << " solved=\"medium\"";
     else if (isSolved(RaceManager::DIFFICULTY_EASY))
-        writer << L" solved=\"easy\"/>\n";
+        writer << " solved=\"easy\"";
     else
-        writer << L" solved=\"none\"/>\n";
+        writer << " solved=\"none\"";
+
+    writer << " best_while_slower=\"" << m_max_req_in_lower_diff << "\"/>\n";
 }   // save

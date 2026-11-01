@@ -24,7 +24,6 @@
 
 #include "guiengine/widgets/CGUISTKListBox.hpp"
 #include "guiengine/widget.hpp"
-#include "guiengine/widgets/button_widget.hpp"
 #include "utils/leak_check.hpp"
 #include "utils/ptr_vector.hpp"
 #include "IGUIElement.h"
@@ -39,7 +38,7 @@ namespace GUIEngine
     public:
         virtual ~IListWidgetHeaderListener(){}
         
-        virtual void onColumnClicked(int columnId) = 0;
+        virtual void onColumnClicked(int column_id, bool sort_desc, bool sort_default) = 0;
     };
     
     /** \brief A vertical list widget with text entries
@@ -57,9 +56,9 @@ namespace GUIEngine
         /** \brief if m_use_icons is true, this will contain the icon bank */
         irr::gui::STKModifiedSpriteBank* m_icons;
                 
-        PtrVector< ButtonWidget > m_header_elements;
+        PtrVector< Widget > m_header_elements;
         
-        ButtonWidget* m_selected_column;
+        Widget* m_selected_column;
         
         /** \brief whether this list is sorted in descending order */
         bool m_sort_desc;
@@ -69,16 +68,24 @@ namespace GUIEngine
         
         /** index of column*/
         int m_sort_col;
-        
+
+        bool m_choosing_header;
+
         struct Column
         {
             irr::core::stringw m_text;
             int m_proportion;
-            
+            irr::video::ITexture* m_texture;
             Column(irr::core::stringw text, int proportion)
             {
                 m_text = text;
                 m_proportion = proportion;
+                m_texture = NULL;
+            }
+            Column(irr::video::ITexture* texture, int proportion)
+            {
+                m_proportion = proportion;
+                m_texture = texture;
             }
         };
         
@@ -88,6 +95,25 @@ namespace GUIEngine
         IListWidgetHeaderListener* m_listener;
 
         bool m_sortable;
+
+        bool m_header_created;
+
+        float m_line_height_scale;
+
+        void repairSortCol()
+        {
+            // Exclude scrollbar
+            int max_size = (int)m_header_elements.size() - 1;
+            if (m_sort_col < 0)
+                m_sort_col = max_size - 1;
+            else if (m_sort_col >= max_size)
+                m_sort_col = 0;
+        }
+
+        void updateHeader();
+        void updateScale();
+        int getHeaderHeight() const;
+        irr::core::rect<s32> getListBoxSize() const;
 
     public:
         typedef irr::gui::CGUISTKListBox::ListItem ListItem;
@@ -117,7 +143,9 @@ namespace GUIEngine
           *        you're done with it (but do not delete it when the list widget is still active)
           * \pre may only be called after the widget has been added to the screen with add()
           */
-        void setIcons(irr::gui::STKModifiedSpriteBank* icons, int size=-1);
+        void setIcons(irr::gui::STKModifiedSpriteBank* icons);
+
+        void setLineHeightScale(float scale);
         
         
         // ---- contents management
@@ -135,12 +163,24 @@ namespace GUIEngine
 
         void addItem(   const std::string& internal_name,
                         const std::vector<ListCell>& contents);
+
+        /**
+          * \brief create a header based on m_header
+          * \pre may only be called after the widget has been added to the screen with add()
+          */
+        void createHeader();
         
         /**
-          * \brief erases all items in the list
+          * \brief erases all items in the list, don't clear header
           * \pre may only be called after the widget has been added to the screen with add()
           */
         void clear();
+
+        /**
+          * \brief clear the header
+          * \pre may only be called after the widget has been added to the screen with add()
+          */
+        void clearColumns();
         
         /**
           * \return the number of items in the list
@@ -180,22 +220,22 @@ namespace GUIEngine
           * \brief rename an item and/or change its icon based on its ID
           * \pre may only be called after the widget has been added to the screen with add()
           */
-        void renameCell(const int row_num, const int col_num, 
+        void renameCell(const int row_num, const int col_num,
                         const irr::core::stringw &newName, const int icon=-1);
         
         /**
          * renames first cell only
          */
-        void renameItem(const int row_num, 
+        void renameItem(const int row_num,
                         const irr::core::stringw &newName, const int icon=-1);
-        void renameItem(const std::string  & internal_name, 
+        void renameItem(const std::string  & internal_name,
                         const irr::core::stringw &newName, const int icon=-1);
 
         /**
           * \brief rename an item and/or change its icon based on its internal name
           * \pre may only be called after the widget has been added to the screen with add()
           */
-        void renameCell(const std::string internalName, const int col_num, 
+        void renameCell(const std::string internalName, const int col_num,
                         const irr::core::stringw &newName, const int icon=-1)
         {
             const int id = getItemID(internalName);
@@ -209,6 +249,7 @@ namespace GUIEngine
           */
         void markItemRed(const int id, bool red=true);
         void markItemBlue(const int id, bool blue=true);
+        void emphasisItem(const int id, bool enable=true);
         
         /**
           * \brief Make an item red to mark an error, for instance
@@ -228,25 +269,54 @@ namespace GUIEngine
             markItemBlue( id, blue );
         }
 
+        void emphasisItem(const std::string &internalName, bool enable=true)
+        {
+            const int id = getItemID(internalName);
+            assert(id != -1);
+            emphasisItem(id, enable);
+        }
+
         /** Override callback from Widget */
         virtual EventPropagation transmitEvent(Widget* w,
                                                const std::string& originator,
                                                const int playerID);
+
+        /** \brief implementing method from base class Widget */
+        virtual EventPropagation upPressed(const int playerID);
         
+        /** \brief implementing method from base class Widget */
+        virtual EventPropagation downPressed(const int playerID);
+
+        /** \brief implementing method from base class Widget */
+        virtual EventPropagation leftPressed(const int playerID);
+
+        /** \brief implementing method from base class Widget */
+        virtual EventPropagation rightPressed(const int playerID);
+
+        /** \brief implement common core parts of upPressed and downPressed */
+        EventPropagation moveToNextItem(const bool down);
+
+        /* Apply page up, page down, list end or list start effects */
+        void pageMove(bool up);
+        void listStart();
+        void listEnd();
+
         void setColumnListener(IListWidgetHeaderListener* listener)
         {
             if (m_listener) delete m_listener;
             m_listener = listener;
         }
         
-        /** To be called before Widget::add(); columns are persistent across multiple add/remove cycles
+        /** Columns are persistent across multiple "clear" add/remove cycles. clearColumns clear them immediately.
           * \param proportion A column with proportion 2 will be twice as large as a column with proportion 1
           */
         void addColumn(irr::core::stringw col, int proportion=1) { m_header.push_back( Column(col, proportion) ); }
-        
-        void clearColumns() { m_header.clear(); }
+        void addColumn(irr::video::ITexture* tex, int proportion=1) { m_header.push_back( Column(tex, proportion) ); }
 
         void setSortable(bool sortable) { m_sortable = sortable; }
+        void focusHeader(const NavigationDirection nav);
+        virtual void setActive(bool active=true);
+        virtual void resize();
     };
 }
 

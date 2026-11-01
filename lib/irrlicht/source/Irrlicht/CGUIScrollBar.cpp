@@ -71,24 +71,24 @@ bool CGUIScrollBar::OnEvent(const SEvent& event)
 				bool absorb = true;
 				switch (event.KeyInput.Key)
 				{
-				case KEY_LEFT:
-				case KEY_UP:
+				case IRR_KEY_LEFT:
+				case IRR_KEY_UP:
 					setPos(Pos-SmallStep);
 					break;
-				case KEY_RIGHT:
-				case KEY_DOWN:
+				case IRR_KEY_RIGHT:
+				case IRR_KEY_DOWN:
 					setPos(Pos+SmallStep);
 					break;
-				case KEY_HOME:
+				case IRR_KEY_HOME:
 					setPos(Min);
 					break;
-				case KEY_PRIOR:
+				case IRR_KEY_PRIOR:
 					setPos(Pos-LargeStep);
 					break;
-				case KEY_END:
+				case IRR_KEY_END:
 					setPos(Max);
 					break;
-				case KEY_NEXT:
+				case IRR_KEY_NEXT:
 					setPos(Pos+LargeStep);
 					break;
 				default:
@@ -146,7 +146,7 @@ bool CGUIScrollBar::OnEvent(const SEvent& event)
 					// thanks to tommi by tommi for another bugfix
 					// everybody needs a little thanking. hallo niko!;-)
 					setPos(	getPos() +
-							( (event.MouseInput.Wheel < 0 ? -1 : 1) * SmallStep * (Horizontal ? 1 : -1 ) )
+							( event.MouseInput.Wheel * SmallStep * (Horizontal ? 1 : -1 ) )
 							);
 
 					SEvent newEvent;
@@ -348,6 +348,9 @@ s32 CGUIScrollBar::getPosFromMousePos(const core::position2di &pos) const
 void CGUIScrollBar::setPos(s32 pos)
 {
 	Pos = core::s32_clamp ( pos, Min, Max );
+
+	if ( !core::isnotzero ( range() ) )
+		return;
 
 	if (Horizontal)
 	{

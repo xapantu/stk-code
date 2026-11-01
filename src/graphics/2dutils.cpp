@@ -15,32 +15,29 @@
 //  along with this program; if not, write to the Free Software
 //  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
-#include "2dutils.hpp"
+#ifndef SERVER_ONLY
+#include "graphics/2dutils.hpp"
 
 #include "graphics/central_settings.hpp"
+#include "graphics/glwrap.hpp"
+#include "graphics/irr_driver.hpp"
 #include "graphics/shader.hpp"
-#include "graphics/shaders.hpp"
 #include "graphics/shared_gpu_objects.hpp"
 #include "graphics/texture_shader.hpp"
-#include "glwrap.hpp"
 #include "utils/cpp2011.hpp"
 
-#ifdef ANDROID
-#   include "../../lib/irrlicht/source/Irrlicht/COGLES2Texture.h"
-#else
-#   include "../../lib/irrlicht/source/Irrlicht/COpenGLTexture.h"
-#endif
-
+#include <IVideoDriver.h>
+#include <cmath>
 
 // ============================================================================
-class Primitive2DList : public TextureShader<Primitive2DList, 1>
+class Primitive2DList : public TextureShader<Primitive2DList, 1, core::vector2df>
 {
 public:
     Primitive2DList()
     {
         loadProgram(OBJECT, GL_VERTEX_SHADER, "primitive2dlist.vert",
                             GL_FRAGMENT_SHADER, "transparent.frag");
-        assignUniforms();
+        assignUniforms("fullscreen");
         assignSamplerNames(0, "tex", ST_BILINEAR_FILTERED);
     }   // Primitive2DList
 };   //Primitive2DList
@@ -64,7 +61,7 @@ public:
 };   // UniformColoredTextureRectShader
 
 // ============================================================================
-class TextureRectShader : public TextureShader<TextureRectShader, 1, 
+class TextureRectShader : public TextureShader<TextureRectShader, 1,
                                              core::vector2df, core::vector2df,
                                              core::vector2df, core::vector2df>
 {
@@ -75,7 +72,7 @@ public:
                             GL_FRAGMENT_SHADER, "texturedquad.frag");
         assignUniforms("center", "size", "texcenter", "texsize");
 
-        assignSamplerNames(0, "tex", ST_BILINEAR_FILTERED);
+        assignSamplerNames(0, "tex", ST_BILINEAR_CLAMPED_FILTERED);
     }   // TextureRectShader
 };   // TextureRectShader
 
@@ -98,41 +95,12 @@ class ColoredTextureRectShader : public TextureShader<ColoredTextureRectShader, 
                                                core::vector2df, core::vector2df,
                                                core::vector2df, core::vector2df>
 {
-#ifdef XX
-private:
-    GLuint m_quad_buffer;
-
-    void initQuadBuffer()
-    {
-        const float quad_vertex[] = { -1., -1., -1.,  1.,   // UpperLeft
-                                      -1.,  1., -1., -1.,   // LowerLeft
-                                       1., -1.,  1.,  1.,   // UpperRight
-                                       1.,  1.,  1., -1. }; // LowerRight 
-        glGenBuffers(1, &m_quad_buffer);
-        glBindBuffer(GL_ARRAY_BUFFER, m_quad_buffer);
-        glBufferData(GL_ARRAY_BUFFER, 16 * sizeof(float), quad_vertex,
-                     GL_STATIC_DRAW);
-
-        glGenVertexArrays(1, &SharedObject::UIVAO);
-        glBindVertexArray(SharedObject::UIVAO);
-        glEnableVertexAttribArray(0);
-        glEnableVertexAttribArray(3);
-        glBindBuffer(GL_ARRAY_BUFFER, m_quad_buffer);
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), 0);
-        glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), 
-                              (GLvoid *)(2 * sizeof(float)));
-        glBindVertexArray(0);
-    }   // initQuadBuffer
-#endif
 public:
     GLuint m_color_vbo;
     GLuint m_vao;
 
     ColoredTextureRectShader()
     {
-#ifdef XX
-        initQuadBuffer();
-#endif
         loadProgram(OBJECT, GL_VERTEX_SHADER, "colortexturedquad.vert",
                             GL_FRAGMENT_SHADER, "colortexturedquad.frag");
         assignUniforms("center", "size", "texcenter", "texsize");
@@ -146,18 +114,17 @@ public:
         glEnableVertexAttribArray(2);
         glBindBuffer(GL_ARRAY_BUFFER, SharedGPUObjects::getQuadBuffer());
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), 0);
-        glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), 
+        glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
                               (GLvoid *)(2 * sizeof(float)));
-        const unsigned quad_color[] = {   0,   0,   0, 255,
+        glBindVertexArray(0);
+        const uint8_t quad_color[] = {   0,   0,   0, 255,
                                         255,   0,   0, 255,
                                           0, 255,   0, 255,
                                           0,   0, 255, 255 };
         glGenBuffers(1, &m_color_vbo);
         glBindBuffer(GL_ARRAY_BUFFER, m_color_vbo);
-        glBufferData(GL_ARRAY_BUFFER, 16 * sizeof(unsigned), quad_color,
-                     GL_DYNAMIC_DRAW);
-        glVertexAttribIPointer(2, 4, GL_UNSIGNED_INT, 4 * sizeof(unsigned), 0);
-        glBindVertexArray(0);
+        glBufferData(GL_ARRAY_BUFFER, 16, quad_color, GL_DYNAMIC_DRAW);
+
     }   // ColoredTextureRectShader
 };   // ColoredTextureRectShader
 
@@ -169,29 +136,16 @@ static void drawTexColoredQuad(const video::ITexture *texture,
                                float tex_center_pos_y, float tex_width,
                                float tex_height)
 {
-    unsigned colors[] = {
-        col[0].getRed(), col[0].getGreen(), col[0].getBlue(), col[0].getAlpha(),
-        col[1].getRed(), col[1].getGreen(), col[1].getBlue(), col[1].getAlpha(),
-        col[2].getRed(), col[2].getGreen(), col[2].getBlue(), col[2].getAlpha(),
-        col[3].getRed(), col[3].getGreen(), col[3].getBlue(), col[3].getAlpha(),
-    };
-
+    glBindVertexArray(ColoredTextureRectShader::getInstance()->m_vao);
     glBindBuffer(GL_ARRAY_BUFFER,
                  ColoredTextureRectShader::getInstance()->m_color_vbo);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, 16 * sizeof(unsigned), colors);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, 16, col);
+    glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, 4 , 0);
 
     ColoredTextureRectShader::getInstance()->use();
     glBindVertexArray(ColoredTextureRectShader::getInstance()->m_vao);
-
-#ifndef ANDROID
-    const irr::video::COpenGLTexture *t = 
-                       static_cast<const irr::video::COpenGLTexture*>(texture);
-#else
-    const irr::video::COGLES2Texture *t = 
-                       static_cast<const irr::video::COGLES2Texture*>(texture);
-#endif
     ColoredTextureRectShader::getInstance()
-        ->setTextureUnits(t->getOpenGLTextureName());
+        ->setTextureUnits(texture->getTextureHandler());
     ColoredTextureRectShader::getInstance()
         ->setUniforms(core::vector2df(center_pos_x, center_pos_y),
                       core::vector2df(width, height),
@@ -199,15 +153,16 @@ static void drawTexColoredQuad(const video::ITexture *texture,
                       core::vector2df(tex_width, tex_height));
 
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+
 
     glGetError();
 }   // drawTexColoredQuad
 
 // ----------------------------------------------------------------------------
 static void drawTexQuad(GLuint texture, float width, float height,
-                        float center_pos_x, float center_pos_y, 
+                        float center_pos_x, float center_pos_y,
                         float tex_center_pos_x, float tex_center_pos_y,
                         float tex_width, float tex_height)
 {
@@ -216,10 +171,10 @@ static void drawTexQuad(GLuint texture, float width, float height,
 
     TextureRectShader::getInstance()->setTextureUnits(texture);
     TextureRectShader::getInstance()->setUniforms(
-                    core::vector2df(center_pos_x, center_pos_y), 
+                    core::vector2df(center_pos_x, center_pos_y),
                     core::vector2df(width, height),
                     core::vector2df(tex_center_pos_x, tex_center_pos_y),
-                    core::vector2df(tex_width, tex_height)                );
+                    core::vector2df(tex_width, tex_height));
 
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
@@ -273,7 +228,7 @@ static void getSize(unsigned texture_width, unsigned texture_height,
 }   // getSize
 
 // ----------------------------------------------------------------------------
-void draw2DImage(const video::ITexture* texture, 
+void draw2DImage(const video::ITexture* texture,
                  const core::rect<s32>& destRect,
                  const core::rect<s32>& sourceRect,
                  const core::rect<s32>* clip_rect,
@@ -290,7 +245,7 @@ void draw2DImage(const video::ITexture* texture,
     float width, height, center_pos_x, center_pos_y;
     float tex_width, tex_height, tex_center_pos_x, tex_center_pos_y;
 
-    getSize(texture->getSize().Width, texture->getSize().Height, 
+    getSize(texture->getSize().Width, texture->getSize().Height,
             texture->isRenderTarget(), destRect, sourceRect, width, height,
             center_pos_x, center_pos_y, tex_width, tex_height,
             tex_center_pos_x, tex_center_pos_y);
@@ -311,25 +266,17 @@ void draw2DImage(const video::ITexture* texture,
             return;
 
         glEnable(GL_SCISSOR_TEST);
-        const core::dimension2d<u32>& render_target_size = 
+        const core::dimension2d<u32>& render_target_size =
                            irr_driver->getActualScreenSize();
-        glScissor(clip_rect->UpperLeftCorner.X, 
-                  render_target_size.Height - clip_rect->LowerRightCorner.Y,
+        glScissor(clip_rect->UpperLeftCorner.X,
+                  (s32)render_target_size.Height - clip_rect->LowerRightCorner.Y,
                   clip_rect->getWidth(), clip_rect->getHeight());
     }
 
     UniformColoredTextureRectShader::getInstance()->use();
     glBindVertexArray(SharedGPUObjects::getUI_VAO());
-
-#ifndef ANDROID
-    const video::COpenGLTexture *c_texture = 
-        static_cast<const video::COpenGLTexture*>(texture);
-#else
-    const video::COGLES2Texture *c_texture = 
-        static_cast<const video::COGLES2Texture*>(texture);
-#endif
     UniformColoredTextureRectShader::getInstance()
-        ->setTextureUnits(c_texture->getOpenGLTextureName());
+        ->setTextureUnits(texture->getTextureHandler());
 
     UniformColoredTextureRectShader::getInstance()
         ->setUniforms(core::vector2df(center_pos_x, center_pos_y),
@@ -375,7 +322,7 @@ void draw2DImageFromRTT(GLuint texture, size_t texture_w, size_t texture_h,
 
     UniformColoredTextureRectShader::getInstance()->setTextureUnits(texture);
     UniformColoredTextureRectShader::getInstance()
-        ->setUniforms(core::vector2df(center_pos_x, center_pos_y), 
+        ->setUniforms(core::vector2df(center_pos_x, center_pos_y),
                       core::vector2df(width, height),
                       core::vector2df(tex_center_pos_x, tex_center_pos_y),
                       core::vector2df(tex_width, tex_height), colors        );
@@ -386,7 +333,7 @@ void draw2DImageFromRTT(GLuint texture, size_t texture_w, size_t texture_h,
 }   // draw2DImageFromRTT
 
 // ----------------------------------------------------------------------------
-void draw2DImage(const video::ITexture* texture, 
+void draw2DImage(const video::ITexture* texture,
                  const core::rect<s32>& destRect,
                  const core::rect<s32>& sourceRect,
                  const core::rect<s32>* clip_rect,
@@ -396,8 +343,7 @@ void draw2DImage(const video::ITexture* texture,
     if (!CVS->isGLSL())
     {
         irr_driver->getVideoDriver()->draw2DImage(texture, destRect, sourceRect,
-                                                  clip_rect, colors,
-                                                  use_alpha_channel_of_texture);
+            clip_rect, colors, use_alpha_channel_of_texture);
         return;
     }
 
@@ -405,7 +351,7 @@ void draw2DImage(const video::ITexture* texture,
     float tex_center_pos_x, tex_center_pos_y;
 
     getSize(texture->getSize().Width, texture->getSize().Height,
-            texture->isRenderTarget(), destRect, sourceRect, width, height, 
+            texture->isRenderTarget(), destRect, sourceRect, width, height,
             center_pos_x, center_pos_y, tex_width, tex_height,
             tex_center_pos_x, tex_center_pos_y);
 
@@ -426,8 +372,8 @@ void draw2DImage(const video::ITexture* texture,
         glEnable(GL_SCISSOR_TEST);
         const core::dimension2d<u32>& render_target_size =
                             irr_driver->getActualScreenSize();
-        glScissor(clip_rect->UpperLeftCorner.X, 
-                  render_target_size.Height - clip_rect->LowerRightCorner.Y,
+        glScissor(clip_rect->UpperLeftCorner.X,
+                  (s32)render_target_size.Height - clip_rect->LowerRightCorner.Y,
                   clip_rect->getWidth(), clip_rect->getHeight());
     }
     if (colors)
@@ -438,14 +384,7 @@ void draw2DImage(const video::ITexture* texture,
     }
     else
     {
-#ifndef ANDROID
-        const video::COpenGLTexture *c_texture = 
-                            static_cast<const video::COpenGLTexture*>(texture);
-#else
-        const video::COGLES2Texture *c_texture = 
-                            static_cast<const video::COGLES2Texture*>(texture);
-#endif
-        drawTexQuad(c_texture->getOpenGLTextureName(), width, height,
+        drawTexQuad(texture->getTextureHandler(), width, height,
                     center_pos_x, center_pos_y, tex_center_pos_x,
                     tex_center_pos_y, tex_width, tex_height);
     }
@@ -457,8 +396,83 @@ void draw2DImage(const video::ITexture* texture,
 }   // draw2DImage
 
 // ----------------------------------------------------------------------------
+void draw2DImageRotationColor(video::ITexture* texture,
+                              const irr::core::rect<irr::s32>& destRect,
+                              const irr::core::rect<irr::s32>& sourceRect,
+                              const irr::core::rect<irr::s32>* clipRect,
+                              float rotation, const irr::video::SColor& color)
+{
+    const core::dimension2d<u32>& ss = texture->getSize();
+    core::rect<f32> tcoords;
+    tcoords.UpperLeftCorner.X = (f32)sourceRect.UpperLeftCorner.X / (f32)ss.Width;
+    tcoords.UpperLeftCorner.Y = (f32)sourceRect.UpperLeftCorner.Y / (f32)ss.Height;
+    tcoords.LowerRightCorner.X = (f32)sourceRect.LowerRightCorner.X / (f32)ss.Width;
+    tcoords.LowerRightCorner.Y = (f32)sourceRect.LowerRightCorner.Y / (f32)ss.Height;
+
+    video::S3DVertex vtx[4];
+    vtx[0] = video::S3DVertex((f32)destRect.UpperLeftCorner.X, (f32)destRect.UpperLeftCorner.Y, 0.0f,
+        0.0f, 0.0f, 0.0f, color,
+        tcoords.UpperLeftCorner.X, tcoords.UpperLeftCorner.Y);
+    vtx[1] = video::S3DVertex((f32)destRect.LowerRightCorner.X, (f32)destRect.UpperLeftCorner.Y, 0.0f,
+        0.0f, 0.0f, 0.0f, color,
+        tcoords.LowerRightCorner.X, tcoords.UpperLeftCorner.Y);
+    vtx[2] = video::S3DVertex((f32)destRect.LowerRightCorner.X, (f32)destRect.LowerRightCorner.Y, 0.0f,
+        0.0f, 0.0f, 0.0f, color,
+        tcoords.LowerRightCorner.X, tcoords.LowerRightCorner.Y);
+    vtx[3] = video::S3DVertex((f32)destRect.UpperLeftCorner.X, (f32)destRect.LowerRightCorner.Y, 0.0f,
+        0.0f, 0.0f, 0.0f, color,
+        tcoords.UpperLeftCorner.X, tcoords.LowerRightCorner.Y);
+
+    core::vector2df center(
+        (vtx[0].Pos.X + vtx[1].Pos.X + vtx[2].Pos.X + vtx[3].Pos.X) / 4.0f,
+        (vtx[0].Pos.Y + vtx[1].Pos.Y + vtx[2].Pos.Y + vtx[3].Pos.Y) / 4.0f);
+
+    float cos_rotation = cos(rotation);
+    float sin_rotation = sin(rotation);
+    for (int i = 0; i < 4; i++)
+    {
+        core::vector2df orig_pos(vtx[i].Pos.X, vtx[i].Pos.Y);
+        vtx[i].Pos.X = center.X + (orig_pos.X - center.X) * cos_rotation - (orig_pos.Y - center.Y) * sin_rotation;
+        vtx[i].Pos.Y = center.Y + (orig_pos.X - center.X) * sin_rotation + (orig_pos.Y - center.Y) * cos_rotation;
+    }
+
+    u16 indices[6] = { 0, 1, 2, 0, 2, 3 };
+    if (!CVS->isGLSL())
+    {
+        video::SMaterial m;
+        m.setTexture(0, texture);
+        if (irr_driver->getVideoDriver()->getDriverType() == video::EDT_OGLES2)
+        {
+            m.MaterialType = video::EMT_TRANSPARENT_ALPHA_CHANNEL;
+        }
+        else
+        {
+            // For vertex color
+            m.MaterialType = video::EMT_ONETEXTURE_BLEND;
+            m.MaterialTypeParam =
+                pack_textureBlendFunc(video::EBF_SRC_ALPHA,
+                video::EBF_ONE_MINUS_SRC_ALPHA,
+                video::EMFN_MODULATE_1X,
+                video::EAS_TEXTURE | video::EAS_VERTEX_COLOR);
+        }
+        irr_driver->getVideoDriver()->setMaterial(m);
+    }
+    else
+    {
+        indices[0] = 2;
+        indices[2] = 0;
+        indices[3] = 3;
+        indices[5] = 0;
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    }
+    draw2DVertexPrimitiveList(texture, vtx, 4, indices, 2, video::EVT_STANDARD,
+        scene::EPT_TRIANGLES, video::EIT_16BIT);
+}   // draw2DImageRotationColor
+
+// ----------------------------------------------------------------------------
 void draw2DVertexPrimitiveList(video::ITexture *tex, const void* vertices,
-                               u32 vertexCount, const void* indexList, 
+                               u32 vertexCount, const void* indexList,
                                u32 primitiveCount, video::E_VERTEX_TYPE vType,
                                scene::E_PRIMITIVE_TYPE pType,
                                video::E_INDEX_TYPE iType)
@@ -487,9 +501,10 @@ void draw2DVertexPrimitiveList(video::ITexture *tex, const void* vertices,
     VertexUtils::bindVertexArrayAttrib(vType);
 
     Primitive2DList::getInstance()->use();
-    Primitive2DList::getInstance()->setUniforms();
-    compressTexture(tex, false);
-    Primitive2DList::getInstance()->setTextureUnits(getTextureGLuint(tex));
+    Primitive2DList::getInstance()->setUniforms(
+        core::vector2df(float(irr_driver->getActualScreenSize().Width),
+        float(irr_driver->getActualScreenSize().Height)));
+    Primitive2DList::getInstance()->setTextureUnits(tex->getTextureHandler());
     glDrawElements(GL_TRIANGLE_FAN, primitiveCount, GL_UNSIGNED_SHORT, 0);
 
     glDeleteVertexArrays(1, &tmpvao);
@@ -539,10 +554,10 @@ void GL32_draw2DRectangle(video::SColor color, const core::rect<s32>& position,
             return;
 
         glEnable(GL_SCISSOR_TEST);
-        const core::dimension2d<u32>& render_target_size = 
+        const core::dimension2d<u32>& render_target_size =
                                             irr_driver->getActualScreenSize();
         glScissor(clip->UpperLeftCorner.X,
-                  render_target_size.Height - clip->LowerRightCorner.Y,
+                  (s32)render_target_size.Height - clip->LowerRightCorner.Y,
                   clip->getWidth(), clip->getHeight());
     }
 
@@ -561,3 +576,15 @@ void GL32_draw2DRectangle(video::SColor color, const core::rect<s32>& position,
 
     glGetError();
 }   // GL32_draw2DRectangle
+
+void preloadShaders()
+{
+    Primitive2DList::getInstance();
+    UniformColoredTextureRectShader::getInstance();
+    TextureRectShader::getInstance();
+    ColoredRectShader::getInstance();
+    ColoredTextureRectShader::getInstance();
+}   // preloadShaders
+
+#endif   // !SERVER_ONLY
+

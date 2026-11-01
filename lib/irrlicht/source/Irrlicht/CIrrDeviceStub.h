@@ -113,11 +113,28 @@ namespace irr
 		//! Checks if the window is running in fullscreen mode.
 		virtual bool isFullscreen() const;
 
+        //! Gets the DPI of the display currently used
+        virtual bool getDisplayDPI(float* ddpi, float* hdpi, float* vdpi) {return false;}
+
 		//! get color format of the current window
 		virtual video::ECOLOR_FORMAT getColorFormat() const;
 
 		//! Activate any joysticks, and generate events for them.
 		virtual bool activateJoysticks(core::array<SJoystickInfo> & joystickInfo);
+
+		/** Onscreen keyboard addition, to determine how much to move vertically. */
+		virtual u32 getScreenHeight() const { return 0; }
+		virtual u32 getOnScreenKeyboardHeight() const { return 0; }
+		virtual s32 getMovedHeight() const { return 0; }
+
+		//! Returns true if system has touch device
+		virtual bool supportsTouchDevice() const { return false; }
+
+		//! Returns true if system has hardware keyboard attached
+		virtual bool hasHardwareKeyboard() const { return true; }
+
+		//! Returns true if system has native on screen keyboard
+		virtual bool hasOnScreenKeyboard() const  { return false; }
 
 		//! Set the current Gamma Value for the Display
 		virtual bool setGammaRamp( f32 red, f32 green, f32 blue, f32 brightness, f32 contrast );
@@ -135,9 +152,8 @@ namespace irr
 		//! Remove all messages pending in the system message loop
 		virtual void clearSystemMessages();
 
-
+		void simulateMouse(const SEvent& event, core::position2d<s32>& mouse_pos);
 	protected:
-
 		void createGUIAndScene();
 
 		//! checks version of SDK and prints warning if there might be a problem
@@ -177,7 +193,7 @@ namespace irr
 		SMouseMultiClicks MouseMultiClicks;
 		video::CVideoModeList VideoModeList;
 		SIrrlichtCreationParameters CreationParams;
-		bool Close;
+		bool Close, IsMousePressed;
 	};
 
 } // end namespace irr

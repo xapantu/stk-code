@@ -21,6 +21,7 @@
 
 #include "utils/vec3.hpp"
 
+class BareNetworkString;
 class Track;
 
 /** This object keeps track of which sector an object is on. A sector is
@@ -40,13 +41,20 @@ private:
     /** The graph node the object is on. */
     int  m_current_graph_node;
 
-    /** The index of the last valid graph node. */
+    /** The index of the estimated valid graph node. Used for distance. */
+    int  m_estimated_valid_graph_node;
+
+    /** The index of the last valid graph node. Used for rescue */
     int  m_last_valid_graph_node;
 
     /** The coordinates of this object on the track, i.e. how far from
      *  the start of the track, and how far to the left or right
      *  of the center driveline. */
     Vec3 m_current_track_coords;
+
+    Vec3 m_estimated_valid_track_coords;
+
+    Vec3 m_latest_valid_track_coords;
 
     /** True if the object is on the road (driveline), or not. */
     bool m_on_road;
@@ -57,11 +65,19 @@ public:
           TrackSector();
     void  reset();
     void  rescue();
-    void  update(const Vec3 &xyz);
+    void  update(const Vec3 &xyz, bool ignore_vertical = false);
     float getRelativeDistanceToCenter() const;
     // ------------------------------------------------------------------------
     /** Returns how far the the object is from the start line. */
-    float getDistanceFromStart() const { return m_current_track_coords.getZ();}
+    float getDistanceFromStart(bool account_for_checklines, bool strict=false) const
+    {
+        if (account_for_checklines && strict)
+            return m_latest_valid_track_coords.getZ();
+        else if (account_for_checklines)
+            return m_estimated_valid_track_coords.getZ();
+        else
+            return m_current_track_coords.getZ();
+    }
     // ------------------------------------------------------------------------
     /** Returns the distance to the centre driveline. */
     float getDistanceToCenter() const { return m_current_track_coords.getX(); }
@@ -73,6 +89,19 @@ public:
     bool isOnRoad() const { return m_on_road; }
     // ------------------------------------------------------------------------
     void setLastTriggeredCheckline(int i) { m_last_triggered_checkline = i; }
+    // ------------------------------------------------------------------------
+    int getLastTriggeredCheckline() const
+                                         { return m_last_triggered_checkline; }
+    // ------------------------------------------------------------------------
+    int getLastValidGraphNode() const { return m_last_valid_graph_node; }
+    // ------------------------------------------------------------------------
+    void saveState(BareNetworkString* buffer) const;
+    // ------------------------------------------------------------------------
+    void rewindTo(BareNetworkString* buffer);
+    // ------------------------------------------------------------------------
+    void saveCompleteState(BareNetworkString* bns);
+    // ------------------------------------------------------------------------
+    void restoreCompleteState(const BareNetworkString& b);
 
 };   // TrackSector
 

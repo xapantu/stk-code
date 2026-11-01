@@ -81,6 +81,12 @@ public:
                                const int playerID) OVERRIDE;
 
     /** \brief implement callback from parent class GUIEngine::Screen */
+    virtual bool onEscapePressed() OVERRIDE;
+
+    /** \brief implement callback from parent class GUIEngine::Screen */
+    virtual void beforeAddingWidget() OVERRIDE;
+
+    /** \brief implement callback from parent class GUIEngine::Screen */
     virtual void init() OVERRIDE;
 };
 

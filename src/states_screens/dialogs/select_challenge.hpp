@@ -18,8 +18,10 @@
 #ifndef SELECT_CHALLENGE_HPP
 #define SELECT_CHALLENGE_HPP
 
+#include "challenges/challenge_status.hpp"
 #include "guiengine/event_handler.hpp"
 #include "guiengine/modaldialog.hpp"
+#include "race/race_manager.hpp"
 
 /**
  * \brief Dialog shown when starting a challenge
@@ -27,7 +29,11 @@
  */
 class SelectChallengeDialog : public GUIEngine::ModalDialog
 {
+private:
+    bool  m_self_destroy = false;
     std::string m_challenge_id;
+    void updateSolvedIcon(const ChallengeStatus* c, RaceManager::Difficulty diff,
+                          const char* widget_name, const char* path);
 public:
     
     SelectChallengeDialog(const float percentWidth, const float percentHeight,
@@ -35,6 +41,7 @@ public:
     virtual ~SelectChallengeDialog();
     
     virtual GUIEngine::EventPropagation processEvent(const std::string& eventSource);
+    virtual void onUpdate(float dt);
 };
 
 #endif

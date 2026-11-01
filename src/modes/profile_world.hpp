@@ -36,10 +36,6 @@ private:
     /** If profiling is done, and if so, which mode. */
     static ProfileType m_profile_mode;
 
-    /** If no graphics should be displayed. Useful for batch testing
-     *  of AI changes etc. */
-    static bool  m_no_graphics;
-
     /** In time based profiling only: time to run. */
     static float m_time;
 
@@ -72,17 +68,17 @@ protected:
      *  used by DemoWorld. */
     static int   m_num_laps;
 
-    virtual AbstractKart *createKart(const std::string &kart_ident, int index,
-                                     int local_player_id, int global_player_id,
-                                     RaceManager::KartType type,
-                                     PerPlayerDifficulty difficulty);
+    virtual std::shared_ptr<AbstractKart> createKart
+        (const std::string &kart_ident, int index, int local_player_id,
+        int global_player_id, RaceManager::KartType type,
+        HandicapLevel handicap);
 
 public:
                           ProfileWorld();
     virtual              ~ProfileWorld();
     /** Returns identifier for this world. */
     virtual  std::string getInternalCode() const {return "PROFILE"; }
-    virtual  void        update(float dt);
+    virtual  void        update(int ticks);
     virtual  bool        isRaceOver();
     virtual  void        enterRaceOverState();
 
@@ -91,12 +87,6 @@ public:
     // ------------------------------------------------------------------------
     /** Returns true if profile mode was selected. */
     static   bool isProfileMode() {return m_profile_mode!=PROFILE_NONE; }
-    // ------------------------------------------------------------------------
-    /** Switches off graphics. */
-    static   void disableGraphics() { m_no_graphics = true; }
-    // ------------------------------------------------------------------------
-    /** Returns true if no graphics should be displayed. */
-    static   bool isNoGraphics()  {return m_no_graphics; }
 };
 
 #endif

@@ -20,7 +20,7 @@
 #include "challenges/unlock_manager.hpp"
 #include "config/player_manager.hpp"
 #include "config/user_config.hpp"
-#include "graphics/irr_driver.hpp"
+#include "graphics/stk_tex_manager.hpp"
 #include "guiengine/widget.hpp"
 #include "guiengine/widgets/dynamic_ribbon_widget.hpp"
 #include "guiengine/widgets/icon_button_widget.hpp"
@@ -29,6 +29,7 @@
 #include "states_screens/track_info_screen.hpp"
 #include "tracks/track.hpp"
 #include "tracks/track_manager.hpp"
+#include "utils/string_utils.hpp"
 #include "utils/translation.hpp"
 
 #include <iostream>
@@ -38,8 +39,6 @@ using namespace irr::core;
 using namespace irr::video;
 
 static const char ALL_TRACK_GROUPS_ID[] = "all";
-
-DEFINE_SCREEN_SINGLETON( EasterEggScreen );
 
 // -----------------------------------------------------------------------------
 
@@ -71,9 +70,10 @@ void EasterEggScreen::eventCallback(Widget* widget, const std::string& name, con
 
             if (selection == "random_track")
             {
+#ifdef DEBUG
                 RibbonWidget* tabs = this->getWidget<RibbonWidget>("trackgroups");
                 assert( tabs != NULL );
-
+#endif
                 if (m_random_track_list.empty()) return;
 
                 std::string track = m_random_track_list.front();
@@ -121,6 +121,9 @@ void EasterEggScreen::eventCallback(Widget* widget, const std::string& name, con
 
 void EasterEggScreen::beforeAddingWidget()
 {
+    // Add user-defined group to track groups
+    track_manager->setFavoriteTrackStatus(PlayerManager::getCurrentPlayer()->getFavoriteTrackStatus());
+
     Screen::init();
     // Dynamically add tabs
     RibbonWidget* tabs = this->getWidget<RibbonWidget>("trackgroups");
@@ -140,16 +143,20 @@ void EasterEggScreen::beforeAddingWidget()
     // Make group names being picked up by gettext
 #define FOR_GETTEXT_ONLY(x)
     //I18N: track group name
-    FOR_GETTEXT_ONLY( _("standard") )
+    FOR_GETTEXT_ONLY( _("All") )
+    //I18N: track group name
+    FOR_GETTEXT_ONLY( _("Standard") )
     //I18N: track group name
     FOR_GETTEXT_ONLY( _("Add-Ons") )
 
-    // add others after
+    // Add other groups after
     for (int n=0; n<group_amount; n++)
     {
-        // try to translate the group name
-        tabs->addTextChild( _(groups[n].c_str()), groups[n] );
-    }
+        if (groups[n] == "standard") // Fix capitalization (#4622)
+            tabs->addTextChild( _("Standard") , groups[n]);
+        else // Try to translate group names
+            tabs->addTextChild( _(groups[n].c_str()) , groups[n]);
+    } // for n<group_amount
     
     int num_of_arenas=0;
     for (unsigned int n=0; n<track_manager->getNumberOfTracks(); n++) //iterate through tracks to find how many are arenas
@@ -161,7 +168,10 @@ void EasterEggScreen::beforeAddingWidget()
 
     DynamicRibbonWidget* tracks_widget = this->getWidget<DynamicRibbonWidget>("tracks");
     assert( tracks_widget != NULL );
-    tracks_widget->setItemCountHint(num_of_arenas+1); //set the item hint to that number to prevent weird formatting
+
+    // Set the item hint to that number to prevent weird formatting
+    // Avoid too many items shown at the same time
+    tracks_widget->setItemCountHint(std::min(num_of_arenas + 1, 30));
 }
 
 // -----------------------------------------------------------------------------
@@ -179,7 +189,7 @@ void EasterEggScreen::init()
     buildTrackList();
 
     // select old track for the game master (if found)
-    irr_driver->setTextureErrorMessage(
+    STKTexManager::getInstance()->setTextureErrorMessage(
               "While loading screenshot in track screen for last track '%s':",
               UserConfigParams::m_last_track);
     if (!tracks_widget->setSelection(UserConfigParams::m_last_track,
@@ -187,13 +197,16 @@ void EasterEggScreen::init()
     {
         tracks_widget->setSelection(0, PLAYER_ID_GAME_MASTER, true);
     }
-    irr_driver->unsetTextureErrorMessage();
+    STKTexManager::getInstance()->unsetTextureErrorMessage();
 }
 
 // -----------------------------------------------------------------------------
 
 void EasterEggScreen::buildTrackList()
 {
+    // Add user-defined group to track groups
+    track_manager->setFavoriteTrackStatus(PlayerManager::getCurrentPlayer()->getFavoriteTrackStatus());
+
     DynamicRibbonWidget* tracks_widget = this->getWidget<DynamicRibbonWidget>("tracks");
     assert( tracks_widget != NULL );
 
@@ -206,6 +219,8 @@ void EasterEggScreen::buildTrackList()
 
     const std::string curr_group_name = tabs->getSelectionIDString(0);
 
+    PtrVector<Track, REF> tracks;
+
     // Build track list
     if (curr_group_name == ALL_TRACK_GROUPS_ID)
     {
@@ -214,27 +229,14 @@ void EasterEggScreen::buildTrackList()
         for (int n=0; n<trackAmount; n++)
         {
             Track* curr = track_manager->getTrack( n );
-            if(race_manager->getMinorMode()==RaceManager::MINOR_MODE_EASTER_EGG
+            if(RaceManager::get()->getMinorMode()==RaceManager::MINOR_MODE_EASTER_EGG
                 && !curr->hasEasterEggs())
                 continue;
             if (curr->isArena() || curr->isSoccer()) continue;
             if (curr->isInternal()) continue;
 
-            if (PlayerManager::getCurrentPlayer()->isLocked(curr->getIdent()))
-            {
-                tracks_widget->addItem( _("Locked : solve active challenges to gain access to more!"),
-                                       "locked", curr->getScreenshotFile(), LOCKED_BADGE,
-                                       IconButtonWidget::ICON_PATH_TYPE_ABSOLUTE);
-            }
-            else
-            {
-                tracks_widget->addItem(translations->fribidize(curr->getName()), curr->getIdent(),
-                                       curr->getScreenshotFile(), 0,
-                                       IconButtonWidget::ICON_PATH_TYPE_ABSOLUTE );
-                m_random_track_list.push_back(curr->getIdent());
-            }
+            tracks.push_back(curr);
         }
-
     }
     else
     {
@@ -244,34 +246,50 @@ void EasterEggScreen::buildTrackList()
         for (int n=0; n<trackAmount; n++)
         {
             Track* curr = track_manager->getTrack( curr_group[n] );
-            if(race_manager->getMinorMode()==RaceManager::MINOR_MODE_EASTER_EGG
+            if(RaceManager::get()->getMinorMode()==RaceManager::MINOR_MODE_EASTER_EGG
                 && !curr->hasEasterEggs())
                 continue;
             if (curr->isArena()) continue;
             if (curr->isSoccer()) continue;
             if (curr->isInternal()) continue;
 
-            if (PlayerManager::getCurrentPlayer()->isLocked(curr->getIdent()))
-            {
-                tracks_widget->addItem( _("Locked : solve active challenges to gain access to more!"),
-                                       "locked", curr->getScreenshotFile(), LOCKED_BADGE,
-                                       IconButtonWidget::ICON_PATH_TYPE_ABSOLUTE);
-            }
-            else
-            {
-                tracks_widget->addItem(translations->fribidize(curr->getName()), curr->getIdent(),
-                                       curr->getScreenshotFile(), 0 /* no badge */,
-                                       IconButtonWidget::ICON_PATH_TYPE_ABSOLUTE );
-                m_random_track_list.push_back(curr->getIdent());
-            }
+            tracks.push_back(curr);
+        }
+    }
+    tracks.insertionSort();
+
+    for (unsigned int n=0; n<tracks.size(); n++)
+    {
+        Track* curr = tracks.get(n);
+
+        if (PlayerManager::getCurrentPlayer()->isLocked(curr->getIdent()))
+        {
+            tracks_widget->addItem( _("Locked : solve active challenges to gain access to more!"),
+                                    "locked", curr->getScreenshotFile(), LOCKED_BADGE,
+                                    IconButtonWidget::ICON_PATH_TYPE_ABSOLUTE);
+        }
+        else if (PlayerManager::getCurrentPlayer()->isFavoriteTrack(curr->getIdent()))
+        {
+            tracks_widget->addItem(curr->getName(), curr->getIdent(),
+                                    curr->getScreenshotFile(), HEART_BADGE,
+                                    IconButtonWidget::ICON_PATH_TYPE_ABSOLUTE );
+            m_random_track_list.push_back(curr->getIdent());
+        }
+        else
+        {
+            tracks_widget->addItem(curr->getName(), curr->getIdent(),
+                                    curr->getScreenshotFile(), 0,
+                                    IconButtonWidget::ICON_PATH_TYPE_ABSOLUTE );
+            m_random_track_list.push_back(curr->getIdent());
         }
     }
 
-    tracks_widget->addItem(_("Random Track"), "random_track", "/gui/track_random.png",
+    tracks_widget->addItem(_("Random Track"), "random_track", "/gui/icons/track_random.png",
                            0 /* no badge */, IconButtonWidget::ICON_PATH_TYPE_RELATIVE);
 
     tracks_widget->updateItemDisplay();
-    std::random_shuffle( m_random_track_list.begin(), m_random_track_list.end() );
+    std::shuffle( m_random_track_list.begin(), m_random_track_list.end(),
+                  RandomGenerator::getGenerator());
 }
 
 // -----------------------------------------------------------------------------

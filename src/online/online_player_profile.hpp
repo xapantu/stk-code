@@ -20,10 +20,6 @@
 #define HEADER_CURRENT_ONLINE_USER_HPP
 
 #include "config/player_profile.hpp"
-#include "online/http_request.hpp"
-#include "online/online_profile.hpp"
-#include "online/request_manager.hpp"
-#include "online/xml_request.hpp"
 #include "utils/synchronised.hpp"
 #include "utils/types.hpp"
 
@@ -38,32 +34,12 @@ namespace Online
 {
     class OnlineProfile;
 
-    // ============================================================================
-
     /**
       * \brief Class that represents an online registered user
       * \ingroup online
       */
     class OnlinePlayerProfile : public PlayerProfile
     {
-    public:
-        // ----------------------------------------------------------------
-        class SignInRequest : public XMLRequest
-        {
-            virtual void callback ();
-        public:
-            SignInRequest(bool manage_memory = false)
-                : XMLRequest(manage_memory, /*priority*/10) {}
-        };   // SignInRequest
-
-        // ----------------------------------------------------------------
-        class PollRequest : public XMLRequest
-        {
-            virtual void callback ();
-        public:
-            PollRequest() : XMLRequest(true) {}
-        };   // PollRequest
-
     private:
         std::string                 m_token;
         OnlineProfile              *m_profile;
@@ -75,7 +51,7 @@ namespace Online
         virtual void signOut(bool success, const XMLNode * input,
                             const irr::core::stringw &info);
         virtual uint32_t getOnlineId() const;
-        virtual void setUserDetails(Online::HTTPRequest *request,
+        virtual void setUserDetails(std::shared_ptr<HTTPRequest> request,
                                     const std::string &action,
                                     const std::string &url_path = "") const;
 
@@ -97,21 +73,20 @@ namespace Online
         }   // getOnlineState
 
         // ----------------------------------------------------------------
-        /** Returns a pointer to the profile associated with the current user. */
-        OnlineProfile* getProfile() const { return m_profile; }
-
-        // ----------------------------------------------------------------
         /** Returns the session token of the signed in user. */
         const std::string& getToken() const { return m_token; }
         virtual void requestSavedSession();
         virtual void requestSignOut();
-        virtual SignInRequest *requestSignIn(const irr::core::stringw &username,
-                                             const irr::core::stringw &password);
+        virtual void requestSignIn(const irr::core::stringw &username,
+                                   const irr::core::stringw &password);
 
     public:
         OnlinePlayerProfile(const XMLNode *player);
         OnlinePlayerProfile(const core::stringw &name, bool is_guest = false);
         virtual ~OnlinePlayerProfile() {}
+        // ----------------------------------------------------------------
+        /** Returns a pointer to the profile associated with the current user. */
+        OnlineProfile* getProfile() const { return m_profile; }
         // ----------------------------------------------------------------
     }; // class OnlinePlayerProfile
 } // namespace Online

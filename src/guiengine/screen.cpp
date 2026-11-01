@@ -25,9 +25,8 @@
 #include "guiengine/modaldialog.hpp"
 #include "guiengine/widget.hpp"
 #include "modes/world.hpp"
+#include "network/network_config.hpp"
 #include "states_screens/state_manager.hpp"
-
-#include <irrlicht.h>
 
 using namespace irr;
 using namespace core;
@@ -53,10 +52,12 @@ Screen::Screen(const char* file, bool pause_race)
     m_magic_number   = 0xCAFEC001;
 
     m_filename       = file;
-    m_throttle_FPS   = true;
     m_render_3d      = false;
     m_loaded         = false;
     m_pause_race     = pause_race;
+    m_update_in_background = false;
+    m_width = irr_driver->getActualScreenSize().Width;
+    m_height = irr_driver->getActualScreenSize().Height;
 }   // Screen
 
 // -----------------------------------------------------------------------------
@@ -70,6 +71,7 @@ Screen::Screen(bool pause_race)
     m_loaded       = false;
     m_render_3d    = false;
     m_pause_race   = pause_race;
+    m_update_in_background = false;
 }   // Screen
 
 // -----------------------------------------------------------------------------
@@ -90,13 +92,14 @@ Screen::~Screen()
  */
 void Screen::init()
 {
-    if(m_pause_race && World::getWorld())
+    if (m_pause_race && World::getWorld() &&
+        !NetworkConfig::get()->isNetworking())
         World::getWorld()->schedulePause(World::IN_GAME_MENU_PHASE);
 }   // init
 
 // -----------------------------------------------------------------------------
 /** Displays this screen bu pushing it onto the stack of screen
- *  in the state manager. 
+ *  in the state manager.
  */
 void Screen::push()
 {
@@ -111,7 +114,8 @@ void Screen::push()
  */
 void Screen::tearDown()
 {
-    if(m_pause_race && World::getWorld())
+    if (m_pause_race && World::getWorld() &&
+        !NetworkConfig::get()->isNetworking())
         World::getWorld()->scheduleUnpause();
 }   // tearDown
 
@@ -127,7 +131,7 @@ void Screen::loadFromFile()
 {
     assert(m_magic_number == 0xCAFEC001);
 
-    std::string path = file_manager->getAssetChecked(FileManager::GUI, m_filename, true);
+    std::string path = file_manager->getAssetChecked(FileManager::GUI_SCREEN, m_filename, true);
     IXMLReader* xml = file_manager->createXMLReader( path );
 
     parseScreenFileDiv(xml, m_widgets);
@@ -148,12 +152,13 @@ void Screen::loadFromFile()
 void Screen::unload()
 {
     assert(m_magic_number == 0xCAFEC001);
+#ifndef NDEBUG
     Widget* w;
     for_in (w, m_widgets)
     {
         assert(w->m_magic_number == 0xCAFEC001);
     }
-
+#endif
     m_loaded = false;
     m_widgets.clearAndDeleteAll();
 
@@ -225,25 +230,20 @@ void Screen::manualRemoveWidget(Widget* w)
 }   // manualRemoveWidget
 
 // -----------------------------------------------------------------------------
+void Screen::onResize()
+{
+    m_width = irr_driver->getActualScreenSize().Width;
+    m_height = irr_driver->getActualScreenSize().Height;
+
+    calculateLayout();
+
+    resizeWidgetsRecursively(m_widgets);
+}   // onResize
+
+// -----------------------------------------------------------------------------
 
 #if 0
 #pragma mark -
 #pragma mark Getters
 #endif
-
-// -----------------------------------------------------------------------------
-/** \brief Implementing method from AbstractTopLevelContainer */
-int Screen::getWidth()
-{
-    return irr_driver->getActualScreenSize().Width;
-}
-
-// -----------------------------------------------------------------------------
-/** \brief Implementing method from AbstractTopLevelContainer */
-int Screen::getHeight()
-{
-    return irr_driver->getActualScreenSize().Height;
-}
-
-// -----------------------------------------------------------------------------
 

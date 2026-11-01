@@ -15,9 +15,12 @@
 //  along with this program; if not, write to the Free Software
 //  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
+#ifndef SERVER_ONLY
+
 #include "addons/news_manager.hpp"
 
 #include "config/user_config.hpp"
+#include "config/stk_config.hpp"
 #include "io/file_manager.hpp"
 #include "online/http_request.hpp"
 #include "online/request_manager.hpp"
@@ -28,93 +31,101 @@
 #include "utils/translation.hpp"
 #include "utils/vs.hpp"
 
+#include <functional>
 #include <iostream>
 
 using namespace Online;
 
-NewsManager *NewsManager::m_news_manager=NULL;
+NewsManager *NewsManager::m_news_manager = nullptr;
+std::string NewsManager::m_news_filename = "online_news.xml";
 
 // ----------------------------------------------------------------------------
-NewsManager::NewsManager() : m_news(std::vector<NewsMessage>())
+NewsManager::NewsManager()
 {
-    m_current_news_message = -1;
+    for (int i = 0; i < NTYPE_COUNT; i++)
+    {
+        m_current_news_ptr[i] = -1;
+        m_news_prioritize_after_id[i] = -1;
+    }
     m_error_message.setAtomic("");
     m_force_refresh = false;
+
+    // Clean .part file which may be left behind
+    std::string news_part = file_manager->getAddonsFile(m_news_filename + ".part");
+    if (file_manager->fileExists(news_part))
+        file_manager->removeFile(news_part);
+
     init(false);
 }   // NewsManage
 
 // ---------------------------------------------------------------------------
 NewsManager::~NewsManager()
 {
+    // If the download thread doesn't finish on time we detach the thread to
+    // avoid exception
+    if (m_download_thread.joinable())
+    {
+        if (!CanBeDeleted::canBeDeletedNow())
+            m_download_thread.detach();
+        else
+            m_download_thread.join();
+    }
 }   // ~NewsManager
 
 // ---------------------------------------------------------------------------
 /** This function initialises the data for the news manager. It starts a
  *  separate thread to execute downloadNews() - which (if necessary) downloads
- *  the news.xml file and updates the list of news messages. It also
+ *  the m_news_filename file and updates the list of news messages. It also
  *  initialises the addons manager (which can trigger another download of
- *  news.xml).
- *  \param force_refresh Re-download news.xml, even if
+ *  m_news_filename).
+ *  \param force_refresh Re-download m_news_filename, even if
  */
 void NewsManager::init(bool force_refresh)
 {
+    if (m_download_thread.joinable())
+        return;
+
     m_force_refresh = force_refresh;
 
-#ifndef ANDROID
-    // The rest (which potentially involves downloading news.xml) is handled
+    // The rest (which potentially involves downloading m_news_filename) is handled
     // in a separate thread, so that the GUI remains responsive. It is only
     // started if internet access is enabled, else nothing is done in the
     // thread anyway (and the addons menu is disabled as a result).
     if(UserConfigParams::m_internet_status==RequestManager::IPERM_ALLOWED)
     {
-        pthread_attr_t  attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        // Should be the default, but just in case:
-        pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-        //pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
-        pthread_t thread_id;
-        int error = pthread_create(&thread_id, &attr,
-            &NewsManager::downloadNews, this);
-        if (error)
-        {
-            Log::warn("news", "Could not create thread, error=%d", error);
-            // In this case just execute the downloading code with this thread
-            downloadNews(this);
-        }
-        pthread_attr_destroy(&attr);
+        CanBeDeleted::resetCanBeDeleted();
+        m_download_thread = std::thread(std::bind(
+            &NewsManager::downloadNews, this));
     }
-#endif
-
 }   //init
 
 // ---------------------------------------------------------------------------
-/** This function submits request which will download the news.xml file
+/** This function submits request which will download the m_news_filename file
  *  if necessary. It is running in its own thread, so we can use blocking
  *  download calls without blocking the GUI.
- *  \param obj This is 'this' object, passed on during pthread creation.
  */
-void* NewsManager::downloadNews(void *obj)
+void NewsManager::downloadNews()
 {
     VS::setThreadName("downloadNews");
-    NewsManager *me = (NewsManager*)obj;
-    me->clearErrorMessage();
+    clearErrorMessage();
 
-    std::string xml_file = file_manager->getAddonsFile("news.xml");
+    std::string xml_file = file_manager->getAddonsFile(m_news_filename);
+    // Prevent downloading when .part file created, which is already downloaded
+    std::string xml_file_part = file_manager->getAddonsFile(m_news_filename + ".part");
     bool news_exists = file_manager->fileExists(xml_file);
 
     // The news message must be updated if either it has never been updated,
     // or if the time of the last update was more than news_frequency ago,
     // or because a 'refresh' was explicitly requested by the user, or no
-    // news.xml file exists.
+    // m_news_filename file exists.
     bool download = ( UserConfigParams::m_news_last_updated==0  ||
                       UserConfigParams::m_news_last_updated
                           +UserConfigParams::m_news_frequency
                         < StkTime::getTimeSinceEpoch()          ||
-                      me->m_force_refresh                       ||
+                      m_force_refresh                       ||
                       !news_exists                                    )
-         && UserConfigParams::m_internet_status==RequestManager::IPERM_ALLOWED;
-
+         && UserConfigParams::m_internet_status==RequestManager::IPERM_ALLOWED
+         && !file_manager->fileExists(xml_file_part);
     const XMLNode *xml = NULL;
 
     if(!download && news_exists)
@@ -143,8 +154,8 @@ void* NewsManager::downloadNews(void *obj)
     {
         core::stringw error_message("");
 
-        HTTPRequest *download_req = new HTTPRequest("news.xml");
-        download_req->setAddonsURL("news.xml");
+        auto download_req = std::make_shared<HTTPRequest>(m_news_filename);
+        download_req->setAddonsURL(m_news_filename);
 
         // Initialise the online portion of the addons manager.
         if(UserConfigParams::logAddons())
@@ -157,15 +168,12 @@ void* NewsManager::downloadNews(void *obj)
             // with the default server address again (just in case
             // that a redirect went wrong, or a wrong/incorrect
             // address somehow made its way into the config file.
-            delete download_req;
-
             // We need a new object, since the state of the old
             // download request is now done.
-            download_req = new HTTPRequest("news.xml");
-            UserConfigParams::m_server_addons.revertToDefaults();
+            download_req = std::make_shared<HTTPRequest>(m_news_filename);
 
             // make sure the new server address is actually used
-            download_req->setAddonsURL("news.xml");
+            download_req->setAddonsURL(m_news_filename);
             download_req->executeNow();
 
             if(download_req->hadDownloadError())
@@ -177,14 +185,13 @@ void* NewsManager::downloadNews(void *obj)
                 const char *const curl_error = download_req->getDownloadErrorMessage();
                 error_message = StringUtils::insertValues(error_message, curl_error);
                 addons_manager->setErrorState();
-                me->setErrorMessage(error_message);
+                setErrorMessage(error_message);
                 Log::error("news", core::stringc(error_message).c_str());
             }   // hadDownloadError
         }   // hadDownloadError
 
         if(!download_req->hadDownloadError())
             UserConfigParams::m_news_last_updated = StkTime::getTimeSinceEpoch();
-        delete download_req;
 
         // No download error, update the last_updated time value, and delete
         // the potentially loaded xml file
@@ -199,18 +206,17 @@ void* NewsManager::downloadNews(void *obj)
     if(file_manager->fileExists(xml_file))
     {
         xml = new XMLNode(xml_file);
-        me->checkRedirect(xml);
-        me->updateNews(xml, xml_file);
-        addons_manager->init(xml, me->m_force_refresh);
+        checkRedirect(xml);
+        updateNews(xml, xml_file);
+        if (addons_manager)
+            addons_manager->init(xml, m_force_refresh);
         delete xml;
     }
 
     // We can't finish stk (esp. delete the file manager) before
     // this part of the code is reached (since otherwise the file
     // manager might be access after it was deleted).
-    me->setCanBeDeleted();
-    pthread_exit(NULL);
-    return 0;  // prevent warning
+    CanBeDeleted::setCanBeDeleted();
 }   // downloadNews
 
 // ---------------------------------------------------------------------------
@@ -220,31 +226,53 @@ void* NewsManager::downloadNews(void *obj)
  */
 void NewsManager::checkRedirect(const XMLNode *xml)
 {
-    std::string new_server;
-    int result = xml->get("redirect", &new_server);
-    if(result==1 && new_server!="")
+    if (stk_config->m_allow_news_redirects)
     {
-        if(UserConfigParams::logAddons())
+        // NOTE: Before 0.10 there were just two redirect attributes
+        // "redirect" - addons server (contains /dl/xml/ path)
+        // "hw-report-server" - hardware report server
+
+        // Redirect for the new addons server
+        std::string new_addons_server;
+        if (xml->get("redirect-server-addons", &new_addons_server) == 1 && !new_addons_server.empty())
         {
-            Log::info("[Addons]", "Current server: '%s'\n [Addons] New server: '%s'",
-                        UserConfigParams::m_server_addons.c_str(), new_server.c_str());
+            if (UserConfigParams::logAddons())
+            {
+                Log::info("[Addons]", "Current addons server: '%s'\n [Addons] New addons server: '%s'",
+                            stk_config->m_server_addons.c_str(), new_addons_server.c_str());
+            }
+            stk_config->m_server_addons = new_addons_server;
         }
-        UserConfigParams::m_server_addons = new_server;
+
+        // Redirect for the API server
+        std::string new_api_server;
+        if (xml->get("redirect-server-api", &new_api_server) == 1 && !new_api_server.empty())
+        {
+            if (UserConfigParams::logAddons())
+            {
+                Log::info("[Addons]", "Current API server: '%s'\n [Addons] New API server: '%s'",
+                            stk_config->m_server_api.c_str(), new_api_server.c_str());
+            }
+            stk_config->m_server_api = new_api_server;
+        }
+
+        // Redirect for the hardware report server
+        std::string new_hardware_report_server;
+        if (xml->get("redirect-server-hardware-report", &new_hardware_report_server) == 1 && !new_hardware_report_server.empty())
+        {
+            Log::info("hw report", "Current hardware report  server: '%s'\n [hw report] New hardware report server: '%s'",
+                        stk_config->m_server_hardware_report.c_str(), new_hardware_report_server.c_str());
+            stk_config->m_server_hardware_report = new_hardware_report_server;
+        }
     }
 
-    std::string hw_report_server;
-    if(xml->get("hw-report-server", &hw_report_server)==1 && hw_report_server.size()>0)
-    {
-        Log::info("hw report", "New server at '%s'.", hw_report_server.c_str());
-        UserConfigParams::m_server_hw_report = hw_report_server;
-    }
-
+    // Update menu/game polling interval
     float polling;
-    if(xml->get("menu-polling-interval", &polling))
+    if (xml->get("menu-polling-interval", &polling))
     {
         RequestManager::get()->setMenuPollingInterval(polling);
     }
-    if(xml->get("game-polling-interval", &polling))
+    if (xml->get("game-polling-interval", &polling))
     {
         RequestManager::get()->setGamePollingInterval(polling);
     }
@@ -261,53 +289,59 @@ void NewsManager::checkRedirect(const XMLNode *xml)
  */
 void NewsManager::updateNews(const XMLNode *xml, const std::string &filename)
 {
-
-    m_all_news_messages = "";
-    const core::stringw message_divider="  +++  ";
-    // This function is also called in case of a reinit, so
-    // we have to delete existing news messages here first.
-    m_news.lock();
-    m_news.getData().clear();
-    m_news.unlock();
     bool error = true;
     int frequency=0;
     if(xml->get("frequency", &frequency))
         UserConfigParams::m_news_frequency = frequency;
 
+    for (int type = 0; type < NTYPE_COUNT; type++)
+    {
+        // This function is also called in case of a reinit, so
+        // we have to delete existing news messages here first.
+        m_news[type].lock();
+        m_news[type].getData().clear();
+    }
+
     for(unsigned int i=0; i<xml->getNumNodes(); i++)
     {
         const XMLNode *node = xml->getNode(i);
-        if(node->getName()!="message") continue;
-        core::stringw news;
-        node->get("content", &news);
+
+        NewsType type;
+
+        if (node->getName() == "message")
+        {
+            type = NTYPE_MAINMENU;
+        }
+        else if (node->getName() == "list")
+        {
+            type = NTYPE_LIST;
+        }
+        else continue;
+
+        std::string raw_news;
+        node->get("content", &raw_news);
+        core::stringw news = StringUtils::xmlDecode(raw_news);
         int id=-1;
         node->get("id", &id);
         bool important=false;
         node->get("important", &important);
+        std::string date="";
+        node->get("date", &date);
+        std::string link="";
+        node->get("link", &link);
 
         std::string cond;
         node->get("condition", &cond);
         if(!conditionFulfilled(cond))
             continue;
-        m_news.lock();
-        {
 
-            if(!important)
-                m_all_news_messages += m_all_news_messages.size()>0
-                                    ?  message_divider + news
-                                    : news;
-            else
-            // Define this if news messages should be removed
-            // after being shown a certain number of times.
-            {
-                NewsMessage n(news, id, important);
-                m_news.getData().push_back(n);
-            }
-        }   // m_news.lock()
-        m_news.unlock();
+        NewsMessage n(news, id, date, link, important);
+
+        m_news[type].getData().push_back(n);
 
         error = false;
     }
+
     if(error)
     {
         // In case of an error (e.g. the file only contains
@@ -316,12 +350,36 @@ void NewsManager::updateNews(const XMLNode *xml, const std::string &filename)
         // a new read on the next start, instead of waiting
         // for some time).
         file_manager->removeFile(filename);
-        NewsMessage n(_("Can't access stkaddons server..."), -1);
-        m_news.lock();
-        m_news.getData().push_back(n);
+        NewsMessage n(_("Failed to connect to the SuperTuxKart add-ons server."), -1);
 
-        m_all_news_messages="";
-        m_news.unlock();
+        for (int type = 0; type < NTYPE_COUNT; type++)
+        {
+            m_news[type].getData().push_back(n);
+            m_news[type].unlock();
+        }
+    }
+    else
+    {
+        for (int type = 0; type < NTYPE_COUNT; type++)
+        {
+            std::sort(
+                m_news[type].getData().begin(),
+                m_news[type].getData().end()
+            );
+
+            int after_id = m_news_prioritize_after_id[type];
+            if (after_id != -1)
+            {
+                std::stable_partition(
+                    m_news[type].getData().begin(),
+                    m_news[type].getData().end(),
+                    [after_id](NewsMessage& n)->bool{
+                        return n.getMessageId() >= after_id;
+                    }
+                );
+            }
+            m_news[type].unlock();
+        }
     }
 }   // updateNews
 
@@ -330,46 +388,127 @@ void NewsManager::updateNews(const XMLNode *xml, const std::string &filename)
  *  when downloading addons.
  *  \param s The news message to add.
  */
-void NewsManager::addNewsMessage(const core::stringw &s)
+void NewsManager::addNewsMessage(NewsType type, const core::stringw &s)
 {
     NewsMessage n(s, -1);
-    m_news.lock();
-    m_news.getData().push_back(n);
-    m_news.unlock();
+    m_news[type].lock();
+    m_news[type].getData().push_back(n);
+    m_news[type].unlock();
 }   // addNewsMessage
 // ----------------------------------------------------------------------------
-/** Returns the  important message with the smallest id that has not been
- *  shown, or NULL if no important (not shown before) message exists atm. The
- *  user config is updated to store the last important message id shown.
+/** Returns the message pointed by the current ptr
  */
-const core::stringw NewsManager::getImportantMessage()
+const core::stringw NewsManager::getCurrentNewsMessage(NewsType type)
 {
-    int index = -1;
-    m_news.lock();
-    for(unsigned int i=0; i<m_news.getData().size(); i++)
-    {
-        const NewsMessage &m = m_news.getData()[i];
-        //
-        if(m.isImportant() &&
-           m.getMessageId()>UserConfigParams::m_last_important_message_id  &&
-            (index == -1 ||
-            m.getMessageId() < m_news.getData()[index].getMessageId() )     )
-        {
-            index = i;
-        }   // if new unshown important message with smaller message id
-    }
-    core::stringw message("");
-    if(index>=0)
-    {
-        const NewsMessage &m = m_news.getData()[index];
-        message = m.getNews();
-        UserConfigParams::m_last_important_message_id = m.getMessageId();
+    // Only display error message in case of a problem.
+    if (m_error_message.getAtomic().size()>0)
+        return _(m_error_message.getAtomic().c_str());
+    
+    core::stringw message = L"";
 
+    m_news[type].lock();
+
+    if (m_current_news_ptr[type] >= 0
+     && (unsigned int) m_current_news_ptr[type] < m_news[type].getData().size())
+    {
+        message = m_news[type].getData()[m_current_news_ptr[type]].getNews();
     }
-    m_news.unlock();
+    m_news[type].unlock();
 
     return message;
-}   // getImportantMessage
+}   // getCurrentNewsMessage
+// ----------------------------------------------------------------------------
+/** Returns the date of the news pointed by the current ptr
+ */
+const std::string NewsManager::getCurrentNewsDate(NewsType type)
+{
+    std::string date = "";
+
+    m_news[type].lock();
+
+    if (m_current_news_ptr[type] >= 0
+     && (unsigned int) m_current_news_ptr[type] < m_news[type].getData().size())
+    {
+        date = m_news[type].getData()[m_current_news_ptr[type]].getDate();
+    }
+    m_news[type].unlock();
+
+    return date;
+}   // getCurrentNewsMessage
+// ----------------------------------------------------------------------------
+/** Returns the date of the news pointed by the current ptr
+ */
+const std::string NewsManager::getCurrentNewsLink(NewsType type)
+{
+    std::string link = "";
+
+    m_news[type].lock();
+
+    if (m_current_news_ptr[type] >= 0
+     && (unsigned int) m_current_news_ptr[type] < m_news[type].getData().size())
+    {
+        link = m_news[type].getData()[m_current_news_ptr[type]].getLink();
+    }
+    m_news[type].unlock();
+
+    return link;
+}   // getCurrentNewsMessage
+// ----------------------------------------------------------------------------
+/** Returns the importance of the message pointed by the current ptr
+ */
+const bool NewsManager::isCurrentNewsImportant(NewsType type)
+{
+    bool importance = false;
+
+    m_news[type].lock();
+
+    if (m_current_news_ptr[type] >= 0
+     && (unsigned int) m_current_news_ptr[type] < m_news[type].getData().size())
+    {
+        importance = m_news[type].getData()[m_current_news_ptr[type]].isImportant();
+    }
+    m_news[type].unlock();
+
+    return importance;
+}   // isCurrentNewsImportant
+
+// ----------------------------------------------------------------------------
+const int NewsManager::getNewsCount(NewsType type)
+{
+    // Only show error message one time
+    if(m_error_message.getAtomic().size()>0)
+        return 1;
+    
+    m_news[type].lock();
+    int count = m_news[type].getData().size();
+    m_news[type].unlock();
+
+    return count;
+}
+
+// ----------------------------------------------------------------------------
+void NewsManager::prioritizeNewsAfterID(NewsType type, int id)
+{
+    m_news[type].lock();
+
+    std::sort(
+        m_news[type].getData().begin(),
+        m_news[type].getData().end()
+    );
+    if (id != -1)
+    {
+        std::stable_partition(
+            m_news[type].getData().begin(),
+            m_news[type].getData().end(),
+            [id](NewsMessage& n)->bool{
+                return n.getMessageId() > id;
+            }
+        );
+    }
+
+    m_news_prioritize_after_id[type] = id;
+    m_news[type].unlock();
+}
 
 // ----------------------------------------------------------------------------
 /** Returns the next loaded news message. It will 'wrap around', i.e.
@@ -377,38 +516,30 @@ const core::stringw NewsManager::getImportantMessage()
  *  To be used by the the main menu to get the next news message after
  *  one message was scrolled off screen.
  */
-const core::stringw NewsManager::getNextNewsMessage()
+const int NewsManager::getNextNewsID(NewsType type)
 {
-    // Only display error message in case of a problem.
-    if(m_error_message.getAtomic().size()>0)
-        return _(m_error_message.getAtomic().c_str());
+    if (m_error_message.getAtomic().size()>0)
+        return -1;
 
-    m_news.lock();
-    if(m_all_news_messages.size()>0)
-    {
-        // Copy the news message while it is locked.
-        core::stringw anm = m_all_news_messages;
-        m_news.unlock();
-        return anm;
-    }
+    m_news[type].lock();
 
-    if(m_news.getData().size()==0)
+    if(m_news[type].getData().size()==0)
     {
         // Lock
-        m_news.unlock();
-        return "";
+        m_news[type].unlock();
+        return -1;
     }
 
-    core::stringw m("");
+    int m = -1;
     {
-        m_current_news_message++;
-        if(m_current_news_message >= (int)m_news.getData().size())
-            m_current_news_message = 0;
+        m_current_news_ptr[type]++;
+        if(m_current_news_ptr[type] >= (int)m_news[type].getData().size())
+            m_current_news_ptr[type] = 0;
 
-        m = m_news.getData()[m_current_news_message].getNews();
+        m = m_news[type].getData()[m_current_news_ptr[type]].getMessageId();
     }
-    m_news.unlock();
-    return _(m.c_str());
+    m_news[type].unlock();
+    return m;
 }   // getNextNewsMessage
 
 // ----------------------------------------------------------------------------
@@ -487,3 +618,5 @@ bool NewsManager::conditionFulfilled(const std::string &cond)
 }   // conditionFulfilled
 
 // ----------------------------------------------------------------------------
+
+#endif

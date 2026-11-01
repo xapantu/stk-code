@@ -23,8 +23,10 @@
 #include "config/player_manager.hpp"
 #include "config/user_config.hpp"
 #include "states_screens/state_manager.hpp"
+#include "online/http_request.hpp"
 #include "utils/vs.hpp"
 
+#include <functional>
 #include <iostream>
 #include <stdio.h>
 #include <memory.h>
@@ -43,7 +45,7 @@ using namespace Online;
 namespace Online
 {
     RequestManager * RequestManager::m_request_manager = NULL;
-
+    bool RequestManager::m_disable_polling = false;
     // ------------------------------------------------------------------------
     /** Deletes the http manager.
      */
@@ -69,27 +71,19 @@ namespace Online
      */
     RequestManager::RequestManager()
     {
+        m_paused.store(false);
         m_menu_polling_interval = 60;  // Default polling: every 60 seconds.
         m_game_polling_interval = 60;  // same for game polling
         m_time_since_poll       = m_menu_polling_interval;
-#ifndef NO_CURL
-        curl_global_init(CURL_GLOBAL_DEFAULT);
-#endif
-        pthread_cond_init(&m_cond_request, NULL);
+        Online::globalHTTPRequestInit();
         m_abort.setAtomic(false);
     }   // RequestManager
 
     // ------------------------------------------------------------------------
     RequestManager::~RequestManager()
     {
-        m_thread_id.lock();
-        pthread_join(*m_thread_id.getData(), NULL);
-        delete m_thread_id.getData();
-        m_thread_id.unlock();
-        pthread_cond_destroy(&m_cond_request);
-#ifndef NO_CURL
-        curl_global_cleanup();
-#endif
+        m_thread.join();
+        Online::globalHTTPRequestCleanup();
     }   // ~RequestManager
 
     // ------------------------------------------------------------------------
@@ -104,38 +98,16 @@ namespace Online
      */
     void RequestManager::startNetworkThread()
     {
-#ifndef NO_CURL
-        pthread_attr_t  attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-
-        // Should be the default, but just in case:
-        pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-        //pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
-
-        m_thread_id.setAtomic(new pthread_t());
-        int error = pthread_create(m_thread_id.getData(), &attr,
-                                   &RequestManager::mainLoop, this);
-        if (error)
-        {
-            m_thread_id.lock();
-            delete m_thread_id.getData();
-            m_thread_id.unlock();
-            m_thread_id.setAtomic(0);
-            Log::error("HTTP Manager", "Could not create thread, error=%d.",
-                       errno);
-        }
-        pthread_attr_destroy(&attr);
-
+        m_thread = std::thread(std::bind(mainLoop, this));
         // In case that login id was not saved (or first start of stk),
         // current player would not be defined at this stage.
         PlayerProfile *player = PlayerManager::getCurrentPlayer();
         if (player && player->wasOnlineLastTime() &&
-            !UserConfigParams::m_always_show_login_screen)
+            !UserConfigParams::m_always_show_login_screen &&
+            UserConfigParams::m_internet_status != RequestManager::IPERM_NOT_ALLOWED)
         {
             PlayerManager::resumeSavedSession();
         }
-#endif
     }   // startNetworkThread
 
     // ------------------------------------------------------------------------
@@ -146,14 +118,15 @@ namespace Online
      */
     void RequestManager::stopNetworkThread()
     {
-#ifndef NO_CURL
         // This will queue a sign-out or client-quit request
         PlayerManager::onSTKQuit();
 
         // Put in a high priortity quit request in. It has the same priority
         // as a sign-out request (so the sign-out will be executed before the
         // quit request).
-        Request *quit = new Request(true, HTTP_MAX_PRIORITY, Request::RT_QUIT);
+        // Required for std::make_shared as it takes reference
+        int priority = HTTP_MAX_PRIORITY;
+        auto quit = std::make_shared<Request>(priority, Request::RT_QUIT);
         quit->setAbortable(false);
         addRequest(quit);
 
@@ -166,7 +139,6 @@ namespace Online
         // be executed (before the quit request is executed, which causes this
         // thread to exit).
         m_abort.setAtomic(true);
-#endif
     }   // stopNetworkThread
 
     // ------------------------------------------------------------------------
@@ -174,15 +146,22 @@ namespace Online
      *  sorted by priority.
      *  \param request The pointer to the new request to insert.
      */
-    void RequestManager::addRequest(Request *request)
+    void RequestManager::addRequest(std::shared_ptr<Online::Request> request)
     {
+        if (UserConfigParams::m_internet_status == RequestManager::IPERM_NOT_ALLOWED
+            && request->getType() != Request::RT_QUIT)
+        {
+            Log::error("RequestManager", "addRequest called, but internet connections are forbidden");
+            return;
+        }
+
         assert(request->isPreparing());
         request->setBusy();
         m_request_queue.lock();
         m_request_queue.getData().push(request);
 
         // Wake up the network http thread
-        pthread_cond_signal(&m_cond_request);
+        m_condition_variable.notify_one();
         m_request_queue.unlock();
     }   // addRequest
 
@@ -192,16 +171,13 @@ namespace Online
      *  of packages to download, it will wait for commands to be issued.
      *  \param obj: A pointer to this object, passed on by pthread_create
      */
-    void *RequestManager::mainLoop(void *obj)
+    void RequestManager::mainLoop(void *obj)
     {
-#ifndef NO_CURL
         VS::setThreadName("RequestManager");
         RequestManager *me = (RequestManager*) obj;
 
-        pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-
-        me->m_current_request = NULL;
-        me->m_request_queue.lock();
+        me->m_current_request = nullptr;
+        std::unique_lock<std::mutex> ul = me->m_request_queue.acquireMutex();
         while (me->m_request_queue.getData().empty() ||
                me->m_request_queue.getData().top()->getType() != Request::RT_QUIT)
         {
@@ -212,24 +188,29 @@ namespace Online
             // (pthread_cond_wait man page)!
             while (empty)
             {
-                pthread_cond_wait(&me->m_cond_request, me->m_request_queue.getMutex());
+                me->m_condition_variable.wait(ul);
                 empty = me->m_request_queue.getData().empty();
             }
+            // We pause the request manager thread when going into background in iOS
+            // So this will only be evaluated a while
+            if (me->m_paused.load())
+                StkTime::sleep(1);
             me->m_current_request = me->m_request_queue.getData().top();
             me->m_request_queue.getData().pop();
 
             if (me->m_current_request->getType() == Request::RT_QUIT)
             {
-                delete me->m_current_request;
                 break;
             }
 
-            me->m_request_queue.unlock();
+            ul.unlock();
             me->m_current_request->execute();
             // This test is necessary in case that execute() was aborted
             // (otherwise the assert in addResult will be triggered).
-            if (!me->getAbort()) me->addResult(me->m_current_request);
-            me->m_request_queue.lock();
+            if (!me->getAbort())
+                me->addResult(me->m_current_request);
+            me->m_current_request = nullptr;
+            ul = me->m_request_queue.acquireMutex();
         } // while handle all requests
 
         // Signal that the request manager can now be deleted.
@@ -240,25 +221,15 @@ namespace Online
         // At this stage we have the lock for m_request_queue
         while (!me->m_request_queue.getData().empty())
         {
-            Online::Request *request = me->m_request_queue.getData().top();
             me->m_request_queue.getData().pop();
-
-            // Manage memory can be ignored here, all requests
-            // need to be freed.
-            delete request;
         }
-        me->m_request_queue.unlock();
-        pthread_exit(NULL);
-
-        return 0;
-#endif
     }   // mainLoop
 
     // ------------------------------------------------------------------------
     /** Inserts a request into the queue of results.
      *  \param request The pointer to the request to insert.
      */
-    void RequestManager::addResult(Online::Request *request)
+    void RequestManager::addResult(std::shared_ptr<Online::Request> request)
     {
         assert(request->hasBeenExecuted());
         m_result_queue.lock();
@@ -273,7 +244,7 @@ namespace Online
      */
     void RequestManager::handleResultQueue()
     {
-        Request * request = NULL;
+        std::shared_ptr<Request> request;
         m_result_queue.lock();
         if (!m_result_queue.getData().empty())
         {
@@ -281,16 +252,10 @@ namespace Online
             m_result_queue.getData().pop();
         }
         m_result_queue.unlock();
-        if (request != NULL)
+        if (request)
         {
             request->callback();
-            if(request->manageMemory())
-            {
-                delete request;
-                request = NULL;
-            }
-            else
-                request->setDone();
+            request->setDone();
         }
     }   // handleResultQueue
 
@@ -315,7 +280,7 @@ namespace Online
         if (StateManager::get()->getGameState() == GUIEngine::MENU)
                 interval = m_menu_polling_interval;
 
-        if (m_time_since_poll > interval)
+        if (!m_disable_polling && m_time_since_poll > interval)
         {
             m_time_since_poll = 0;
             PlayerManager::requestOnlinePoll();

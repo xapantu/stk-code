@@ -25,6 +25,7 @@ namespace irr
 {
     namespace gui { class IGUIElement; }
 }
+#include <bitset>
 #include <map>
 
 #include "guiengine/event_handler.hpp"
@@ -36,6 +37,7 @@ namespace GUIEngine
 {
 
     class DynamicRibbonWidget;
+    class Screen;
 
     enum WidgetType
     {
@@ -76,7 +78,13 @@ namespace GUIEngine
         /** A zipper badge to indicate that this player receives a boost */
         ZIPPER_BADGE   = 128,
         /** A anchor badge to indicate that this player receives a handicap */
-        ANCHOR_BADGE   = 256
+        ANCHOR_BADGE   = 256,
+        /** A down arrow badge to indicate new addons for downloading */
+        DOWN_BADGE     = 512,
+        /** A heart badge, to indicate e.g. a favorite track */
+        HEART_BADGE    = 1024,
+        /** A red dot badge, to indicate there's something new inside */
+        REDDOT_BADGE   = 2048
     };
 
 
@@ -89,6 +97,8 @@ namespace GUIEngine
         PROP_CHILD_WIDTH,
         PROP_CHILD_HEIGHT,
         PROP_WORD_WRAP,
+        PROP_ALTERNATE_BG,
+        PROP_LINE_HEIGHT,
         //PROP_GROW_WITH_TEXT, // yet unused
         PROP_X,
         PROP_Y,
@@ -98,6 +108,7 @@ namespace GUIEngine
         PROP_ICON,
         PROP_FOCUS_ICON,
         PROP_TEXT_ALIGN,
+        PROP_TEXT_VALIGN,
         PROP_MIN_VALUE,
         PROP_MAX_VALUE,
         PROP_MAX_WIDTH,
@@ -110,6 +121,8 @@ namespace GUIEngine
         PROP_DIV_PADDING,
         PROP_KEEP_SELECTION,
         PROP_CUSTOM_RATIO,
+        PROP_ICON_ALIGN,
+        PROP_COLOR_SLIDER, // this one is used to identify if a gauge is used as the color slider
     };
 
     bool isWithinATextBox();
@@ -134,6 +147,10 @@ namespace GUIEngine
     {
     protected:
         unsigned int m_magic_number;
+
+        // Used to limit event callback on this widget based on input type
+        // At the moment used for continue button in kart selection
+        std::bitset<Input::IT_LAST + 1> m_active_event_callback;
 
         // FIXME: find better ways than hackish "friend"?
         friend class EventHandler;
@@ -187,6 +204,22 @@ namespace GUIEngine
          * the event propagate to the user's event handler.
          */
         virtual EventPropagation leftPressed (const int playerID) { return EVENT_BLOCK; }
+
+        /**
+          * called when up key is pressed and focus is on widget.
+          * Returns 'EVENT_LET' if user's event handler should be notified of a change.
+          * Override in children to be notified of up/down events and/or make
+          * the event propagate to the user's event handler.
+          */
+        virtual EventPropagation upPressed(const int playerID) { return EVENT_BLOCK; }
+
+        /**
+          * called when down key is pressed and focus is on widget.
+          * Returns 'EVENT_LET' if user's event handler should be notified of a change.
+          * Override in children to be notified of up/down events and/or make
+          * the event propagate to the user's event handler.
+          */
+        virtual EventPropagation downPressed(const int playerID) { return EVENT_BLOCK; }
 
         /** used when you set eventSupervisors - see m_event_handler explainations below
             called when one of a widget's children is hovered.
@@ -256,6 +289,12 @@ namespace GUIEngine
         bool m_has_tooltip;
         irr::core::stringw m_tooltip_text;
 
+        /** height of the widget before it was collapsed (only set if widget got collapsed) */
+        int m_uncollapsed_height;
+
+        /** A flag to indicate whether this widget got collapsed. */
+        bool m_is_collapsed;
+
     public:
 
         /**
@@ -314,6 +353,16 @@ namespace GUIEngine
         virtual ~Widget();
 
         /**
+          * Allow (or not) an event callback for this widget based on input type.
+          */
+        virtual void setEventCallbackActive(Input::InputType type, bool active);
+
+        /**
+          * Return if there should be an event callback for this widget based on input type.
+          */
+        virtual bool isEventCallbackActive(Input::InputType type) const;
+
+        /**
           * Set the irrlicht widget to be used as parent of this widget next time Widget::add()
           * is invoked on this widget.
           */
@@ -325,15 +374,52 @@ namespace GUIEngine
          * it visible implicitely calls setActive(true). If you mix visiblity and (de)activated calls,
          * undefined behavior may ensue (like invisible but clickable buttons).
          */
-        void setVisible(bool visible);
+        virtual void setVisible(bool visible);
+
+        /**
+         * \brief Sets the widget (and its children, if any) collapsed or not.
+         * !!! Note: this has to be called inside beforeAddingWidget() !!!
+         * Pass in the screen to get (the necessary) calculate Layout automatically called.
+         * This will also set the widget invisible depending of collapsed state.
+         * Note that setting a widget invisible implicitely calls setDeactivated(), and setting
+         * it visible implicitely calls setActive(true). If you mix visiblity and (de)activated calls,
+         * undefined behavior may ensue (like invisible but clickable buttons).
+         */
+        virtual void setCollapsed(bool collapsed, Screen* calling_screen = NULL);
+
+        /**
+         * \brief Sets the widget (and its children, if any) collapsed or not.
+         * !!! Note: this has to be called inside beforeAddingWidget() !!!
+         * Pass in the screen to get (the necessary) calculate Layout automatically called.
+         * This will also set the widget invisible depending of collapsed state.
+         * Note that setting a widget invisible implicitely calls setDeactivated(), and setting
+         * it visible implicitely calls setActive(true). If you mix visiblity and (de)activated calls,
+         * undefined behavior may ensue (like invisible but clickable buttons).
+         */
+        virtual void setCollapsed(bool collapsed, int uncollapsed_height, Screen* calling_screen = NULL);
 
         /** Returns if the element is visible. */
         bool isVisible() const;
 
+        /** Returns whether the element is collapsed (through setCollapsed). */
+        bool isCollapsed() const { return  m_is_collapsed; }
+
         bool isActivated() const;
 
+        virtual EventPropagation onActivationInput(const int playerID) { return EVENT_LET; }
+
         /**
-         * Call to resize/move the widget. Not all widgets can resize gracefully.
+         * Call to reset its coordinates before they are updated by layout manager.
+         */
+        void resetCoordinates();
+
+        /**
+         * Call to resize the widget after its coordinates are updated.
+         */
+        virtual void resize();
+
+        /**
+         * Move the widget to the given position.
          */
         virtual void move(const int x, const int y, const int w, const int h);
 
@@ -343,6 +429,7 @@ namespace GUIEngine
           * is kept)
           */
         bool isSelected(const int playerID) const { return m_selected[playerID]; }
+        void setSelected(const int playerID, bool state) { m_selected[playerID] = state;}
 
         bool isBottomBar() const { return m_bottom_bar; }
         bool isTopBar   () const { return m_top_bar;    }
@@ -352,9 +439,9 @@ namespace GUIEngine
          * \{
          */
 
-        /** \brief Sets an widget to be either activated or deactivated 
+        /** \brief Sets an widget to be either activated or deactivated
          *  (i.e. greyed out)
-         *  \param active Active (true) or deactive (false). Defaults to 
+         *  \param active Active (true) or deactive (false). Defaults to
          *         true. */
         virtual void setActive(bool active=true);
 
@@ -421,17 +508,7 @@ namespace GUIEngine
           * \note Changing the text property will only take effect the next time this widget
           *       is add()ed
           */
-        virtual void setText(const wchar_t *s);
-
-        /**
-          * Sets the text of a widget from a stringw.
-          * \note This method uses the virtual setText(wchar_t*) function, so only the latter
-          *       needs to be overwritten by other classes.
-          * \note Not all widgets use strings, so some widgets may ignore this text property
-          * \note Changing the text property will only take effect the next time this widget
-          *       is add()ed
-          */
-        virtual void setText(const irr::core::stringw &s) { setText(s.c_str()); }
+        virtual void setText(const irr::core::stringw &s);
 
         /** Returns the text of a widget. */
         const irr::core::stringw &getText() const {return m_text; }
@@ -444,6 +521,10 @@ namespace GUIEngine
           * \pre Only call this method after the widget has been add()ed
           */
         int getID() const { return m_id; }
+
+        /** Get the name used for this widget in the GUI files or set in the code
+         * Use only for debugging. */
+        std::string getName() { return m_properties[PROP_ID]; }
 
         /** Get whether this object is allowed to receive focus */
         bool isFocusable() const { return m_focusable; }
@@ -647,6 +728,7 @@ namespace GUIEngine
         irr::core::stringw getTooltipText() const { return m_tooltip_text; }
 
         void setTooltip(irr::core::stringw s) { m_tooltip_text = s; m_has_tooltip = true; }
+        void unsetTooltip() { m_tooltip_text = ""; m_has_tooltip = false; }
 
         /**
          * \}
@@ -655,7 +737,8 @@ namespace GUIEngine
         bool ok() const { return (m_magic_number == 0xCAFEC001); }
 
         /** Gets called when the widget is active and got clicked. (Only works for button widgets for now.) */
-        virtual void onClick()  { }
+        virtual EventPropagation onClick()  { return EVENT_LET; }
+        virtual irr::core::dimension2di getDimension() const { return irr::core::dimension2di(m_w, m_h); }
     };
 
 

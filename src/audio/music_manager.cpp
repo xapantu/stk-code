@@ -22,21 +22,17 @@
 #include <assert.h>
 #include <fstream>
 
-#if HAVE_OGGVORBIS
-#  ifdef __APPLE__
-#    include <OpenAL/al.h>
-#    include <OpenAL/alc.h>
-#  else
-#    include <AL/al.h>
-#    include <AL/alc.h>
-#  endif
+#ifdef ENABLE_SOUND
+#  include <AL/al.h>
+#  include <AL/alc.h>
 #endif
 
 #include "audio/music_ogg.hpp"
-#include "audio/sfx_openal.hpp"
 #include "audio/sfx_manager.hpp"
+#include "audio/sfx_openal.hpp"
 #include "config/user_config.hpp"
 #include "io/file_manager.hpp"
+#include "utils/stk_process.hpp"
 #include "utils/string_utils.hpp"
 
 MusicManager* music_manager= NULL;
@@ -45,47 +41,49 @@ MusicManager* music_manager= NULL;
 MusicManager::MusicManager()
 {
     m_current_music= NULL;
+    m_initialized = false;
     setMasterMusicVolume(UserConfigParams::m_music_volume);
 
     //FIXME: I'm not sure that this code goes here
-#if HAVE_OGGVORBIS
-
+#ifdef ENABLE_SOUND
+    if (UserConfigParams::m_enable_sound)
+    {
 #if defined(__APPLE__) && !defined(NDEBUG)
-    // HACK: On OSX, when OpenAL is initialized, breaking in a debugger causes
-    // my iTunes music to stop too, which is highly annoying ;) so in debug
-    // mode, require a restart to enable sound
-    if (UserConfigParams::m_sfx || UserConfigParams::m_music)
-    {
+        // HACK: On OSX, when OpenAL is initialized, breaking in a debugger
+        // causes my iTunes music to stop too, which is highly annoying ;) so in
+        // debug mode, require a restart to enable sound
+        if (UserConfigParams::m_sfx || UserConfigParams::m_music)
+        {
 #endif
-
-    ALCdevice* device = alcOpenDevice ( NULL ); //The default sound device
-    if( device == NULL )
-    {
-        Log::warn("MusicManager", "Could not open the default sound device.");
-        m_initialized = false;
-    }
-    else
-    {
-
-        ALCcontext* context = alcCreateContext( device, NULL );
-
-        if( context == NULL )
-        {
-            Log::warn("MusicManager", "Could not create a sound context.");
-            m_initialized = false;
-        }
-        else
-        {
-            alcMakeContextCurrent( context );
-            m_initialized = true;
-        }
-    }
-
+            ALCdevice* device = alcOpenDevice(NULL); //The default sound device
+            
+            if (device == NULL)
+            {
+                Log::warn("MusicManager", "Could not open the default sound "
+                                          "device.");
+                m_initialized = false;
+            }
+            else
+            {
+                ALCcontext* context = alcCreateContext(device, NULL);
+        
+                if (context == NULL)
+                {
+                    Log::warn("MusicManager", "Could not create a sound "
+                                              "context.");
+                    m_initialized = false;
+                }
+                else
+                {
+                    alcMakeContextCurrent(context);
+                    m_initialized = true;
+                }
+            }
 #if defined(__APPLE__) && !defined(NDEBUG)
-    }
+        }
 #endif
-
-    alGetError(); //Called here to clear any non-important errors found
+        alGetError(); //Called here to clear any non-important errors found
+    }
 #endif
 
     loadMusicInformation();
@@ -101,7 +99,7 @@ MusicManager::~MusicManager()
         i->second = NULL;
     }
 
-#if HAVE_OGGVORBIS
+#ifdef ENABLE_SOUND
     if(m_initialized)
     {
         ALCcontext* context = alcGetCurrentContext();
@@ -166,32 +164,33 @@ void MusicManager::addMusicToTracks()
  */
 void MusicManager::startMusic()
 {
-    if (m_current_music && UserConfigParams::m_music)
+    if (m_current_music.load() != NULL && UserConfigParams::m_music)
         SFXManager::get()->queue(SFXManager::SFX_MUSIC_START, m_current_music);
 }   // startMusic
 
 //-----------------------------------------------------------------------------
 /** Schedules the indicated music to be played next.
  *  \param mi Music information of the music to be played.
- *  \param start_right_now 
+ *  \param start_right_now
  */
 void MusicManager::startMusic(MusicInformation* mi, bool start_right_now)
 {
-    // If this music is already playing, ignore this call.
-    if (m_current_music != NULL &&
-        m_current_music == mi &&
-        m_current_music->isPlaying())
+    if (STKProcess::getType() != PT_MAIN || !m_initialized)
         return;
 
-    // It is possible here that startMusic() will be called without first
-    // calling stopMusic(). This would cause a memory leak by overwriting
-    // m_current_music without first releasing its resources. Guard against
-    // this here by making sure that stopMusic() is called before starting
-    // new music.
-    stopMusic();
-    m_current_music = mi;
+    if (!UserConfigParams::m_music)
+    {
+        // Save it so it can be turned on later in options menu
+        m_current_music = mi;
+        return;
+    }
 
-    if(!mi || !UserConfigParams::m_music || !m_initialized) return;
+    if (!mi)
+    {
+        // NULL music will stop current music
+        clearCurrentMusic();
+        return;
+    }
 
     SFXManager::get()->queue(start_right_now ? SFXManager::SFX_MUSIC_START
                                              : SFXManager::SFX_MUSIC_WAITING,
@@ -203,7 +202,7 @@ void MusicManager::startMusic(MusicInformation* mi, bool start_right_now)
  */
 void MusicManager::stopMusic()
 {
-    if (m_current_music)
+    if (m_current_music.load() != NULL)
         SFXManager::get()->queue(SFXManager::SFX_MUSIC_STOP, m_current_music);
 }   // stopMusic
 
@@ -212,7 +211,7 @@ void MusicManager::stopMusic()
  */
 void MusicManager::pauseMusic()
 {
-    if (m_current_music)
+    if (m_current_music.load() != NULL)
         SFXManager::get()->queue(SFXManager::SFX_MUSIC_PAUSE, m_current_music);
 }   // pauseMusic
 
@@ -221,7 +220,7 @@ void MusicManager::pauseMusic()
  */
 void MusicManager::resumeMusic()
 {
-    if (m_current_music)
+    if (m_current_music.load() != NULL)
         SFXManager::get()->queue(SFXManager::SFX_MUSIC_RESUME, m_current_music);
 }   // resumeMusic
 
@@ -230,7 +229,7 @@ void MusicManager::resumeMusic()
  */
 void MusicManager::switchToFastMusic()
 {
-    if (m_current_music)
+    if (m_current_music.load() != NULL)
         SFXManager::get()->queue(SFXManager::SFX_MUSIC_SWITCH_FAST,
                                 m_current_music);
 }   // switchToFastMusic
@@ -242,8 +241,8 @@ void MusicManager::switchToFastMusic()
  */
 void MusicManager::setTemporaryVolume(float gain)
 {
-    if (m_current_music)
-        SFXManager::get()->queue(SFXManager::SFX_MUSIC_SET_TMP_VOLUME, 
+    if (m_current_music.load() != NULL)
+        SFXManager::get()->queue(SFXManager::SFX_MUSIC_SET_TMP_VOLUME,
                                  m_current_music, gain);
 }   // setTemporaryVolume
 
@@ -252,7 +251,7 @@ void MusicManager::setTemporaryVolume(float gain)
  */
 void MusicManager::resetTemporaryVolume()
 {
-    if (m_current_music)
+    if (m_current_music.load() != NULL)
         SFXManager::get()->queue(SFXManager::SFX_MUSIC_DEFAULT_VOLUME,
                                  m_current_music);
 }   // resetTemporaryVolume
@@ -269,7 +268,7 @@ void MusicManager::setMasterMusicVolume(float gain)
         gain = 0.0f;
 
     m_master_gain = gain;
-    if (m_current_music)
+    if (m_current_music.load() != NULL)
     {
         // Sets the music volume to m_master_gain
         SFXManager::get()->queue(SFXManager::SFX_MUSIC_DEFAULT_VOLUME,

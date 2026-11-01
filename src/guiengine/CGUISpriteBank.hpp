@@ -67,7 +67,11 @@ public:
         m_scale = scale;
     }
 
-    void scaleToHeight(int height);
+    void setFixedScale(float scale)
+                                                     { m_fixed_scale = scale; }
+
+    void setTargetIconSize(int width, int height)
+                    { m_target_icon_size = core::dimension2du(width, height); }
 
 protected:
 
@@ -75,7 +79,7 @@ protected:
     unsigned int m_magic_number;
 
     float m_scale;
-    int m_height;
+    float m_fixed_scale;
 
     struct SDrawBatch
     {
@@ -84,6 +88,7 @@ protected:
         u32 textureNumber;
     };
 
+    core::dimension2du m_target_icon_size;
     //FIXME: ugly hack to work around irrLicht limitations, see STKModifiedSpriteBank::getPositions()
     // for all the gory details.
     core::array< core::rect<s32> > copy;

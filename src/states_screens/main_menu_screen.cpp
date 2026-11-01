@@ -20,11 +20,14 @@
 #include "states_screens/main_menu_screen.hpp"
 
 #include "addons/news_manager.hpp"
+#include "challenges/story_mode_timer.hpp"
 #include "challenges/unlock_manager.hpp"
 #include "config/player_manager.hpp"
 #include "config/user_config.hpp"
 #include "graphics/irr_driver.hpp"
+#include "guiengine/dialog_queue.hpp"
 #include "guiengine/scalable_font.hpp"
+#include "guiengine/widgets/button_widget.hpp"
 #include "guiengine/widgets/label_widget.hpp"
 #include "guiengine/widgets/list_widget.hpp"
 #include "guiengine/widgets/ribbon_widget.hpp"
@@ -35,19 +38,24 @@
 #include "karts/kart_properties_manager.hpp"
 #include "main_loop.hpp"
 #include "modes/cutscene_world.hpp"
-#include "modes/overworld.hpp"
 #include "modes/demo_world.hpp"
+#include "modes/overworld.hpp"
+#include "modes/tutorial_utils.hpp"
+#include "network/network_config.hpp"
 #include "online/request_manager.hpp"
 #include "states_screens/addons_screen.hpp"
 #include "states_screens/credits.hpp"
+#include "states_screens/cutscene_general.hpp"
 #include "states_screens/grand_prix_editor_screen.hpp"
-#include "states_screens/help_screen_1.hpp"
+#include "states_screens/help/help_screen_1.hpp"
+#include "states_screens/high_score_selection.hpp"
 #include "states_screens/offline_kart_selection.hpp"
-#include "states_screens/online_profile_achievements.hpp"
-#include "states_screens/online_profile_servers.hpp"
-#include "states_screens/options_screen_video.hpp"
+#include "states_screens/online/online_profile_achievements.hpp"
+#include "states_screens/online/online_profile_servers.hpp"
+#include "states_screens/online/online_screen.hpp"
+#include "states_screens/options/options_screen_general.hpp"
 #include "states_screens/state_manager.hpp"
-#include "states_screens/user_screen.hpp"
+#include "states_screens/options/user_screen.hpp"
 #if DEBUG_MENU_ITEM
 #include "states_screens/feature_unlocked.hpp"
 #include "states_screens/grand_prix_lose.hpp"
@@ -57,18 +65,19 @@
 #include "tracks/track_manager.hpp"
 #include "tracks/track.hpp"
 #include "utils/string_utils.hpp"
-
-
+#include "utils/translation.hpp"
+#include "main_loop.hpp"
 
 #include <string>
 
+#include <IrrlichtDevice.h>
+
+#ifdef ANDROID
+#include <SDL_system.h>
+#endif
 
 using namespace GUIEngine;
 using namespace Online;
-
-DEFINE_SCREEN_SINGLETON( MainMenuScreen );
-
-bool MainMenuScreen::m_enable_online = false;
 
 // ----------------------------------------------------------------------------
 
@@ -81,7 +90,17 @@ MainMenuScreen::MainMenuScreen() : Screen("main_menu.stkgui")
 void MainMenuScreen::loadedFromFile()
 {
     LabelWidget* w = getWidget<LabelWidget>("info_addons");
-    w->setScrollSpeed(15);
+    w->setScrollSpeed(0.5f);
+    
+    RibbonWidget* rw_top = getWidget<RibbonWidget>("menu_toprow");
+    assert(rw_top != NULL);
+    
+    if (track_manager->getTrack("overworld") == NULL ||
+        track_manager->getTrack("introcutscene") == NULL ||
+        track_manager->getTrack("introcutscene2") == NULL)
+    {
+        rw_top->removeChildNamed("story");
+    }
 
 #if DEBUG_MENU_ITEM != 1
     RibbonWidget* rw = getWidget<RibbonWidget>("menu_bottomrow");
@@ -95,6 +114,27 @@ void MainMenuScreen::loadedFromFile()
 }   // loadedFromFile
 
 // ----------------------------------------------------------------------------
+
+void MainMenuScreen::beforeAddingWidget()
+{
+#ifdef IOS_STK
+    // iOS app doesn't like quit button in UI
+    Widget* w = getWidget("quit");
+    if (w)
+        w->setVisible(false);
+#endif
+
+#ifdef ANDROID
+    if (SDL_IsAndroidTV())
+    {
+        Widget* tutorial = getWidget("startTutorial");
+        if (tutorial)
+            tutorial->setVisible(false);
+    }
+#endif
+}
+
+// ----------------------------------------------------------------------------
 //
 void MainMenuScreen::init()
 {
@@ -104,6 +144,7 @@ void MainMenuScreen::init()
     assert(m_user_id);
 
     // reset in case we're coming back from a race
+    NetworkConfig::get()->cleanNetworkPlayers();
     StateManager::get()->resetActivePlayers();
     input_manager->getDeviceManager()->setAssignMode(NO_ASSIGN);
     input_manager->getDeviceManager()->setSinglePlayer( NULL );
@@ -122,7 +163,8 @@ void MainMenuScreen::init()
     // the key bindings for the first player the default again.
     input_manager->getDeviceManager()->clearLatestUsedDevice();
 
-    if (addons_manager->isLoading())
+#ifndef SERVER_ONLY
+    if (addons_manager && addons_manager->isLoading())
     {
         IconButtonWidget* w = getWidget<IconButtonWidget>("addons");
         w->setActive(false);
@@ -130,15 +172,68 @@ void MainMenuScreen::init()
         w->setBadge(LOADING_BADGE);
     }
 
-    m_online = getWidget<IconButtonWidget>("online");
+    // Initialize news iteration, show dialog when there's important news
+    NewsManager::get()->resetNewsPtr(NewsManager::NTYPE_MAINMENU);
 
-    if(!m_enable_online)
-        m_online->setActive(false);
+    core::stringw important_message = L"";
+    int news_len = NewsManager::get()->getNewsCount(NewsManager::NTYPE_MAINMENU);
+    int chosen_id = -1;
 
+    // Iterate through every news
+    // Find the unread important message with smallest id
+    while (news_len--)
+    {
+        int id = NewsManager::get()->getNextNewsID(NewsManager::NTYPE_MAINMENU);
+
+        if (NewsManager::get()->isCurrentNewsImportant(NewsManager::NTYPE_MAINMENU)
+            && (id < chosen_id || chosen_id == -1)
+            && id > UserConfigParams::m_last_important_message_id)
+        {
+            chosen_id = id;
+            important_message =
+                NewsManager::get()->getCurrentNewsMessage(NewsManager::NTYPE_MAINMENU);
+        }
+    }
+    if (chosen_id != -1)
+    {
+        UserConfigParams::m_last_important_message_id = chosen_id;
+        new MessageDialog(important_message,
+                        MessageDialog::MESSAGE_DIALOG_OK,
+                        NULL, true);
+    }   // if important_message
+
+    // Back to the first news
+    NewsManager::get()->getNextNewsID(NewsManager::NTYPE_MAINMENU);
+
+    // Check if there's new news
+
+    IconButtonWidget* online_icon = getWidget<IconButtonWidget>("online");
+    if (online_icon != NULL)
+    {
+        NewsManager::get()->resetNewsPtr(NewsManager::NTYPE_LIST);
+        online_icon->resetAllBadges();
+
+        int news_list_len = NewsManager::get()->getNewsCount(NewsManager::NTYPE_LIST);
+
+        while (news_list_len--)
+        {
+            int id = NewsManager::get()->getNextNewsID(NewsManager::NTYPE_LIST);
+
+            if (UserConfigParams::m_news_list_shown_id < id)
+            {
+                online_icon->setBadge(REDDOT_BADGE);
+            }
+        }
+        
+        // Back to the first news
+        NewsManager::get()->getNextNewsID(NewsManager::NTYPE_LIST);
+    }
+
+    m_news_text = L"";
     LabelWidget* w = getWidget<LabelWidget>("info_addons");
-    const core::stringw &news_text = NewsManager::get()->getNextNewsMessage();
-    w->setText(news_text, true);
+    w->setText(m_news_text, true);
     w->update(0.01f);
+#endif
 
     RibbonWidget* r = getWidget<RibbonWidget>("menu_bottomrow");
     // FIXME: why do I need to do this manually
@@ -150,40 +245,21 @@ void MainMenuScreen::init()
     r->setFocusForPlayer(PLAYER_ID_GAME_MASTER);
     DemoWorld::resetIdleTime();
 
-#if _IRR_MATERIAL_MAX_TEXTURES_ < 8
-    getWidget<IconButtonWidget>("logo")->setImage("gui/logo_broken.png",
-        IconButtonWidget::ICON_PATH_TYPE_RELATIVE);
+#ifdef IOS_STK
+    // iOS app doesn't like quit button in UI
+    Widget* quit = getWidget("quit");
+    if (quit)
+        quit->setVisible(false);
 #endif
-
 }   // init
 
 // ----------------------------------------------------------------------------
+
 void MainMenuScreen::onUpdate(float delta)
-
 {
-    PlayerProfile *player = PlayerManager::getCurrentPlayer();
-    if(PlayerManager::getCurrentOnlineState() == PlayerProfile::OS_GUEST  ||
-       PlayerManager::getCurrentOnlineState() == PlayerProfile::OS_SIGNED_IN)
-    {
-        m_user_id->setText(player->getLastOnlineName() + "@stk");
-        m_online->setActive(true);
-        m_online->setLabel( _("Online"));
-    }
-    else if (PlayerManager::getCurrentOnlineState() == PlayerProfile::OS_SIGNED_OUT)
-    {
-        m_online->setActive(true);
-        m_online->setLabel( _("Login" ));
-        m_user_id->setText(player->getName());
-    }
-    else
-    {
-        // now must be either logging in or logging out
-        m_online->setActive(false);
-        m_user_id->setText(player->getName());
-    }
+#ifndef SERVER_ONLY
+    NewsManager::get()->joinDownloadThreadIfExit();
 
-    m_online->setLabel(PlayerManager::getCurrentOnlineId() ? _("Online")
-                                                           : _("Login" )  );
     IconButtonWidget* addons_icon = getWidget<IconButtonWidget>("addons");
     if (addons_icon != NULL)
     {
@@ -205,17 +281,90 @@ void MainMenuScreen::onUpdate(float delta)
         {
             addons_icon->setActive(true);
             addons_icon->resetAllBadges();
+            if (addons_manager->hasNewAddons())
+                addons_icon->setBadge(DOWN_BADGE);
         }
         // maybe add a new badge when not allowed to access the net
     }
 
     LabelWidget* w = getWidget<LabelWidget>("info_addons");
-    w->update(delta);
-    if(w->scrolledOff())
+    
+    if (w->getText().empty() || w->scrolledOff())
     {
-        const core::stringw &news_text = NewsManager::get()->getNextNewsMessage();
-        w->setText(news_text, true);
+        // Show important messages seperately
+        // Concatrate adjacent unimportant messages together
+        m_news_text = L"";
+        
+        int news_count = NewsManager::get()->getNewsCount(NewsManager::NTYPE_MAINMENU);
+
+        while (news_count--)
+        {
+            bool important = NewsManager::get()->isCurrentNewsImportant(NewsManager::NTYPE_MAINMENU);
+            if (!m_news_text.empty())
+            {
+                m_news_text += "  +++  ";
+            }
+            m_news_text += NewsManager::get()->getCurrentNewsMessage(NewsManager::NTYPE_MAINMENU);
+
+            NewsManager::get()->getNextNewsID(NewsManager::NTYPE_MAINMENU);
+
+            if (important || NewsManager::get()->isCurrentNewsImportant(NewsManager::NTYPE_MAINMENU))
+            {
+                break;
+            }
+        }
+
+        w->setText(m_news_text, true);
     }
+    w->update(delta);
+
+    PlayerProfile *player = PlayerManager::getCurrentPlayer();
+    if (!player)
+        return;
+    if(PlayerManager::getCurrentOnlineState() == PlayerProfile::OS_GUEST  ||
+       PlayerManager::getCurrentOnlineState() == PlayerProfile::OS_SIGNED_IN)
+    {
+        m_user_id->setText(player->getLastOnlineName() + "@stk");
+    }
+    else if (PlayerManager::getCurrentOnlineState() == PlayerProfile::OS_SIGNED_OUT)
+    {
+        m_user_id->setText(player->getName());
+    }
+    else
+    {
+        // now must be either logging in or logging out
+        m_user_id->setText(player->getName());
+    }
+
+    // Ask if user want to play tutorial when profile is newly created
+    if (player->getUseFrequency() != 0)
+        return;
+
+#ifdef ANDROID
+    // Don't show tutorial dialog on Android TV
+    if (SDL_IsAndroidTV())
+        return;
+#endif
+
+    player->incrementUseFrequency();
+    class PlayTutorial :
+          public MessageDialog::IConfirmDialogListener
+    {
+    public:
+        virtual void onConfirm()
+        {
+            GUIEngine::ModalDialog::dismiss();
+            TutorialUtils::startTutorial();
+        }   // onConfirm
+    };   // PlayTutorial
+
+    MessageDialog* dialog =
+    new MessageDialog(_("Would you like to play the tutorial of the game?"),
+        MessageDialog::MESSAGE_DIALOG_YESNO, new PlayTutorial(),
+        true/*delete_listener*/, true/*from_queue*/);
+    GUIEngine::DialogQueue::get()->pushDialog(dialog,
+        false/*closes_any_dialog*/);
+#endif
 }   // onUpdate
 
 // ----------------------------------------------------------------------------
@@ -223,6 +372,7 @@ void MainMenuScreen::onUpdate(float delta)
 void MainMenuScreen::eventCallback(Widget* widget, const std::string& name,
                                    const int playerID)
 {
+#ifndef SERVER_ONLY
     if(name=="user-id")
     {
         UserScreen::getInstance()->push();
@@ -242,17 +392,17 @@ void MainMenuScreen::eventCallback(Widget* widget, const std::string& name,
     if (selection == "story")
     {
         StateManager::get()->enterGameState();
-        race_manager->setMinorMode(RaceManager::MINOR_MODE_CUTSCENE);
-        race_manager->setNumKarts( 0 );
-        race_manager->setNumPlayers(0);
-        race_manager->setNumLocalPlayers(0);
-        race_manager->startSingleRace("endcutscene", 999, false);
+        RaceManager::get()->setMinorMode(RaceManager::MINOR_MODE_CUTSCENE);
+        RaceManager::get()->setNumKarts( 0 );
+        RaceManager::get()->setNumPlayers(0);
+        RaceManager::get()->setNumPlayers(0);
+        RaceManager::get()->startSingleRace("endcutscene", 999, false);
 
         std::vector<std::string> parts;
         parts.push_back("introcutscene");
         parts.push_back("introcutscene2");
         ((CutsceneWorld*)World::getWorld())->setParts(parts);
-        //race_manager->startSingleRace("introcutscene2", 999, false);
+        //RaceManager::get()->startSingleRace("introcutscene2", 999, false);
         return;
     }
     */
@@ -265,29 +415,34 @@ void MainMenuScreen::eventCallback(Widget* widget, const std::string& name,
             RaceManager::DIFFICULTY_HARD);
 
         StateManager::get()->enterGameState();
-        race_manager->setMinorMode(RaceManager::MINOR_MODE_CUTSCENE);
-        race_manager->setNumKarts(0);
-        race_manager->setNumPlayers(0);
-        race_manager->setNumLocalPlayers(0);
-        race_manager->startSingleRace("gpwin", 999, false);
+        RaceManager::get()->setMinorMode(RaceManager::MINOR_MODE_CUTSCENE);
+        RaceManager::get()->setNumKarts(0);
+        RaceManager::get()->setNumPlayers(0);
+        RaceManager::get()->setNumPlayers(0);
+        RaceManager::get()->startSingleRace("gpwin", 999, false);
         GrandPrixWin* scene = GrandPrixWin::getInstance();
         scene->push();
-        const std::string winners[] = { "elephpant", "nolok", "pidgin" };
+        const std::pair<std::string, float> winners[] =
+            {
+                { "kiki", 0.6f },
+                { "nolok", 1.0f },
+                { "pidgin", 0.0f },
+            };
         scene->setKarts(winners);
     }
     else if (selection == "test_gplose")
     {
         StateManager::get()->enterGameState();
-        race_manager->setMinorMode(RaceManager::MINOR_MODE_CUTSCENE);
-        race_manager->setNumKarts(0);
-        race_manager->setNumPlayers(0);
-        race_manager->setNumLocalPlayers(0);
-        race_manager->startSingleRace("gplose", 999, false);
+        RaceManager::get()->setMinorMode(RaceManager::MINOR_MODE_CUTSCENE);
+        RaceManager::get()->setNumKarts(0);
+        RaceManager::get()->setNumPlayers(0);
+        RaceManager::get()->setNumPlayers(0);
+        RaceManager::get()->startSingleRace("gplose", 999, false);
         GrandPrixLose* scene = GrandPrixLose::getInstance();
         scene->push();
-        std::vector<std::string> losers;
-        losers.push_back("nolok");
-        losers.push_back("elephpant");
+        std::vector<std::pair<std::string, float> > losers;
+        losers.emplace_back("nolok", 1.0f);
+        losers.emplace_back("kiki", 0.6f);
         //losers.push_back("wilber");
         //losers.push_back("tux");
         scene->setKarts(losers);
@@ -299,11 +454,11 @@ void MainMenuScreen::eventCallback(Widget* widget, const std::string& name,
             RaceManager::DIFFICULTY_HARD);
 
         StateManager::get()->enterGameState();
-        race_manager->setMinorMode(RaceManager::MINOR_MODE_CUTSCENE);
-        race_manager->setNumKarts(0);
-        race_manager->setNumPlayers(0);
-        race_manager->setNumLocalPlayers(0);
-        race_manager->startSingleRace("featunlocked", 999, false);
+        RaceManager::get()->setMinorMode(RaceManager::MINOR_MODE_CUTSCENE);
+        RaceManager::get()->setNumKarts(0);
+        RaceManager::get()->setNumPlayers(0);
+        RaceManager::get()->setNumPlayers(0);
+        RaceManager::get()->startSingleRace("featunlocked", 999, false);
 
         FeatureUnlockedCutScene* scene =
             FeatureUnlockedCutScene::getInstance();
@@ -312,18 +467,11 @@ void MainMenuScreen::eventCallback(Widget* widget, const std::string& name,
         parts.push_back("featunlocked");
         ((CutsceneWorld*)World::getWorld())->setParts(parts);
 
-        scene->addTrophy(RaceManager::DIFFICULTY_EASY);
+        scene->addTrophy(RaceManager::DIFFICULTY_EASY, false);
 
         if (selection == "test_unlocked")
         {
-            // the passed kart will not be modified, that's why I allow myself
-            // to use const_cast
-            scene->addUnlockedKart(
-                                   const_cast<KartProperties*>(
-                                        kart_properties_manager->getKart("tux")
-                                                              ),
-                                    L"You unlocked <actual text would go here...>"
-                                   );
+            scene->addUnlockedKart(kart_properties_manager->getKart("tux"));
             scene->addUnlockedTrack(track_manager->getTrack("lighthouse"));
             scene->push();
         }
@@ -334,7 +482,7 @@ void MainMenuScreen::eventCallback(Widget* widget, const std::string& name,
                 track_manager->getTrack("lighthouse")
                              ->getScreenshotFile().c_str()));
             textures.push_back(irr_driver->getTexture(
-                track_manager->getTrack("startrack")
+                track_manager->getTrack("snowtuxpeak")
                              ->getScreenshotFile().c_str()));
             textures.push_back(irr_driver->getTexture(
                 track_manager->getTrack("sandtrack")
@@ -352,38 +500,45 @@ void MainMenuScreen::eventCallback(Widget* widget, const std::string& name,
     {
         CutsceneWorld::setUseDuration(true);
         StateManager::get()->enterGameState();
-        race_manager->setMinorMode(RaceManager::MINOR_MODE_CUTSCENE);
-        race_manager->setNumKarts(0);
-        race_manager->setNumPlayers(0);
-        race_manager->setNumLocalPlayers(0);
-        race_manager->startSingleRace("introcutscene", 999, false);
+        RaceManager::get()->setMinorMode(RaceManager::MINOR_MODE_CUTSCENE);
+        RaceManager::get()->setNumKarts(0);
+        RaceManager::get()->setNumPlayers(0);
+        RaceManager::get()->setNumPlayers(0);
+        RaceManager::get()->startSingleRace("introcutscene", 999, false);
 
         std::vector<std::string> parts;
         parts.push_back("introcutscene");
         parts.push_back("introcutscene2");
         ((CutsceneWorld*)World::getWorld())->setParts(parts);
-        //race_manager->startSingleRace("introcutscene2", 999, false);
+        //RaceManager::get()->startSingleRace("introcutscene2", 999, false);
+        
+        CutSceneGeneral* scene = CutSceneGeneral::getInstance();
+        scene->push();
         return;
     }
     else if (selection == "test_outro")
     {
         CutsceneWorld::setUseDuration(true);
         StateManager::get()->enterGameState();
-        race_manager->setMinorMode(RaceManager::MINOR_MODE_CUTSCENE);
-        race_manager->setNumKarts(0);
-        race_manager->setNumPlayers(0);
-        race_manager->setNumLocalPlayers(0);
-        race_manager->startSingleRace("endcutscene", 999, false);
+        RaceManager::get()->setMinorMode(RaceManager::MINOR_MODE_CUTSCENE);
+        RaceManager::get()->setNumKarts(0);
+        RaceManager::get()->setNumPlayers(0);
+        RaceManager::get()->setNumPlayers(0);
+        RaceManager::get()->startSingleRace("endcutscene", 999, false);
 
         std::vector<std::string> parts;
         parts.push_back("endcutscene");
         ((CutsceneWorld*)World::getWorld())->setParts(parts);
+        
+        CutSceneGeneral* scene = CutSceneGeneral::getInstance();
+        scene->push();
     }
     else
 #endif
     if (selection == "new")
     {
-        KartSelectionScreen* s = OfflineKartSelectionScreen::getInstance(); //FIXME : that was for tests
+        NetworkConfig::get()->unsetNetworking();
+        KartSelectionScreen* s = OfflineKartSelectionScreen::getInstance();
         s->setMultiplayer(false);
         s->setFromOverworld(false);
         s->push();
@@ -391,13 +546,14 @@ void MainMenuScreen::eventCallback(Widget* widget, const std::string& name,
     else if (selection == "multiplayer")
     {
         KartSelectionScreen* s = OfflineKartSelectionScreen::getInstance();
+        NetworkConfig::get()->unsetNetworking();
         s->setMultiplayer(true);
         s->setFromOverworld(false);
         s->push();
     }
     else if (selection == "options")
     {
-        OptionsScreenVideo::getInstance()->push();
+        OptionsScreenGeneral::getInstance()->push();
     }
     else if (selection == "quit")
     {
@@ -414,67 +570,47 @@ void MainMenuScreen::eventCallback(Widget* widget, const std::string& name,
     }
     else if (selection == "startTutorial")
     {
-        race_manager->setNumPlayers(1);
-        race_manager->setMajorMode (RaceManager::MAJOR_MODE_SINGLE);
-        race_manager->setMinorMode (RaceManager::MINOR_MODE_TUTORIAL);
-        race_manager->setNumKarts( 1 );
-        race_manager->setTrack( "tutorial" );
-        race_manager->setDifficulty(RaceManager::DIFFICULTY_EASY);
-        race_manager->setReverseTrack(false);
-
-        // Use keyboard 0 by default (FIXME: let player choose?)
-        InputDevice* device = input_manager->getDeviceManager()->getKeyboard(0);
-
-        // Create player and associate player with keyboard
-        StateManager::get()->createActivePlayer(PlayerManager::getCurrentPlayer(),
-                                                device);
-
-        if (kart_properties_manager->getKart(UserConfigParams::m_default_kart) == NULL)
-        {
-            Log::warn("MainMenuScreen", "Cannot find kart '%s', will revert to default",
-                      UserConfigParams::m_default_kart.c_str());
-            UserConfigParams::m_default_kart.revertToDefaults();
-        }
-        race_manager->setPlayerKart(0, UserConfigParams::m_default_kart);
-
-        // ASSIGN should make sure that only input from assigned devices
-        // is read.
-        input_manager->getDeviceManager()->setAssignMode(ASSIGN);
-        input_manager->getDeviceManager()
-            ->setSinglePlayer( StateManager::get()->getActivePlayer(0) );
-
-        StateManager::get()->enterGameState();
-        race_manager->setupPlayerKartInfo();
-        race_manager->startNew(false);
+        TutorialUtils::startTutorial();
     }
     else if (selection == "story")
     {
+        NetworkConfig::get()->unsetNetworking();
         PlayerProfile *player = PlayerManager::getCurrentPlayer();
+
+        // Start the story mode (and speedrun) timer
+        story_mode_timer->startTimer();
+
         if (player->isFirstTime())
         {
             CutsceneWorld::setUseDuration(true);
             StateManager::get()->enterGameState();
-            race_manager->setMinorMode(RaceManager::MINOR_MODE_CUTSCENE);
-            race_manager->setNumKarts( 0 );
-            race_manager->setNumPlayers(0);
-            race_manager->startSingleRace("introcutscene", 999, false);
+            RaceManager::get()->setMinorMode(RaceManager::MINOR_MODE_CUTSCENE);
+            RaceManager::get()->setNumKarts( 0 );
+            RaceManager::get()->setNumPlayers(0);
+            RaceManager::get()->startSingleRace("introcutscene", 999, false);
 
             std::vector<std::string> parts;
             parts.push_back("introcutscene");
             parts.push_back("introcutscene2");
             ((CutsceneWorld*)World::getWorld())->setParts(parts);
-            //race_manager->startSingleRace("introcutscene2", 999, false);
+            //RaceManager::get()->startSingleRace("introcutscene2", 999, false);
+            
+            CutSceneGeneral* scene = CutSceneGeneral::getInstance();
+            scene->push();
             return;
         }
         else
         {
+            // Unpause the story mode timer when entering back the story mode
+            story_mode_timer->unpauseTimer(/* exit loading pause */ false);
+
             const std::string default_kart = UserConfigParams::m_default_kart;
             if (player->isLocked(default_kart))
             {
                 KartSelectionScreen *next = OfflineKartSelectionScreen::getInstance();
                 next->setGoToOverworldNext();
                 next->setMultiplayer(false);
-                StateManager::get()->resetAndGoToScreen(next);
+                next->push();
                 return;
             }
             OverWorld::enterOverWorld();
@@ -485,34 +621,34 @@ void MainMenuScreen::eventCallback(Widget* widget, const std::string& name,
         if(UserConfigParams::m_internet_status!=RequestManager::IPERM_ALLOWED)
         {
             new MessageDialog(_("You can not play online without internet access. "
-                                "If you want to play online, go to options, select "
-                                " tab 'User Interface', and edit "
-                                "\"Connect to the Internet\"."));
+                                "If you want to play online, go in the options menu, "
+                                "and check \"Connect to the Internet\"."));
             return;
         }
-        
-        if (PlayerManager::getCurrentOnlineId())
-        {
-            ProfileManager::get()->setVisiting(PlayerManager::getCurrentOnlineId());
-            OnlineProfileServers::getInstance()->push();
-        }
-        else
-        {
-            UserScreen::getInstance()->push();
-        }
+        OnlineScreen::getInstance()->push();
     }
     else if (selection == "addons")
     {
         // Don't go to addons if there is no internet, unless some addons are
         // already installed (so that you can delete addons without being online).
-        if(UserConfigParams::m_internet_status!=RequestManager::IPERM_ALLOWED &&
-            !addons_manager->anyAddonsInstalled())
+        if(UserConfigParams::m_internet_status!=RequestManager::IPERM_ALLOWED)
         {
-            new MessageDialog(_("You can not download addons without internet access. "
-                                "If you want to download addons, go to options, select "
-                                " tab 'User Interface', and edit "
-                                "\"Connect to the Internet\"."));
-            return;
+            if (!addons_manager->anyAddonsInstalled())
+            {
+                new MessageDialog(_("You can not download addons without internet access. "
+                                    "If you want to download addons, go in the options menu, "
+                                    "and check \"Connect to the Internet\"."));
+                return;
+            }
+            else
+            {
+                AddonsScreen::getInstance()->push();
+                new MessageDialog(_("You can not download addons without internet access. "
+                                    "If you want to download addons, go in the options menu, "
+                                    "and check \"Connect to the Internet\".\n\n"
+                                    "You can however delete already downloaded addons."));
+                return;
+            }
         }
         AddonsScreen::getInstance()->push();
     }
@@ -524,6 +660,11 @@ void MainMenuScreen::eventCallback(Widget* widget, const std::string& name,
     {
         OnlineProfileAchievements::getInstance()->push();
     }
+    else if (selection == "highscores")
+    {
+        HighScoreSelection::getInstance()->push();
+    }
+#endif
 }   // eventCallback
 
 // ----------------------------------------------------------------------------
@@ -536,6 +677,7 @@ void MainMenuScreen::tearDown()
 
 void MainMenuScreen::onDisabledItemClicked(const std::string& item)
 {
+#ifndef SERVER_ONLY
     if (item == "addons")
     {
         if (UserConfigParams::m_internet_status != RequestManager::IPERM_ALLOWED)
@@ -555,4 +697,26 @@ void MainMenuScreen::onDisabledItemClicked(const std::string& item)
             new MessageDialog( _("Please wait while the add-ons are loading"));
         }
     }
+#endif
 }   // onDisabledItemClicked
+
+// ----------------------------------------------------------------------------
+
+bool MainMenuScreen::onEscapePressed()
+{
+    class ConfirmClose :
+          public MessageDialog::IConfirmDialogListener
+    {
+    public:
+        virtual void onConfirm()
+        {
+            GUIEngine::ModalDialog::dismiss();
+            main_loop->abort();
+        }   // onConfirm
+    };   // ConfirmClose
+
+    new MessageDialog(_("Are you sure you want to quit STK?"),
+        MessageDialog::MESSAGE_DIALOG_YESNO, new ConfirmClose(),
+        true/*delete_listener*/);
+    return false;
+}   // onEscapePressed

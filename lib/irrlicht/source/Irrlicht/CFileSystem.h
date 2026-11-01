@@ -80,6 +80,8 @@ public:
 	//! gets an archive
 	virtual IFileArchive* getFileArchive(u32 index);
 
+	virtual void removeAllFileArchives();
+
 	//! removes an archive from the file system.
 	virtual bool removeFileArchive(u32 index);
 
@@ -121,11 +123,18 @@ public:
 	//! and returns it.
 	virtual IFileList* createFileList();
 
+	//! Creates a list of files and directories in specified directory
+	//! and returns it.
+	virtual IFileList* createFileList(const io::path& directory);
+
 	//! Creates an empty filelist
 	virtual IFileList* createEmptyFileList(const io::path& path, bool ignoreCase, bool ignorePaths);
 
 	//! determines if a file exists and would be able to be opened.
 	virtual bool existFile(const io::path& filename) const;
+
+	//! Determines if a file exists and could be opened (thread-safe, ignore file archives), this function returns false for directory
+	virtual bool existFileOnly(const path& filename) const;
 
 	//! Creates a XML Reader from a file.
 	virtual IXMLReader* createXMLReader(const io::path& filename);
@@ -148,6 +157,8 @@ public:
 	//! Creates a new empty collection of attributes, usable for serialization and more.
 	virtual IAttributes* createEmptyAttributes(video::IVideoDriver* driver);
 
+	virtual std::unique_lock<std::recursive_mutex> acquireFileArchivesMutex() const;
+
 private:
 
 	// don't expose, needs refactoring
@@ -163,6 +174,8 @@ private:
 	core::array<IArchiveLoader*> ArchiveLoader;
 	//! currently attached Archives
 	core::array<IFileArchive*> FileArchives;
+
+	mutable std::recursive_mutex m_file_archives_mutex;
 };
 
 

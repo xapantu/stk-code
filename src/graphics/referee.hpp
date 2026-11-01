@@ -19,10 +19,18 @@
 #ifndef HEADER_REFEREE_HPP
 #define HEADER_REFEREE_HPP
 
-#include <ISceneNode.h>
-#include <IAnimatedMeshSceneNode.h>
-#include <ISceneManager.h>
-#include <IMeshManipulator.h>
+namespace irr
+{
+    namespace scene
+    {
+        class IAnimatedMesh; class IAnimatedMeshSceneNode; class ISceneNode;
+    }
+    namespace video
+    {
+        class ITexture;
+    }
+}
+
 using namespace irr;
 
 #include "utils/vec3.hpp"
@@ -76,6 +84,8 @@ private:
     /** A rotation to be applied to the referee before displaying it. */
     static Vec3 m_st_start_rotation;
 
+    static float m_height;
+
     /** The scene node for an instance of the referee. */
     scene::IAnimatedMeshSceneNode *m_scene_node;
 
@@ -94,17 +104,13 @@ public:
     /** Returns the scene node of this referee. */
     scene::IAnimatedMeshSceneNode* getSceneNode() { return m_scene_node; }
     // ------------------------------------------------------------------------
-    /** Moves the referee to the specified position. */
-    void        setPosition(const Vec3 &xyz)
-                {m_scene_node->setPosition(xyz.toIrrVector()); }
+    void        setPosition(const Vec3 &xyz);
     // ------------------------------------------------------------------------
-    /** Sets the rotation of the scene node (in degrees).
-     *  \param hpr Rotation in degrees. */
-    void        setRotation(const Vec3 &hpr)
-                { m_scene_node->setRotation(hpr.toIrrVector()); }
+    void        setRotation(const Vec3 &hpr);
     // ------------------------------------------------------------------------
-    /** Returns true if this referee is attached to the scene graph. */
-    bool        isAttached() const {return m_scene_node->getParent()!=NULL;}
+    bool        isAttached() const;
+    // ------------------------------------------------------------------------
+    void        setAnimationFrameWithCreatedTicks(int created_ticks);
     // ------------------------------------------------------------------------
     /** Returns the graphical offset the referee should be drawn at at the
      *  start of a race. */
@@ -113,6 +119,9 @@ public:
     /** Returns the rotation of the mesh so that it faces the kart (when
      *  applied to a kart with heading 0). */
     static const Vec3& getStartRotation() {return m_st_start_rotation; }
+    // ------------------------------------------------------------------------
+    /** Returns the height of the referee. */
+    static const float getHeight() {return m_height; }
 };   // Referee
 
 #endif

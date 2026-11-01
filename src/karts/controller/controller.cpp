@@ -34,3 +34,9 @@ Controller::Controller(AbstractKart *kart)
     m_kart     = kart;
     setControllerName("Controller");
 }   // Controller
+
+// ----------------------------------------------------------------------------
+core::stringw Controller::getName(bool include_handicap_string) const
+{
+    return m_kart->getName();
+}   // getName

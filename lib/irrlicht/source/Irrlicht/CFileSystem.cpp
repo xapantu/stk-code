@@ -20,7 +20,10 @@
 #include "CLimitReadFile.h"
 #include "irrList.h"
 
+#include "io/file_manager.hpp"
+
 #if defined (_IRR_WINDOWS_API_)
+	#include "utils/string_utils.hpp"
 	#if !defined ( _WIN32_WCE )
 		#include <direct.h> // for _chdir
 		#include <io.h> // for _access
@@ -93,12 +96,14 @@ IReadFile* CFileSystem::createAndOpenFile(const io::path& filename)
 	IReadFile* file = 0;
 	u32 i;
 
+	std::unique_lock<std::recursive_mutex> ul(m_file_archives_mutex);
 	for (i=0; i< FileArchives.size(); ++i)
 	{
 		file = FileArchives[i]->createAndOpenFile(filename);
 		if (file)
 			return file;
 	}
+	ul.unlock();
 
 	// Create the file using an absolute path so that it matches
 	// the scheme used by CNullDriver::getTexture().
@@ -114,7 +119,7 @@ IReadFile* CFileSystem::createMemoryReadFile(void* memory, s32 len,
 		return 0;
 	else
 		return new CMemoryFile(memory, len, fileName, deleteMemoryWhenDropped);
-			}
+}
 
 
 //! Creates an IReadFile interface for reading files inside files
@@ -177,6 +182,7 @@ bool CFileSystem::moveFileArchive(u32 sourceIndex, s32 relative)
 	bool r = false;
 	const s32 dest = (s32) sourceIndex + relative;
 	const s32 dir = relative < 0 ? -1 : 1;
+	std::lock_guard<std::recursive_mutex> lock(m_file_archives_mutex);
 	const s32 sourceEnd = ((s32) FileArchives.size() ) - 1;
 	IFileArchive *t;
 
@@ -286,7 +292,9 @@ bool CFileSystem::addFileArchive(const io::path& filename, bool ignoreCase,
 
 	if (archive)
 	{
+		std::unique_lock<std::recursive_mutex> ul(m_file_archives_mutex);
 		FileArchives.push_back(archive);
+		ul.unlock();
 		if (password.size())
 			archive->Password=password;
 		if (retArchive)
@@ -307,6 +315,7 @@ bool CFileSystem::changeArchivePassword(const path& filename,
 		const core::stringc& password,
 		IFileArchive** archive)
 {
+	std::lock_guard<std::recursive_mutex> lock(m_file_archives_mutex);
 	for (s32 idx = 0; idx < (s32)FileArchives.size(); ++idx)
 	{
 		// TODO: This should go into a path normalization method
@@ -392,7 +401,9 @@ bool CFileSystem::addFileArchive(IReadFile* file, bool ignoreCase,
 
 		if (archive)
 		{
+			std::unique_lock<std::recursive_mutex> ul(m_file_archives_mutex);
 			FileArchives.push_back(archive);
+			ul.unlock();
 			if (password.size())
 				archive->Password=password;
 			if (retArchive)
@@ -412,6 +423,7 @@ bool CFileSystem::addFileArchive(IReadFile* file, bool ignoreCase,
 //! Adds an archive to the file system.
 bool CFileSystem::addFileArchive(IFileArchive* archive)
 {
+	std::lock_guard<std::recursive_mutex> lock(m_file_archives_mutex);
 	for (u32 i=0; i < FileArchives.size(); ++i)
 	{
 		if (archive == FileArchives[i])
@@ -425,9 +437,19 @@ bool CFileSystem::addFileArchive(IFileArchive* archive)
 }
 
 
+void CFileSystem::removeAllFileArchives()
+{
+	std::lock_guard<std::recursive_mutex> lock(m_file_archives_mutex);
+	for (u32 index = 0; index < FileArchives.size(); index++)
+		FileArchives[index]->drop();
+	FileArchives.clear();
+}
+
+
 //! removes an archive from the file system.
 bool CFileSystem::removeFileArchive(u32 index)
 {
+	std::lock_guard<std::recursive_mutex> lock(m_file_archives_mutex);
 	bool ret = false;
 	if (index < FileArchives.size())
 	{
@@ -444,6 +466,7 @@ bool CFileSystem::removeFileArchive(u32 index)
 bool CFileSystem::removeFileArchive(const io::path& filename)
 {
 	const path absPath = getAbsolutePath(filename);
+	std::lock_guard<std::recursive_mutex> lock(m_file_archives_mutex);
 	for (u32 i=0; i < FileArchives.size(); ++i)
 	{
 		if (absPath == FileArchives[i]->getFileList()->getPath())
@@ -457,6 +480,7 @@ bool CFileSystem::removeFileArchive(const io::path& filename)
 //! Removes an archive from the file system.
 bool CFileSystem::removeFileArchive(const IFileArchive* archive)
 {
+	std::lock_guard<std::recursive_mutex> lock(m_file_archives_mutex);
 	for (u32 i=0; i < FileArchives.size(); ++i)
 	{
 		if (archive == FileArchives[i])
@@ -473,12 +497,14 @@ bool CFileSystem::removeFileArchive(const IFileArchive* archive)
 //! gets an archive
 u32 CFileSystem::getFileArchiveCount() const
 {
+	std::lock_guard<std::recursive_mutex> lock(m_file_archives_mutex);
 	return FileArchives.size();
 }
 
 
 IFileArchive* CFileSystem::getFileArchive(u32 index)
 {
+	std::lock_guard<std::recursive_mutex> lock(m_file_archives_mutex);
 	return index < getFileArchiveCount() ? FileArchives[index] : 0;
 }
 
@@ -497,16 +523,10 @@ const io::path& CFileSystem::getWorkingDirectory()
 		#if defined(_IRR_WINDOWS_CE_PLATFORM_)
 		// does not need this
 		#elif defined(_IRR_WINDOWS_API_)
-			fschar_t tmp[_MAX_PATH];
-			#if defined(_IRR_WCHAR_FILESYSTEM )
-				_wgetcwd(tmp, _MAX_PATH);
-				WorkingDirectory[FILESYSTEM_NATIVE] = tmp;
-				WorkingDirectory[FILESYSTEM_NATIVE].replace(L'\\', L'/');
-			#else
-				_getcwd(tmp, _MAX_PATH);
-				WorkingDirectory[FILESYSTEM_NATIVE] = tmp;
-				WorkingDirectory[FILESYSTEM_NATIVE].replace('\\', '/');
-			#endif
+			wchar_t tmp[_MAX_PATH];
+			_wgetcwd(tmp, _MAX_PATH);
+			WorkingDirectory[FILESYSTEM_NATIVE] = StringUtils::wideToUtf8(tmp).c_str();
+			WorkingDirectory[FILESYSTEM_NATIVE].replace('\\', '/');
 		#endif
 
 		#if (defined(_IRR_POSIX_API_) || defined(_IRR_OSX_PLATFORM_))
@@ -540,7 +560,18 @@ const io::path& CFileSystem::getWorkingDirectory()
 				}
 				if (tmpPath)
 				{
+#ifdef __SWITCH__
+					io::path full = tmpPath;
+					auto sdmc = "sdmc:";
+					auto romfs = "romfs:";
+					if (full.find(sdmc, 0) == 0)
+						full = full.subString(5, full.size() - 5);
+					else if (full.find(romfs, 0) == 0)
+						full = full.subString(6, full.size() - 6);
+					WorkingDirectory[FILESYSTEM_NATIVE] = full.c_str();
+#else
 					WorkingDirectory[FILESYSTEM_NATIVE] = tmpPath;
+#endif
 					delete [] tmpPath;
 				}
 			#endif
@@ -571,18 +602,10 @@ bool CFileSystem::changeWorkingDirectoryTo(const io::path& newDirectory)
 
 #if defined(_IRR_WINDOWS_CE_PLATFORM_)
 		success = true;
-#elif defined(_MSC_VER)
-	#if defined(_IRR_WCHAR_FILESYSTEM)
-		success = (_wchdir(newDirectory.c_str()) == 0);
-	#else
-		success = (_chdir(newDirectory.c_str()) == 0);
-	#endif
+#elif defined(_IRR_WINDOWS_API_)
+		success = (_wchdir(StringUtils::utf8ToWide(newDirectory.c_str()).c_str()) == 0);
 #else
-    #if defined(_IRR_WCHAR_FILESYSTEM)
-		success = (_wchdir(newDirectory.c_str()) == 0);
-    #else
-        success = (chdir(newDirectory.c_str()) == 0);
-    #endif
+		success = (chdir(newDirectory.c_str()) == 0);
 #endif
 	}
 
@@ -592,21 +615,17 @@ bool CFileSystem::changeWorkingDirectoryTo(const io::path& newDirectory)
 
 io::path CFileSystem::getAbsolutePath(const io::path& filename) const
 {
-#if defined(_IRR_WINDOWS_CE_PLATFORM_)
+#ifdef __SWITCH__
+	return core::stringc(filename).replace(core::stringc("//"), core::stringc("/"));
+#elif defined(_IRR_WINDOWS_CE_PLATFORM_)
 	return filename;
 #elif defined(_IRR_WINDOWS_API_)
-	fschar_t *p=0;
-	fschar_t fpath[_MAX_PATH];
-	#if defined(_IRR_WCHAR_FILESYSTEM )
-		p = _wfullpath(fpath, filename.c_str(), _MAX_PATH);
-		core::stringw tmp(p);
-		tmp.replace(L'\\', L'/');
-	#else
-		p = _fullpath(fpath, filename.c_str(), _MAX_PATH);
-		core::stringc tmp(p);
-		tmp.replace('\\', '/');
-	#endif
-	return tmp;
+	wchar_t *p=0;
+	wchar_t fpath[_MAX_PATH];
+	p = _wfullpath(fpath, StringUtils::utf8ToWide(filename.c_str()).c_str(), _MAX_PATH);
+	core::stringw tmp(p);
+	tmp.replace(L'\\', L'/');
+	return StringUtils::wideToUtf8(tmp).c_str();
 #elif (defined(_IRR_POSIX_API_) || defined(_IRR_OSX_PLATFORM_))
 	c8* p=0;
 	c8 fpath[4096];
@@ -795,7 +814,7 @@ path CFileSystem::getRelativeFilename(const path& filename, const path& director
 }
 
 
-//! Sets the current file systen type
+//! Sets the current file system type
 EFileSystemType CFileSystem::setFileListSystem(EFileSystemType listType)
 {
 	EFileSystemType current = FileSystemType;
@@ -803,12 +822,18 @@ EFileSystemType CFileSystem::setFileListSystem(EFileSystemType listType)
 	return current;
 }
 
-
 //! Creates a list of files and directories in the current working directory
 IFileList* CFileSystem::createFileList()
 {
-	CFileList* r = 0;
 	io::path Path = getWorkingDirectory();
+	return createFileList(Path);
+}
+
+//! Creates a list of files and directories in specified directory
+IFileList* CFileSystem::createFileList(const io::path& directory)
+{
+	CFileList* r = 0;
+	io::path Path = directory;
 	Path.replace('\\', '/');
 	if (Path.lastChar() != '/')
 		Path.append('/');
@@ -821,21 +846,21 @@ IFileList* CFileSystem::createFileList()
 		#ifdef _IRR_WINDOWS_API_
 		#if !defined ( _WIN32_WCE )
 
-		r = new CFileList(Path, true, false);
+		r = new CFileList(Path, false, false);
 
-		// TODO: Should be unified once mingw adapts the proper types
-#if defined(__GNUC__)
-		long hFile; //mingw return type declaration
-#else
+
 		intptr_t hFile;
-#endif
-
+		std::string searchPath = Path.c_str();
+		searchPath += '*';
+		core::stringw search_path_w = StringUtils::utf8ToWide(searchPath);
 		struct _tfinddata_t c_file;
-		if( (hFile = _tfindfirst( _T("*"), &c_file )) != -1L )
+		if( (hFile = _tfindfirst(search_path_w.c_str(), &c_file )) != -1L )
 		{
 			do
 			{
-				r->addItem(Path + c_file.name, 0, c_file.size, (_A_SUBDIR & c_file.attrib) != 0, 0);
+				std::string full_path = Path.c_str();
+				full_path += StringUtils::wideToUtf8(c_file.name);
+				r->addItem(full_path.c_str(), 0, c_file.size, (_A_SUBDIR & c_file.attrib) != 0, 0);
 			}
 			while( _tfindnext( hFile, &c_file ) == 0 );
 
@@ -879,7 +904,7 @@ IFileList* CFileSystem::createFileList()
 					size = buf.st_size;
 					isDirectory = S_ISDIR(buf.st_mode);
 				}
-				#if !defined(_IRR_SOLARIS_PLATFORM_) && !defined(__CYGWIN__)
+				#if !defined(_IRR_SOLARIS_PLATFORM_) && !defined(__CYGWIN__) && !defined(__HAIKU__) && !defined(__sun)
 				// only available on some systems
 				else
 				{
@@ -909,6 +934,7 @@ IFileList* CFileSystem::createFileList()
 		r->addItem(Path + _IRR_TEXT(".."), 0, 0, true, 0);
 
 		//! merge archives
+		std::lock_guard<std::recursive_mutex> lock(m_file_archives_mutex);
 		for (u32 i=0; i < FileArchives.size(); ++i)
 		{
 			const IFileList *merge = FileArchives[i]->getFileList();
@@ -934,13 +960,30 @@ IFileList* CFileSystem::createEmptyFileList(const io::path& path, bool ignoreCas
 	return new CFileList(path, ignoreCase, ignorePaths);
 }
 
+//! Determines if a file exists and could be opened (thread-safe, ignore file archives), this function returns false for directory
+bool CFileSystem::existFileOnly(const path& filename) const
+{
+	if (FileManager::isDirectory(filename.c_str()))
+		return false;
+
+	io::IReadFile* file = createReadFile(filename);
+	if (file)
+	{
+		file->drop();
+		return true;
+	}
+	return false;
+}
+
 
 //! determines if a file exists and would be able to be opened.
 bool CFileSystem::existFile(const io::path& filename) const
 {
+	std::unique_lock<std::recursive_mutex> ul(m_file_archives_mutex);
 	for (u32 i=0; i < FileArchives.size(); ++i)
 		if (FileArchives[i]->getFileList()->findFile(filename)!=-1)
 			return true;
+	ul.unlock();
 
 #if defined(_IRR_WINDOWS_CE_PLATFORM_)
 #if defined(_IRR_WCHAR_FILESYSTEM)
@@ -958,19 +1001,21 @@ bool CFileSystem::existFile(const io::path& filename) const
 #else
 	_IRR_IMPLEMENT_MANAGED_MARSHALLING_BUGFIX;
 #if defined(_MSC_VER)
-    #if defined(_IRR_WCHAR_FILESYSTEM)
-        return (_waccess(filename.c_str(), 0) != -1);
-    #else
-        return (_access(filename.c_str(), 0) != -1);
-    #endif
+	return (_waccess(StringUtils::utf8ToWide(filename.c_str()).c_str(), 0) != -1);
 #elif defined(F_OK)
-    #if defined(_IRR_WCHAR_FILESYSTEM)
-        return (_waccess(filename.c_str(), F_OK) != -1);
-    #else
-        return (access(filename.c_str(), F_OK) != -1);
+	#if defined(_IRR_WINDOWS_API_)
+		return (_waccess(StringUtils::utf8ToWide(filename.c_str()).c_str(), F_OK) != -1);
+	#else
+#ifdef __SWITCH__
+	if(filename.size() == 0)
+	{
+		return false;
+	}
+#endif
+		return (access(filename.c_str(), F_OK) != -1);
 	#endif
 #else
-    return (access(filename.c_str(), 0) != -1);
+	return (access(filename.c_str(), 0) != -1);
 #endif
 #endif
 }
@@ -1055,6 +1100,12 @@ IFileSystem* createFileSystem()
 IAttributes* CFileSystem::createEmptyAttributes(video::IVideoDriver* driver)
 {
 	return new CAttributes(driver);
+}
+
+
+std::unique_lock<std::recursive_mutex> CFileSystem::acquireFileArchivesMutex() const
+{
+	return std::unique_lock<std::recursive_mutex>(m_file_archives_mutex);
 }
 
 

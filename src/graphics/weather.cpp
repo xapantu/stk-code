@@ -20,24 +20,25 @@
 #include "audio/sfx_manager.hpp"
 #include "graphics/weather.hpp"
 #include "modes/world.hpp"
+#include "tracks/track.hpp"
 #include "utils/random_generator.hpp"
 
 
-// The weather manager
-
-Weather::Weather(bool lightning, std::string sound)
+/**  The weather manager stores information about the weather.
+ */
+Weather::Weather()
 {
-    m_lightning_enabled = lightning;
     m_thunder_sound = NULL;
     m_weather_sound = NULL;
     m_lightning = 0.0f;
     
-    if (m_lightning_enabled)
+    if (Track::getCurrentTrack()->getWeatherLightning())
     {
         m_thunder_sound = SFXManager::get()->createSoundSource("thunder");
     }
 
-    if (sound != "")
+    const std::string &sound = Track::getCurrentTrack()->getWeatherSound();
+    if (!sound.empty())
     {
         m_weather_sound = SFXManager::get()->createSoundSource(sound);
     }
@@ -61,7 +62,7 @@ Weather::~Weather()
 
 void Weather::update(float dt)
 {
-    if (!m_lightning_enabled)
+    if (!Track::getCurrentTrack()->getWeatherLightning())
         return;
         
     if (World::getWorld()->getRaceGUI() == NULL)
@@ -73,7 +74,8 @@ void Weather::update(float dt)
     {
         startLightning();
 
-        if (m_thunder_sound)
+        if (m_thunder_sound &&
+            World::getWorld()->getPhase() != WorldStatus::IN_GAME_MENU_PHASE)
         {
             m_thunder_sound->play();
         }
@@ -101,8 +103,8 @@ void Weather::playSound()
 
 irr::core::vector3df Weather::getIntensity()
 {
-    irr::core::vector3df value = {0.7f * m_lightning, 
-                                  0.7f * m_lightning, 
+    irr::core::vector3df value = {0.7f * m_lightning,
+                                  0.7f * m_lightning,
                                   0.7f * std::min(1.0f, m_lightning * 1.5f)};
                                  
     return value;

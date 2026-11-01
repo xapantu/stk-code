@@ -19,10 +19,13 @@
 #ifndef HEADER_RECOVERY_DIALOG_HPP
 #define HEADER_RECOVERY_DIALOG_HPP
 
-
 #include "guiengine/modaldialog.hpp"
-#include "guiengine/widgets.hpp"
 
+namespace GUIEngine
+{
+    class IconButtonWidget; class LabelWidget; class RibbonWidget;
+    class TextBoxWidget;
+}
 namespace Online
 {
     class XMLRequest;
@@ -55,7 +58,7 @@ private:
     bool m_show_recovery_input;
     bool m_show_recovery_info;
 
-    Online::XMLRequest * m_recovery_request;
+    std::shared_ptr<Online::XMLRequest> m_recovery_request;
 
     GUIEngine::TextBoxWidget * m_username_widget;
     GUIEngine::TextBoxWidget * m_email_widget;

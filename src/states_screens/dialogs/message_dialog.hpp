@@ -63,7 +63,8 @@ public:
     };
 
     enum MessageDialogType { MESSAGE_DIALOG_OK, MESSAGE_DIALOG_CONFIRM,
-                             MESSAGE_DIALOG_OK_CANCEL, MESSAGE_DIALOG_YESNO };
+                             MESSAGE_DIALOG_OK_CANCEL, MESSAGE_DIALOG_YESNO,
+                             MESSAGE_DIALOG_OK_DONTSHOWAGAIN };
     
     MessageDialogType m_type;
 
@@ -73,6 +74,10 @@ private:
     bool m_own_listener;
     irr::core::stringw m_msg;
     void doInit(bool from_queue);
+
+    /** If set this will set the focus on 'cancel'/'no'
+     *  instead of "yes"/"ok". */
+    bool m_focus_on_cancel;
 
 public:
 
@@ -84,14 +89,16 @@ public:
       */
     MessageDialog(const irr::core::stringw &msg, MessageDialogType type,
                   IConfirmDialogListener* listener, bool delete_listener,
-                  bool from_queue = false, float width = 0.6f, float height = 0.6f);
-    
+                  bool from_queue = false, float width = 0.6f, float height = 0.6f,
+                  bool focus_on_cancel = false);
+
     /**
       * Variant of MessageDialog where cancelling is not possible (i.e. just shows a message box with OK)
       * \param msg Message to display in the dialog
       */
-    MessageDialog(const irr::core::stringw &msg, bool from_queue = false);
-    
+    MessageDialog(const irr::core::stringw &msg, bool from_queue = false,
+                  bool focus_on_cancel = false);
+
     ~MessageDialog();
     
     virtual void onEnterPressedInternal() OVERRIDE;
@@ -101,6 +108,11 @@ public:
     GUIEngine::EventPropagation processEvent(const std::string& eventSource) OVERRIDE;
 
     virtual void loadedFromFile() OVERRIDE;
+
+    /** Calling this will make sure that the focus is set on the 'cancel' or
+     * 'no'. */
+    void setFocusCancel() {m_focus_on_cancel = true; }
+    virtual void init() OVERRIDE;
 };
 
 

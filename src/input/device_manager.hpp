@@ -34,6 +34,7 @@ class DeviceConfig;
 class InputDevice;
 class GamePadDevice;
 class KeyboardDevice;
+class MultitouchDevice;
 
 
 enum PlayerAssignMode
@@ -66,9 +67,8 @@ private:
     PtrVector<GamePadDevice, HOLD>     m_gamepads;
     PtrVector<KeyboardConfig, HOLD>    m_keyboard_configs;
     PtrVector<GamepadConfig, HOLD>     m_gamepad_configs;
+    MultitouchDevice*                  m_multitouch_device;
 
-    /** The list of all joysticks that were found and activated. */
-    core::array<SJoystickInfo>         m_irrlicht_gamepads;
     InputDevice*                       m_latest_used_device;
     PlayerAssignMode                   m_assign_mode;
 
@@ -98,9 +98,8 @@ private:
     void shutdown();
 
 public:
-
-
     DeviceManager();
+    ~DeviceManager();
 
     // ---- Assign mode ----
     PlayerAssignMode    getAssignMode() const               { return m_assign_mode; }
@@ -110,12 +109,12 @@ public:
     void addGamepad(GamePadDevice* d);
     int getGamePadAmount() const                            { return m_gamepads.size(); }
     int getGamePadConfigAmount() const                      { return m_gamepad_configs.size(); }
-    GamePadDevice*      getGamePad(const int i)             { return m_gamepads.get(i); }
+    GamePadDevice*      getGamePad(const int i);
     GamepadConfig*      getGamepadConfig(const int i)       { return m_gamepad_configs.get(i); }
     GamePadDevice*      getGamePadFromIrrID(const int i);
     void                clearGamepads();
     /** Returns the keyboard that has a binding for this button, or NULL if none */
-    bool                getConfigForGamepad(const int sdl_id, 
+    bool                getConfigForGamepad(const int sdl_id,
                                             const std::string& name,
                                             GamepadConfig **config);
 
@@ -124,10 +123,24 @@ public:
     void addKeyboard(KeyboardDevice* d);
     void                clearKeyboard();
     int                 getKeyboardAmount()                 { return m_keyboards.size(); }
+    int                 getActiveKeyboardAmount()
+    {
+        int active = 0;
+        for (unsigned int i=0;i<m_keyboard_configs.size();i++)
+        {
+            if (m_keyboard_configs[i].isEnabled()) active++;
+        }
+        return active;
+    }
     int                 getKeyboardConfigAmount() const     { return m_keyboard_configs.size(); }
-    KeyboardDevice*     getKeyboard(const int i)            { return m_keyboards.get(i); }
+    KeyboardDevice*     getKeyboard(const int i);
     KeyboardConfig*     getKeyboardConfig(const int i)      { return m_keyboard_configs.get(i); }
     KeyboardDevice*     getKeyboardFromBtnID(const int btnID);
+
+    // ---- Multitouch device ----
+    MultitouchDevice*   getMultitouchDevice()    { return m_multitouch_device; }
+    void                clearMultitouchDevices();
+    void                updateMultitouchDevice();
 
 
     /**
@@ -171,7 +184,7 @@ public:
      *  events from the device used to connect in the kart selection screen. */
     void setSinglePlayer(StateManager::ActivePlayer* p)
     {
-        m_single_player = p; 
+        m_single_player = p;
     }   // setSinglePlayer
     // ------------------------------------------------------------------------
     /** Sets or reset the 'map fire to select' option.
@@ -182,4 +195,3 @@ public:
 
 
 #endif
-

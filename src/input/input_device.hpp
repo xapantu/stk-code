@@ -36,7 +36,8 @@ class DeviceConfig;
 enum DeviceType
 {
     DT_KEYBOARD,
-    DT_GAMEPAD
+    DT_GAMEPAD,
+    DT_MULTITOUCH
 };
 
 /**
@@ -46,6 +47,9 @@ enum DeviceType
 class InputDevice: public NoCopy
 {
 protected:
+    /** For SDL controller it's set false when it's unplugged. */
+    bool m_connected;
+
     /** Device type (keyboard, gamepad). */
     DeviceType m_type;
 
@@ -69,7 +73,7 @@ public:
      *  \param type Type of input (e.g. IT_STICKMOTION, ...).
      *  \param id   ID of the key that was pressed or of the axis that was
      *              triggered (depending on the value of the 'type' parameter).
-     *  \param mode Used to determine whether to map menu actions or 
+     *  \param mode Used to determine whether to map menu actions or
      *              game actions
      * \param[out] action  The action associated to this input (only check
      *                     this value if method returned true)
@@ -84,7 +88,7 @@ public:
                                     ) = 0;
 
     // ------------------------------------------------------------------------
-    /** Sets which players uses this device; or pass NULL to say no player 
+    /** Sets which players uses this device; or pass NULL to say no player
      *  uses it. */
     void setPlayer(StateManager::ActivePlayer* owner) { m_player = owner; }
 
@@ -106,6 +110,10 @@ public:
     // ------------------------------------------------------------------------
     /** Returns the name of this device. */
     const std::string& getName() const { return m_name; }
+    // ------------------------------------------------------------------------
+    void setConnected(bool val) { m_connected = val; }
+    // ------------------------------------------------------------------------
+    bool isConnected() const { return m_connected; }
 };   // class InputDevice
 
 #endif

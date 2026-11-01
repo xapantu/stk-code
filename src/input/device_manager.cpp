@@ -25,13 +25,17 @@
 #include "graphics/irr_driver.hpp"
 #include "input/gamepad_device.hpp"
 #include "input/keyboard_device.hpp"
+#include "input/multitouch_device.hpp"
 #include "input/wiimote_manager.hpp"
 #include "io/file_manager.hpp"
 #include "states_screens/kart_selection.hpp"
 #include "states_screens/state_manager.hpp"
+#include "utils/file_utils.hpp"
 #include "utils/log.hpp"
+#include "utils/string_utils.hpp"
 #include "utils/translation.hpp"
 
+#include <IrrlichtDevice.h>
 
 #define INPUT_MODE_DEBUG 0
 
@@ -43,13 +47,18 @@ DeviceManager::DeviceManager()
     m_latest_used_device = NULL;
     m_assign_mode = NO_ASSIGN;
     m_single_player = NULL;
+    m_multitouch_device = NULL;
 }   // DeviceManager
+
+// -----------------------------------------------------------------------------
+DeviceManager::~DeviceManager()
+{
+    delete m_multitouch_device;
+}   // ~DeviceManager
 
 // -----------------------------------------------------------------------------
 bool DeviceManager::initialize()
 {
-    GamepadConfig *gamepadConfig = NULL;
-    GamePadDevice *gamepadDevice = NULL;
     m_map_fire_to_select         = false;
     bool created                 = false;
 
@@ -72,6 +81,7 @@ bool DeviceManager::initialize()
         if(UserConfigParams::logMisc())
             Log::info("Device manager","No keyboard configuration exists, creating one.");
         m_keyboard_configs.push_back(new KeyboardConfig());
+        
         created = true;
     }
 
@@ -81,62 +91,12 @@ bool DeviceManager::initialize()
         m_keyboards.push_back(new KeyboardDevice(m_keyboard_configs.get(n)));
     }
 
-    if(UserConfigParams::logMisc())
-        Log::info("Device manager","Initializing gamepad support.");
-
-    irr_driver->getDevice()->activateJoysticks(m_irrlicht_gamepads);
-
-    int num_gamepads = m_irrlicht_gamepads.size();
-    if(UserConfigParams::logMisc())
+    if ((UserConfigParams::m_multitouch_active == 1 &&
+        irr_driver->getDevice()->supportsTouchDevice()) ||
+        UserConfigParams::m_multitouch_active > 1)
     {
-        Log::info("Device manager","Irrlicht reports %d gamepads are attached to the system.",
-               num_gamepads);
+        m_multitouch_device = new MultitouchDevice();
     }
-
-    // Create GamePadDevice for each physical gamepad and find a GamepadConfig to match
-    for (int id = 0; id < num_gamepads; id++)
-    {
-        core::stringc name = m_irrlicht_gamepads[id].Name;
-
-        // Some linux systems report a disk accelerometer as a gamepad, skip that
-        if (name.find("LIS3LV02DL") != -1) continue;
-
-        if(m_irrlicht_gamepads[id].HasGenericName)
-        {
-            // On Windows all gamepads are given the same name ('microsoft
-            // pc-joystick driver'). Irrlicht now tries to get a better name
-            // from the registry, but in case this should fail we still have
-            // all gamepads with the same name shown in the GUI. This makes
-            // configuration totally useless, so append an ID to the name.
-            name = name + " " + StringUtils::toString(id).c_str();
-        }
-
-        if (UserConfigParams::logMisc())
-        {
-            Log::info("Device manager","#%d: %s detected...", id, name.c_str());
-        }
-
-        // Returns true if new configuration was created
-        if (getConfigForGamepad(id, name.c_str(), &gamepadConfig) == true)
-        {
-            if(UserConfigParams::logMisc())
-               Log::info("Device manager","creating new configuration.");
-            created = true;
-        }
-        else
-        {
-            if(UserConfigParams::logMisc())
-                Log::info("Device manager","using existing configuration.");
-        }
-
-        gamepadConfig->setPlugged();
-        gamepadDevice = new GamePadDevice(id,
-                                          name.c_str(),
-                                          m_irrlicht_gamepads[id].Axes,
-                                          m_irrlicht_gamepads[id].Buttons,
-                                          gamepadConfig );
-        addGamepad(gamepadDevice);
-    } // end for
 
     if (created) save();
 
@@ -152,8 +112,14 @@ void DeviceManager::clearKeyboard()
 // -----------------------------------------------------------------------------
 void DeviceManager::clearGamepads()
 {
-    m_gamepads.clearAndDeleteAll(); 
+    m_gamepads.clearAndDeleteAll();
 }   // clearGamepads
+// -----------------------------------------------------------------------------
+void DeviceManager::clearMultitouchDevices()
+{
+    delete m_multitouch_device;
+    m_multitouch_device = NULL;
+}   // clearMultitouchDevices
 
 // -----------------------------------------------------------------------------
 void DeviceManager::setAssignMode(const PlayerAssignMode assignMode)
@@ -177,6 +143,9 @@ void DeviceManager::setAssignMode(const PlayerAssignMode assignMode)
         {
             m_keyboards[i].setPlayer(NULL);
         }
+
+        if (m_multitouch_device != NULL)
+            m_multitouch_device->setPlayer(NULL);
     }
 }   // setAssignMode
 
@@ -221,20 +190,9 @@ bool DeviceManager::getConfigForGamepad(const int irr_id,
     // If we can't find an appropriate configuration then create one.
     if (!found)
     {
-        if(irr_id < (int)(m_irrlicht_gamepads.size()))
-        {
-            *config = new GamepadConfig( name,
-                                         m_irrlicht_gamepads[irr_id].Axes,
-                                         m_irrlicht_gamepads[irr_id].Buttons );
-        }
-#ifdef ENABLE_WIIUSE
-        else    // Wiimotes have a higher ID and do not refer to m_irrlicht_gamepads
-        {
-            // The Wiimote manager will set number of buttons and axis
-            *config = new GamepadConfig(name.c_str());
-        }
-#endif
-
+        // The Wiimote manager and SDL controller will set number of buttons and
+        // axes
+        *config = new GamepadConfig(name.c_str());
         // Add new config to list
         m_gamepad_configs.push_back(*config);
         configCreated = true;
@@ -303,7 +261,7 @@ bool DeviceManager::deleteConfig(DeviceConfig* config)
  *  \param[in]   button_id  Id of the key pressed.
  *  \param[in]   mode       Used to determine whether to determine menu actions
  *                          or game actions
- *  \param[out]  player     Which player this input belongs to (only set in 
+ *  \param[out]  player     Which player this input belongs to (only set in
  *                          ASSIGN mode).
  *  \param[out]  action     Which action is related to this input trigger.
  *  \return                 The device to which this input belongs
@@ -365,6 +323,16 @@ InputDevice *DeviceManager::mapGamepadInput(Input::InputType type,
 
     if (gPad != NULL)
     {
+        // Ignore deadzone events if this isn't the latest used device in
+        // single-player mode (allowing the player to switch device at any time)
+        int dz = static_cast<GamepadConfig*>(gPad->getConfiguration())->getDeadzone();
+        if (m_single_player != NULL && m_latest_used_device != gPad
+            && *value > -dz && *value < dz)
+        {
+            *player = NULL;
+            return NULL;
+        }
+
         if (gPad->processAndMapInput(type, button_id, mode, action, value))
         {
             if (m_single_player != NULL)
@@ -388,6 +356,27 @@ InputDevice *DeviceManager::mapGamepadInput(Input::InputType type,
 
     return gPad;
 }   // mapGamepadInput
+
+//-----------------------------------------------------------------------------
+
+void DeviceManager::updateMultitouchDevice()
+{
+    if (m_multitouch_device == NULL)
+        return;
+
+    if (m_single_player != NULL)
+    {
+        // in single-player mode, assign the gamepad as needed
+        if (m_multitouch_device->getPlayer() != m_single_player)
+            m_multitouch_device->setPlayer(m_single_player);
+    }
+    else
+    {
+        m_multitouch_device->setPlayer(NULL);
+    }
+    
+    m_multitouch_device->updateController();
+}   // updateMultitouchDevice
 
 //-----------------------------------------------------------------------------
 
@@ -416,10 +405,13 @@ bool DeviceManager::translateInput( Input::InputType type,
             // that should be mapped to select
             if(!device && m_map_fire_to_select)
             {
+                PlayerAction fire_action = PA_BEFORE_FIRST;
                 device = mapKeyboardInput(button_id, InputManager::INGAME, player,
-                                          action);
-                if(device && *action == PA_FIRE)
+                                          &fire_action);
+                if (device && fire_action == PA_FIRE)
                     *action = PA_MENU_SELECT;
+                else
+                    device = NULL;
             }
             break;
         case Input::IT_STICKBUTTON:
@@ -428,10 +420,13 @@ bool DeviceManager::translateInput( Input::InputType type,
                                      mode, player, action);
             if(!device && m_map_fire_to_select)
             {
+                PlayerAction fire_action = PA_BEFORE_FIRST;
                 device = mapGamepadInput(type, device_id, button_id, axis_dir, value,
-                                         InputManager::INGAME, player, action);
-                if(device && *action == PA_FIRE)
+                                         InputManager::INGAME, player, &fire_action);
+                if (device && fire_action == PA_FIRE)
                     *action = PA_MENU_SELECT;
+                else
+                    device = NULL;
             }
             break;
         default:
@@ -490,6 +485,7 @@ bool DeviceManager::load()
     if(input->getName()!="input")
     {
         Log::warn("DeviceManager", "Invalid input.xml file - no input node.");
+        delete input;
         return false;
     }
 
@@ -500,6 +496,7 @@ bool DeviceManager::load()
         GUIEngine::showMessage(_("Please re-configure your key bindings."));
         GUIEngine::showMessage(_("Your input config file is not compatible "
                                  "with this version of STK."));
+        delete input;
         return false;
     }
 
@@ -514,12 +511,12 @@ bool DeviceManager::load()
                       config->getName().c_str());
             continue;
         }
-        if(config->getName()=="keyboard")
+        if (config->getName() == "keyboard")
         {
             KeyboardConfig *kc = static_cast<KeyboardConfig*>(device_config);
             m_keyboard_configs.push_back(kc);
         }
-        else if (config->getName()=="gamepad")
+        else if (config->getName() == "gamepad")
         {
             GamepadConfig *gc = static_cast<GamepadConfig*>(device_config);
             m_gamepad_configs.push_back(gc);
@@ -550,12 +547,11 @@ bool DeviceManager::load()
 // -----------------------------------------------------------------------------
 void DeviceManager::save()
 {
-    static std::string filepath = file_manager->getUserConfigFile(INPUT_FILE_NAME);
+    std::string filepath = file_manager->getUserConfigFile(INPUT_FILE_NAME);
     if(UserConfigParams::logMisc()) Log::info("Device manager","Serializing input.xml...");
 
-
-    std::ofstream configfile;
-    configfile.open (filepath.c_str());
+    // Save to a new file and rename later to avoid disk space problem, see #4709
+    std::ofstream configfile(FileUtils::getPortableWritingPath(filepath + "new"));
 
     if(!configfile.is_open())
     {
@@ -564,19 +560,40 @@ void DeviceManager::save()
     }
 
 
-    configfile << "<input version=\"" << INPUT_FILE_VERSION << "\">\n\n";
-
-    for(unsigned int n=0; n<m_keyboard_configs.size(); n++)
+    try
     {
-        m_keyboard_configs[n].save(configfile);
+        configfile << "<input version=\"" << INPUT_FILE_VERSION << "\">\n\n";
+
+        configfile << "<!--\n"
+            << "Event 1 : Keyboard button press\n"
+            << "    'id' indicates which button, as defined by irrlicht's EKEY_CODE enum\n"
+            << "Event 2 : Gamepad stick motion\n"
+            << "    'id' indicates which stick, starting from 0\n"
+            << "    'direction' 0 means negative, 1 means positive\n"
+            << "Event 3 : Gamepad button press\n"
+            << "    'id' indicates which button, starting from 0\n"
+            << "-->\n\n";
+
+        for(unsigned int n=0; n<m_keyboard_configs.size(); n++)
+        {
+            m_keyboard_configs[n].save(configfile);
+        }
+        for(unsigned int n=0; n<m_gamepad_configs.size(); n++)
+        {
+            m_gamepad_configs[n].save(configfile);
+        }
+
+        configfile << "</input>\n";
+        configfile.close();
+        file_manager->removeFile(filepath);
+        FileUtils::renameU8Path(filepath + "new", filepath);
     }
-    for(unsigned int n=0; n<m_gamepad_configs.size(); n++)
+    catch (std::exception& e)
     {
-        m_gamepad_configs[n].save(configfile);
+        Log::error("Device manager", "Failed to write %s to %s, "
+            "because %s", INPUT_FILE_NAME, filepath.c_str(), e.what());
     }
 
-    configfile << "</input>\n";
-    configfile.close();
     if(UserConfigParams::logMisc()) Log::info("Device manager","Serialization complete.");
 }   // save
 
@@ -595,6 +612,24 @@ KeyboardDevice* DeviceManager::getKeyboardFromBtnID(const int button_id)
 }   // getKeyboardFromButtonID
 
 // -----------------------------------------------------------------------------
+GamePadDevice* DeviceManager::getGamePad(const int i)
+{
+    if (i>= 0 && i < (int)m_gamepads.size())
+        return m_gamepads.get(i);
+    else
+        return NULL;
+}
+
+// -----------------------------------------------------------------------------
+KeyboardDevice* DeviceManager::getKeyboard(const int i)
+{
+    if (i >= 0 && i < (int)m_keyboards.size())
+        return m_keyboards.get(i);
+    else
+        return NULL;
+}
+
+// -----------------------------------------------------------------------------
 
 void DeviceManager::shutdown()
 {
@@ -602,5 +637,7 @@ void DeviceManager::shutdown()
     m_keyboards.clearAndDeleteAll();
     m_gamepad_configs.clearAndDeleteAll();
     m_keyboard_configs.clearAndDeleteAll();
+    delete m_multitouch_device;
+    m_multitouch_device = NULL;
     m_latest_used_device = NULL;
 }   // shutdown

@@ -73,6 +73,15 @@ void ParticleKindManager::cleanUpTrackSpecificGfx()
 }
 
 // ----------------------------------------------------------------------------
+void ParticleKindManager::preloadExplosions()
+{
+    getParticles("explosion.xml");
+    getParticles("explosion_bomb.xml");
+    getParticles("explosion_cake.xml");
+    getParticles("jump_explosion.xml");
+}   // preloadExplosions
+
+// ----------------------------------------------------------------------------
 
 ParticleKind* ParticleKindManager::getParticles(const std::string &name)
 {
@@ -86,7 +95,7 @@ ParticleKind* ParticleKindManager::getParticles(const std::string &name)
     {
         try
         {
-            Track* t = track_manager->getTrack(race_manager->getTrackName());
+            Track* t = track_manager->getTrack(RaceManager::get()->getTrackName());
             if (t)
             {
                 ParticleKind* newkind = new ParticleKind(t->getTrackFile(name));
@@ -124,3 +133,14 @@ ParticleKind* ParticleKindManager::getParticles(const std::string &name)
 }
 
 // ----------------------------------------------------------------------------
+bool ParticleKindManager::isGlobalParticleMaterial(Material* m) const
+{
+    for (auto& p : m_kinds)
+    {
+        if (p.second->getMaterial() == m)
+        {
+            return true;
+        }
+    }
+    return false;
+}

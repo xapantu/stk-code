@@ -4,6 +4,7 @@
 
 #include "CReadFile.h"
 
+#include "utils/file_utils.hpp"
 namespace irr
 {
 namespace io
@@ -73,20 +74,26 @@ void CReadFile::openFile()
 		return;
 	}
 
-#if defined ( _IRR_WCHAR_FILESYSTEM )
-	File = _wfopen(Filename.c_str(), L"rb");
-#else
-	File = fopen(Filename.c_str(), "rb");
-#endif
+	File = FileUtils::fopenU8Path(Filename.c_str(), "rb");
 
 	if (File)
 	{
-		// get FileSize
+		// get FileSize, check for errors
+		// See https://stackoverflow.com/questions/18192998/plain-c-opening-a-directory-with-fopen
 
-		fseek(File, 0, SEEK_END);
-		FileSize = getPos();
-		fseek(File, 0, SEEK_SET);
+		if (fseek(File, 0, SEEK_END) < 0)
+			goto error;
+		s32 file_size = (s32)ftell(File);
+		if (file_size == -1)
+			goto error;
+		FileSize = file_size;
+		if (fseek(File, 0, SEEK_SET) < 0)
+			goto error;
 	}
+	return;
+error:
+	fclose(File);
+	File = 0;
 }
 
 

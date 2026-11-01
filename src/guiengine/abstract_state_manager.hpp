@@ -19,6 +19,7 @@
 #ifndef HEADER_ABSTRACT_STATE_MANAGER_HPP
 #define HEADER_ABSTRACT_STATE_MANAGER_HPP
 
+#include <atomic>
 #include <vector>
 #include <string>
 #include "guiengine/engine.hpp"
@@ -36,7 +37,7 @@ namespace GUIEngine
     /**
       * \ingroup guiengine
       */
-    enum GameState
+    enum GameState : unsigned int
     {
         MENU,
         GAME,
@@ -55,15 +56,15 @@ namespace GUIEngine
         /**
          * Whether we are in game mode
          */
-        GameState m_game_mode;
+        std::atomic<GameState> m_game_mode;
 
         /**
          *  This stack will contain menu names (e.g. main.stkgui),
-         *  and/or 'race'.
+         *  and/or 'race' with screen instance pointer.
          */
-        std::vector<std::string> m_menu_stack;
+        std::vector<std::pair<std::string, Screen*>  > m_menu_stack;
 
-        void pushMenu(std::string name);
+        void pushMenu(Screen* screen);
 
         void setGameState(GameState state);
 
@@ -111,6 +112,12 @@ namespace GUIEngine
         void resetAndSetStack(Screen* screens[]);
 
         /**
+         * \brief Used in no graphics STK to enter menu screen (when server is
+         * idle state)
+         */
+        void enterMenuState() { setGameState(MENU); }
+
+        /**
           * \brief call to make the state manager enter game mode.
           * Causes the menu stack to be cleared; all widgets shown on screen
           * are removed
@@ -126,17 +133,16 @@ namespace GUIEngine
         template<typename T>
         void hardResetAndGoToScreen()
         {
-            if (m_game_mode != GAME) GUIEngine::getCurrentScreen()->tearDown();
-            m_menu_stack.clear();
+            if (m_game_mode.load() != GAME) GUIEngine::getCurrentScreen()->tearDown();
 
             GUIEngine::clearScreenCache();
 
             T* instance = T::getInstance();
 
-            m_menu_stack.push_back(instance->getName());
+            m_menu_stack.emplace_back(instance->getName(), instance);
             setGameState(MENU);
 
-            switchToScreen(instance->getName().c_str());
+            switchToScreen(instance);
             getCurrentScreen()->init();
 
             onTopMostScreenChanged();
@@ -170,7 +176,10 @@ namespace GUIEngine
         // --------------------------------------------------------------------
         /** Returns the number of screens on the stack. Is used to decide
          *  if exiting a screen would cause STK to end or not. */
-        unsigned int getMenuStackSize() const { return m_menu_stack.size(); }
+        unsigned int getMenuStackSize() const
+        {
+            return (unsigned int)m_menu_stack.size();
+        }
     };   // Class AbstractStateManager
 
 }   // GUIEngine

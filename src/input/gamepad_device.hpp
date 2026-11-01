@@ -22,6 +22,7 @@
 #include "input/input_device.hpp"
 #include "utils/cpp2011.hpp"
 
+#include <vector>
 class GamepadConfig;
 
 /**
@@ -31,22 +32,9 @@ class GamepadConfig;
 class GamePadDevice : public InputDevice
 {
     void resetAxisDirection(const int axis, Input::AxisDirection direction);
-    bool m_buttonPressed[SEvent::SJoystickEvent::NUMBER_OF_BUTTONS];
+    std::vector<bool> m_button_pressed;
 
-    Input::AxisDirection *m_prev_axis_directions;
-
-    /** used to determine if an axis is valid; an axis is considered valid
-      * when at least 2 different values are read from this axis (if an axis
-      * keeps on sending the exact same value continuously, chances are that
-      * it's not meant by the user - for instance some gamepads have hats or
-      * analog switches that get reported as axis, we even had a report that
-      * on linux some hard disks may be reported as gamepads with
-      * uninteresting axis values)
-      */
-    int                  *m_prev_axis_value;
-
-    /** \see m_prev_axis_value */
-    bool                 *m_axis_ok;
+    std::vector<Input::AxisDirection> m_prev_axis_directions;
 
     /** Irrlicht index of this gamepad. */
     int                   m_irr_index;
@@ -72,7 +60,9 @@ public:
     int getIrrIndex() const { return m_irr_index; }
 
     // ------------------------------------------------------------------------
-
+    void setIrrIndex(int i ) { m_irr_index = i; }
+    bool useForceFeedback() const;
+    int getAutoCenterStrength() const;
 };   // class GamepadDevice
 
 #endif

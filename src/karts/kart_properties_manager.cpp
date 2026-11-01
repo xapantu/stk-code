@@ -25,11 +25,13 @@
 #include "config/stk_config.hpp"
 #include "config/user_config.hpp"
 #include "graphics/irr_driver.hpp"
+#include "graphics/material_manager.hpp"
 #include "guiengine/engine.hpp"
 #include "io/file_manager.hpp"
 #include "karts/kart_properties.hpp"
 #include "karts/xml_characteristic.hpp"
 #include "utils/log.hpp"
+#include "utils/random_generator.hpp"
 #include "utils/string_utils.hpp"
 
 #include <algorithm>
@@ -38,6 +40,13 @@
 #include <stdexcept>
 #include <iostream>
 
+#ifndef SERVER_ONLY
+#include <ge_main.hpp>
+#include <ge_vulkan_driver.hpp>
+#include "graphics/stk_tex_manager.hpp"
+#include "utils/stk_process.hpp"
+#endif
+
 KartPropertiesManager *kart_properties_manager=0;
 
 std::vector<std::string> KartPropertiesManager::m_kart_search_path;
@@ -45,6 +54,8 @@ std::vector<std::string> KartPropertiesManager::m_kart_search_path;
 /** Constructor, only clears internal data structures. */
 KartPropertiesManager::KartPropertiesManager()
 {
+    m_current_favorite_status = NULL;
+    m_hat_name = "";
     m_all_groups.clear();
 }   // KartPropertiesManager
 
@@ -54,6 +65,12 @@ KartPropertiesManager::KartPropertiesManager()
 KartPropertiesManager::~KartPropertiesManager()
 {
 }   // ~KartPropertiesManager
+
+//-----------------------------------------------------------------------------
+void KartPropertiesManager::removeKartSearchDirs()
+{
+    m_kart_search_path.clear();
+}   // removeKartSearchDirs
 
 //-----------------------------------------------------------------------------
 /** Adds a directory from which karts are loaded. The kart manager checks if
@@ -76,6 +93,7 @@ void KartPropertiesManager::unloadAllKarts()
     m_selected_karts.clear();
     m_kart_available.clear();
     m_groups_2_indices.clear();
+    m_groups_2_indices_no_custom.clear();
     m_all_groups.clear();
 }   // unloadAllKarts
 
@@ -95,11 +113,35 @@ void KartPropertiesManager::removeKart(const std::string &ident)
     // Remove the just removed kart from the 'group-name to kart property
     // index' mapping. If a group is now empty (i.e. the removed kart was
     // the only member of this group), remove the group
-    const std::vector<std::string> &groups = kp->getGroups();
+    std::vector<std::string> groups = kp->getGroups();
+    if (m_current_favorite_status)
+    {
+        for (auto it = m_current_favorite_status->getAllFavorites().begin();
+                it != m_current_favorite_status->getAllFavorites().end(); it++)
+        { // User-defined groups
+            if (it->second.find(kp->getIdent()) != it->second.end())
+            {
+                groups.push_back(it->first);
+            }
+        }
+    }
 
     for (unsigned int i=0; i<groups.size(); i++)
     {
         std::vector<int> ::iterator it;
+        it = std::find(m_groups_2_indices_no_custom[groups[i]].begin(),
+                       m_groups_2_indices_no_custom[groups[i]].end(),   index);
+        // Handle no custom group first
+        if(it!=m_groups_2_indices_no_custom[groups[i]].end())
+        {
+            m_groups_2_indices_no_custom[groups[i]].erase(it);
+
+            if(m_groups_2_indices_no_custom[groups[i]].size()==0)
+            {
+                m_groups_2_indices_no_custom.erase(groups[i]);
+            }
+        }
+
         it = std::find(m_groups_2_indices[groups[i]].begin(),
                        m_groups_2_indices[groups[i]].end(),   index);
         // Since we are iterating over all groups the kart belongs to,
@@ -125,6 +167,15 @@ void KartPropertiesManager::removeKart(const std::string &ident)
     // kart property index' mapping: all kart properties with an index
     // greater than index were moved one position further to the beginning
     std::map<std::string, std::vector<int> >::iterator it_gr;
+    for(it_gr=m_groups_2_indices_no_custom.begin(); it_gr != m_groups_2_indices_no_custom.end();
+        it_gr++)
+    {
+        for(unsigned int i=0; i<(*it_gr).second.size(); i++)
+        {
+            if( (*it_gr).second[i]>index)
+                (*it_gr).second[i]--;
+        }
+    }
     for(it_gr=m_groups_2_indices.begin(); it_gr != m_groups_2_indices.end();
         it_gr++)
     {
@@ -149,6 +200,11 @@ void KartPropertiesManager::loadAllKarts(bool loading_icon)
 {
     m_all_kart_dirs.clear();
     std::vector<std::string>::const_iterator dir;
+    if (stk_config->m_min_kart_version > stk_config->m_max_kart_version)
+    {
+        Log::fatal("KartPropertiesManager", "The max kart version "
+            "is smaller than the min kart version!");
+    }
     for(dir = m_kart_search_path.begin(); dir!=m_kart_search_path.end(); dir++)
     {
         // First check if there is a kart in the current directory
@@ -159,6 +215,7 @@ void KartPropertiesManager::loadAllKarts(bool loading_icon)
         // --------------------------------------------
         std::set<std::string> result;
         file_manager->listFiles(result, *dir);
+        GUIEngine::reserveLoadingIcons(result.size());
         for(std::set<std::string>::const_iterator subdir=result.begin();
             subdir!=result.end(); subdir++)
         {
@@ -215,6 +272,7 @@ void KartPropertiesManager::loadCharacteristics(const XMLNode *root)
     for (const XMLNode *type : nodes)
     {
         type->get("name", &name);
+        m_kart_types.push_back(name);
         m_kart_type_characteristics.insert(std::pair<const std::string,
             std::unique_ptr<AbstractCharacteristic> >(name,
             std::unique_ptr<AbstractCharacteristic>(new XmlCharacteristic(type))));
@@ -248,26 +306,25 @@ bool KartPropertiesManager::loadKart(const std::string &dir)
     }
     catch (std::runtime_error& err)
     {
-        Log::error("[KartPropertiesManager]", "Giving up loading '%s': %s",
-                    config_filename.c_str(), err.what());
-        return false;
-    }
-
-    // If the version of the kart file is not supported,
-    // ignore this .kart file
-    if (kart_properties->getVersion() < stk_config->m_min_kart_version ||
-        kart_properties->getVersion() > stk_config->m_max_kart_version)
-    {
-        Log::warn("[KartPropertiesManager]", "Warning: kart '%s' is not "
-                  "supported by this binary, ignored.",
-                  kart_properties->getIdent().c_str());
-        delete kart_properties;
+        char ver[] = "version";
+        if (strcmp(err.what(), ver) == 0)
+        {
+            Log::warn("[KartPropertiesManager]", "Warning: kart '%s' is not "
+                        "supported by this binary, ignored.", config_filename.c_str());
+        }
+        else
+        {
+            Log::error("[KartPropertiesManager]", "Giving up loading '%s': %s",
+                        config_filename.c_str(), err.what());
+        }
         return false;
     }
 
     m_karts_properties.push_back(kart_properties);
     m_kart_available.push_back(true);
-    const std::vector<std::string>& groups=kart_properties->getGroups();
+
+    std::vector<std::string> groups=kart_properties->getGroups();
+
     for(unsigned int g=0; g<groups.size(); g++)
     {
         if(m_groups_2_indices.find(groups[g])==m_groups_2_indices.end())
@@ -275,6 +332,7 @@ bool KartPropertiesManager::loadKart(const std::string &dir)
             m_all_groups.push_back(groups[g]);
         }
         m_groups_2_indices[groups[g]].push_back(m_karts_properties.size()-1);
+        m_groups_2_indices_no_custom[groups[g]].push_back(m_karts_properties.size()-1);
     }
     m_all_kart_dirs.push_back(dir);
     return true;
@@ -286,9 +344,21 @@ bool KartPropertiesManager::loadKart(const std::string &dir)
   */
 void KartPropertiesManager::setHatMeshName(const std::string &hat_name)
 {
+    m_hat_name = hat_name;
+    setHatMeshName();
+}   // setHatMeshName
+
+//-----------------------------------------------------------------------------
+/** Sets the name of a mesh to use as a hat for all karts, using the stored m_hat_name
+  */
+void KartPropertiesManager::setHatMeshName()
+{
+    if (m_hat_name.empty())
+        return;
+
     for (unsigned int i=0; i<m_karts_properties.size(); i++)
     {
-        m_karts_properties[i].setHatMeshName(hat_name);
+        m_karts_properties[i].setHatMeshName(m_hat_name);
     }
 }   // setHatMeshName
 
@@ -303,10 +373,24 @@ const AbstractCharacteristic* KartPropertiesManager::getDifficultyCharacteristic
 }   // getDifficultyCharacteristic
 
 //-----------------------------------------------------------------------------
-const AbstractCharacteristic* KartPropertiesManager::getKartTypeCharacteristic(const std::string &type) const
+const AbstractCharacteristic* KartPropertiesManager::getKartTypeCharacteristic(const std::string &type,
+                                                                               const std::string &name) const
 {
+    bool type_is_valid = false;
+    for (unsigned i=0; i < m_kart_types.size(); i++)
+    {
+        if (type == m_kart_types[i])
+            type_is_valid = true;
+    }
+
+    if (!type_is_valid)
+        Log::warn("KartProperties", "Can't find kart type '%s' for kart '%s', defaulting to '%s'.",
+            type.c_str(), name.c_str(), getDefaultKartType().c_str());
+
+    const std::string& valid_type = (type_is_valid) ? type : getDefaultKartType();
+
     std::map<std::string, std::unique_ptr<AbstractCharacteristic> >::const_iterator
-        it = m_kart_type_characteristics.find(type);
+        it = m_kart_type_characteristics.find(valid_type);
     if (it == m_kart_type_characteristics.cend())
         return nullptr;
     return it->second.get();
@@ -427,6 +511,50 @@ bool KartPropertiesManager::testAndSetKart(int kartid)
 }   // kartAvailable
 
 //-----------------------------------------------------------------------------
+void KartPropertiesManager::setFavoriteKartStatus(FavoriteStatus *status)
+{
+    m_groups_2_indices = m_groups_2_indices_no_custom;
+
+    m_current_favorite_status = status;
+
+    if (status)
+    {
+        // Add all user-defined groups
+        for (auto it = status->getAllFavorites().begin(); it != status->getAllFavorites().end(); it++)
+        {
+            for (auto it_name = it->second.begin(); it_name != it->second.end(); it_name++)
+            {
+                for (unsigned int i=0; i<m_karts_properties.size(); i++)
+                {
+                    if (m_karts_properties[i].getIdent() == *it_name)
+                    {
+                        m_groups_2_indices[it->first].push_back(i);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    std::map<std::string, std::vector<int> > &g2i = m_groups_2_indices;
+    std::vector<std::string> &gn = m_all_groups;
+    gn.clear();
+
+    for (auto it = g2i.begin(); it != g2i.end(); it++)
+    {
+        std::sort(it->second.begin(), it->second.end());
+        auto unique_end = std::unique(it->second.begin(), it->second.end());
+        it->second.erase(unique_end, it->second.end());
+        gn.push_back(it->first);
+    }
+    // Make sure the order of groups are correct
+    std::sort(gn.begin(), gn.end(), [&, g2i](std::string &a, std::string &b)->bool{
+        int x = g2i.find(a)->second[0], y = g2i.find(b)->second[0];
+        return x == y ? a < b : x < y;
+    });
+}   // setFavoriteKartStatus
+
+//-----------------------------------------------------------------------------
 /** Returns true if a kart is available to be selected. A kart is available to
  *  be selected if it is available on all clients (i.e. m_kart_available is
  *  true), not yet selected, and not locked.
@@ -462,8 +590,7 @@ void KartPropertiesManager::selectKartName(const std::string &kart_name)
  *           determined
  *  \return A vector of indices with the karts in the given group.
  */
-const std::vector<int> KartPropertiesManager::getKartsInGroup(
-                                                          const std::string& g)
+const std::vector<int> KartPropertiesManager::getKartsInGroup(const std::string& g)
 {
     if (g == ALL_KART_GROUPS_ID)
     {
@@ -494,7 +621,7 @@ const std::vector<int> KartPropertiesManager::getKartsInGroup(
  *                        to this list.
  */
 void KartPropertiesManager::getRandomKartList(int count,
-                                            RemoteKartInfoList& existing_karts,
+                                            RemoteKartInfoList* existing_karts,
                                             std::vector<std::string> *ai_list)
 {
     // First: set up flags (based on global kart
@@ -504,18 +631,22 @@ void KartPropertiesManager::getRandomKartList(int count,
     used.resize(getNumberOfKarts(), false);
 
     std::vector<std::string> random_kart_queue;
-    for (unsigned int i=0; i<existing_karts.size(); i++)
+    if (existing_karts != NULL)
     {
-        try
+        for (unsigned int i=0; i<existing_karts->size(); i++)
         {
-            int id = getKartId(existing_karts[i].getKartName());
-            used[id] = true;
-        }
-        catch (std::runtime_error& ex)
-        {
-            (void)ex;
-            Log::error("[KartPropertiesManager]", "getRandomKartList : WARNING, "
-                "can't find kart '%s'", existing_karts[i].getKartName().c_str());
+            try
+            {
+                int id = getKartId((*existing_karts)[i].getKartName());
+                used[id] = true;
+            }
+            catch (std::runtime_error& ex)
+            {
+                (void)ex;
+                Log::error("[KartPropertiesManager]", "getRandomKartList : "
+                    "WARNING, can't find kart '%s'",
+                    (*existing_karts)[i].getKartName().c_str());
+            }
         }
     }
     for(unsigned int i=0; i<ai_list->size(); i++)
@@ -542,7 +673,8 @@ void KartPropertiesManager::getRandomKartList(int count,
             std::vector<int> karts_in_group =
                 getKartsInGroup(UserConfigParams::m_last_used_kart_group);
 
-            assert(karts_in_group.size() > 0);
+            if (karts_in_group.empty())
+                karts_in_group = getKartsInGroup(DEFAULT_GROUP_NAME);
 
             // first try not to use a kart already used by a player
             for (unsigned int i=0; i<karts_in_group.size(); i++)
@@ -569,8 +701,9 @@ void KartPropertiesManager::getRandomKartList(int count,
 
             assert(random_kart_queue.size() > 0);
 
-            std::random_shuffle(random_kart_queue.begin(),
-                                random_kart_queue.end()   );
+            std::shuffle(random_kart_queue.begin(),
+                         random_kart_queue.end(),
+                         RandomGenerator::getGenerator());
         }
 
         while (count > 0 && random_kart_queue.size() > 0)
@@ -585,5 +718,85 @@ void KartPropertiesManager::getRandomKartList(int count,
     // There should always be enough karts
     assert(count==0);
 }   // getRandomKartList
+
+//-----------------------------------------------------------------------------
+void KartPropertiesManager::onDemandLoadKartTextures(
+                                        const std::set<std::string>& kart_list,
+                                                            bool unload_unused)
+{
+#ifndef SERVER_ONLY
+    if (STKProcess::getType() != PT_MAIN || kart_list.empty())
+        return;
+
+    GE::GEVulkanDriver* gevd = GE::getVKDriver();
+    if (!gevd)
+        return;
+    gevd->waitIdle();
+    gevd->setDisableWaitIdle(true);
+
+    std::set<std::string> karts_folder;
+    for (auto& dir : m_kart_search_path)
+    {
+        std::string kart_dir = file_manager->getFileSystem()
+            ->getAbsolutePath(dir.c_str()).c_str();
+        karts_folder.insert(StringUtils::getPath(kart_dir));
+    }
+
+    std::set<std::string> ingame_karts_folder;
+    for (auto& kart : kart_list)
+    {
+        const KartProperties* kp = getKart(kart);
+        if (!kp)
+            continue;
+        std::string kart_dir = file_manager->getFileSystem()
+            ->getAbsolutePath(kp->getKartDir().c_str()).c_str();
+        ingame_karts_folder.insert(StringUtils::getPath(kart_dir));
+    }
+
+    bool unloaded_unused = false;
+    for (auto tex : STKTexManager::getInstance()->getAllTextures())
+    {
+        if (!tex.second || !tex.second->useOnDemandLoad())
+            continue;
+        std::string full_path = tex.second->getFullPath().c_str();
+        bool is_kart_texture = false;
+        bool in_use = false;
+        for (auto& dir : karts_folder)
+        {
+            if (StringUtils::startsWith(full_path, dir))
+            {
+                is_kart_texture = true;
+                break;
+            }
+        }
+        if (is_kart_texture)
+        {
+            for (auto& dir : ingame_karts_folder)
+            {
+                if (StringUtils::startsWith(full_path, dir) &&
+                    material_manager->getMaterialFor(tex.second))
+                {
+                    in_use = true;
+                    break;
+                }
+            }
+        }
+        // This will load the ondemand kart textures now or unload the unused
+        // kart textures
+        if (in_use)
+            tex.second->getTextureHandler();
+        else if (unload_unused)
+        {
+            unloaded_unused = true;
+            tex.second->reload();
+        }
+    }
+
+    gevd->setDisableWaitIdle(false);
+    if (unloaded_unused)
+        gevd->handleDeletedTextures();
+#endif
+}   // onDemandLoadKartTextures
+
 
 /* EOF */

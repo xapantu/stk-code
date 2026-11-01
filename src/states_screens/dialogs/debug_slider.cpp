@@ -32,14 +32,13 @@ using namespace GUIEngine;
 
 // ------------------------------------------------------------------------------------------------------
 
-DebugSliderDialog::DebugSliderDialog() : ModalDialog(0.85f, 0.25f, MODAL_DIALOG_LOCATION_BOTTOM)
+DebugSliderDialog::DebugSliderDialog() : ModalDialog(0.85f, 0.45f, MODAL_DIALOG_LOCATION_BOTTOM)
 {
     m_fade_background = false;
 
     loadFromFile("debug_slider.stkgui");
 }
 
-#if !defined(__APPLE__)
 void DebugSliderDialog::setSliderHook(std::string id, unsigned min, unsigned max, std::function<int()> G, std::function<void(int)> S)
 {
     getWidget<SpinnerWidget>(id.c_str())->setValue(G());
@@ -47,13 +46,19 @@ void DebugSliderDialog::setSliderHook(std::string id, unsigned min, unsigned max
     getWidget<SpinnerWidget>(id.c_str())->setMax(max);
     Setters[id] = S;
 }
-#endif
 
 // ------------------------------------------------------------------------------------------------------
 
 void DebugSliderDialog::changeLabel(std::string id, std::string new_label)
 {
     getWidget<LabelWidget>(id.c_str())->setText(stringw(new_label.c_str()), true);
+}
+
+// ------------------------------------------------------------------------------------------------------
+
+void DebugSliderDialog::toggleSlider(std::string id, bool option)
+{
+    getWidget<SpinnerWidget>(id.c_str())->setActive(option);
 }
 
 // ------------------------------------------------------------------------------------------------------
@@ -66,7 +71,12 @@ void DebugSliderDialog::onEnterPressedInternal()
 
 GUIEngine::EventPropagation DebugSliderDialog::processEvent(const std::string& eventSource)
 {
-#if !defined(__APPLE__)
+    if (eventSource == "close")
+    {
+        ModalDialog::dismiss();
+        return GUIEngine::EVENT_BLOCK;
+    }
+
     if (Setters.find(eventSource) == Setters.end())
         return GUIEngine::EVENT_LET;
 
@@ -74,9 +84,6 @@ GUIEngine::EventPropagation DebugSliderDialog::processEvent(const std::string& e
     Log::info("DebugSlider", "Value for <%s> : %i", eventSource.c_str(), value);
     Setters[eventSource](value);
     return GUIEngine::EVENT_BLOCK;
-#else
-    return GUIEngine::EVENT_LET;
-#endif
 }
 
 // ------------------------------------------------------------------------------------------------------

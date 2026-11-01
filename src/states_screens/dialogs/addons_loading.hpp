@@ -21,11 +21,11 @@
 
 #include "addons/addon.hpp"
 #include "addons/addons_manager.hpp"
-#include "guiengine/widgets.hpp"
 #include "guiengine/modaldialog.hpp"
 #include "utils/cpp2011.hpp"
 #include "utils/synchronised.hpp"
 
+namespace GUIEngine { class IconButtonWidget; class ProgressBarWidget; }
 namespace Online { class HTTPRequest; }
 
 /**
@@ -41,7 +41,9 @@ private:
     GUIEngine::IconButtonWidget  *m_icon;
     
     /** The addon to load. */
+#ifndef SERVER_ONLY
     Addon                         m_addon;
+#endif
     void startDownload();
     void stopDownload();
     void doInstall();
@@ -49,10 +51,13 @@ private:
 
     /** True if the icon is being displayed. */
     bool m_icon_shown;
+    /** True if the error message has shown once. */
+    bool m_message_shown;
 
+    std::shared_ptr<bool> m_icon_downloaded;
     /** A pointer to the download request, which gives access
      *  to the progress of a download. */
-    Online::HTTPRequest *m_download_request;
+    std::shared_ptr<Online::HTTPRequest> m_download_request;
 
 public:
     AddonsLoading(const std::string &addon_name);
@@ -69,6 +74,7 @@ public:
      * */
     void onUpdate(float delta) OVERRIDE;
     void voteClicked();
+    void tryInstall();
     virtual bool onEscapePressed() OVERRIDE;
     
 };   // AddonsLoading

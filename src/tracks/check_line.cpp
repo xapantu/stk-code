@@ -20,16 +20,20 @@
 
 #include "config/user_config.hpp"
 #include "graphics/irr_driver.hpp"
-#include "graphics/glwrap.hpp"
+#include "graphics/material_manager.hpp"
+#include "graphics/sp/sp_dynamic_draw_call.hpp"
+#include "graphics/sp/sp_shader_manager.hpp"
 #include "io/xml_node.hpp"
 #include "karts/abstract_kart.hpp"
 #include "modes/linear_world.hpp"
 #include "modes/world.hpp"
+#include "network/network_string.hpp"
 #include "race/race_manager.hpp"
-
-#include "irrlicht.h"
+#include "tracks/graph.hpp"
+#include "tracks/quad.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <string>
 
 /** Constructor for a checkline.
@@ -39,86 +43,114 @@
 CheckLine::CheckLine(const XMLNode &node,  unsigned int index)
          : CheckStructure(node, index)
 {
+    m_ignore_height = false;
     // Note that when this is called the karts have not been allocated
     // in world, so we can't call world->getNumKarts()
-    m_previous_sign.resize(race_manager->getNumberOfKarts());
+    m_previous_sign.resize(RaceManager::get()->getNumberOfKarts());
     std::string p1_string("p1");
     std::string p2_string("p2");
 
     // In case of a cannon in a reverse track, we have to use the target line
     // as check line
-    if(getType()==CT_CANNON && race_manager->getReverseTrack())
+    if(getType()==CT_CANNON && RaceManager::get()->getReverseTrack())
     {
         p1_string = "target-p1";
         p2_string = "target-p2";
     }
+    float min_height = 0.0f;
+    Vec3 normal(0, 1, 0);
+    Vec3 center;
     core::vector2df p1, p2;
     if(node.get(p1_string, &p1)   &&
         node.get(p2_string, &p2)  &&
-        node.get("min-height", &m_min_height))
+        node.get("min-height", &min_height))
     {
-        m_left_point  = Vec3(p1.X, m_min_height, p1.Y);
-        m_right_point = Vec3(p2.X, m_min_height, p2.Y);
+        m_left_point  = Vec3(p1.X, min_height, p1.Y);
+        m_right_point = Vec3(p2.X, min_height, p2.Y);
+        center = (m_left_point + m_right_point) * 0.5f;
     }
     else
     {
         node.get(p1_string, &m_left_point);
-        p1 = core::vector2df(m_left_point.getX(), m_left_point.getZ());
         node.get(p2_string, &m_right_point);
-        p2 = core::vector2df(m_right_point.getX(), m_right_point.getZ());
-        m_min_height = std::min(m_left_point.getY(), m_right_point.getY());
+        center = (m_left_point + m_right_point) * 0.5f;
+        int sector = -1;
+        if (Graph::get())
+            Graph::get()->findRoadSector(center, &sector);
+        if (sector != -1)
+            normal = Graph::get()->getQuad(sector)->getNormal();
     }
-    m_line.setLine(p1, p2);
-    if(UserConfigParams::m_check_debug)
-    {
-        video::SMaterial material;
-        material.setFlag(video::EMF_BACK_FACE_CULLING, false);
-        material.setFlag(video::EMF_LIGHTING, false);
-        material.MaterialType = video::EMT_TRANSPARENT_ADD_COLOR;
-        scene::IMesh *mesh = irr_driver->createQuadMesh(&material,
-                                                        /*create mesh*/true);
-        scene::IMeshBuffer *buffer = mesh->getMeshBuffer(0);
 
-        assert(buffer->getVertexType()==video::EVT_STANDARD);
-        irr::video::S3DVertex* vertices
-            = (video::S3DVertex*)buffer->getVertices();
-        vertices[0].Pos = core::vector3df(p1.X,
-                                          m_min_height-m_under_min_height,
-                                          p1.Y);
-        vertices[1].Pos = core::vector3df(p2.X,
-                                          m_min_height-m_under_min_height,
-                                          p2.Y);
-        vertices[2].Pos = core::vector3df(p2.X,
-                                          m_min_height+m_over_min_height,
-                                          p2.Y);
-        vertices[3].Pos = core::vector3df(p1.X,
-                                          m_min_height+m_over_min_height,
-                                          p1.Y);
-        for(unsigned int i=0; i<4; i++)
-        {
-            vertices[i].Color = m_active_at_reset
-                              ? video::SColor(128, 255, 0, 0)
-                              : video::SColor(128, 128, 128, 128);
-        }
-        buffer->recalculateBoundingBox();
-        buffer->getMaterial().setTexture(0, getUnicolorTexture(video::SColor(128, 255, 105, 180)));
-        buffer->getMaterial().setTexture(1, getUnicolorTexture(video::SColor(0, 0, 0, 0)));
-        buffer->getMaterial().BackfaceCulling = false;
-        //mesh->setBoundingBox(buffer->getBoundingBox());
-        m_debug_node = irr_driver->addMesh(mesh, "checkdebug");
-        mesh->drop();
-    }
-    else
+    // How much a kart is allowed to be under the minimum height of a
+    // quad and still considered to be able to cross it.
+    float under_min_height = 1.0f;
+
+    // How much a kart is allowed to be over the minimum height of a
+    // quad and still considered to be able to cross it.
+    float over_min_height = 4.0f;
+
+    m_check_plane[0].pointA = Vec3(m_left_point + (normal *
+        under_min_height * -1.0f)).toIrrVector();
+    m_check_plane[0].pointB = Vec3(m_right_point + (normal *
+        under_min_height * -1.0f)).toIrrVector();
+    m_check_plane[0].pointC = Vec3(m_left_point + (normal *
+        over_min_height)).toIrrVector();
+    m_check_plane[1].pointA = Vec3(m_left_point + (normal *
+        over_min_height)).toIrrVector();
+    m_check_plane[1].pointB = Vec3(m_right_point + (normal *
+        under_min_height * -1.0f)).toIrrVector();
+    m_check_plane[1].pointC = Vec3(m_right_point + (normal *
+        over_min_height)).toIrrVector();
+
+    // 2, 3 are scaled for testing ignoring height (used only by basketball atm)
+    // Only scale upwards a little because basket ball cannot be too high
+    // Also to avoid check plane overlapping
+    over_min_height = 10.0f;
+    m_check_plane[2].pointA = Vec3(m_left_point + (normal *
+        under_min_height * -1.0f)).toIrrVector();
+    m_check_plane[2].pointB = Vec3(m_right_point + (normal *
+        under_min_height * -1.0f)).toIrrVector();
+    m_check_plane[2].pointC = Vec3(m_left_point + (normal *
+        over_min_height)).toIrrVector();
+    m_check_plane[3].pointA = Vec3(m_left_point + (normal *
+        over_min_height)).toIrrVector();
+    m_check_plane[3].pointB = Vec3(m_right_point + (normal *
+        under_min_height * -1.0f)).toIrrVector();
+    m_check_plane[3].pointC = Vec3(m_right_point + (normal *
+        over_min_height)).toIrrVector();
+
+    if(UserConfigParams::m_check_debug && !GUIEngine::isNoGraphics())
     {
-        m_debug_node = NULL;
+#ifndef SERVER_ONLY
+        m_debug_dy_dc = std::make_shared<SP::SPDynamicDrawCall>
+            (scene::EPT_TRIANGLE_STRIP,
+            SP::SPShaderManager::get()->getSPShader("additive"),
+            material_manager->getDefaultSPMaterial("additive"));
+        SP::addDynamicDrawCall(m_debug_dy_dc);
+        m_debug_dy_dc->getVerticesVector().resize(4);
+        auto& vertices = m_debug_dy_dc->getVerticesVector();
+        vertices[0].m_position = m_check_plane[0].pointA;
+        vertices[1].m_position = m_check_plane[0].pointB;
+        vertices[2].m_position = m_check_plane[0].pointC;
+        vertices[3].m_position = m_check_plane[1].pointC;
+        for(unsigned int i = 0; i < 4; i++)
+        {
+            vertices[i].m_color = m_active_at_reset
+                               ? video::SColor(128, 255, 0, 0)
+                               : video::SColor(128, 128, 128, 128);
+        }
+        m_debug_dy_dc->recalculateBoundingBox();
+#endif
     }
 }   // CheckLine
 
 // ----------------------------------------------------------------------------
 CheckLine::~CheckLine()
 {
-    if(m_debug_node)
-        irr_driver->removeNode(m_debug_node);
+    if (m_debug_dy_dc)
+    {
+        m_debug_dy_dc->removeFromSP();
+    }
 
 }   // CheckLine
 // ----------------------------------------------------------------------------
@@ -128,97 +160,125 @@ void CheckLine::reset(const Track &track)
 
     for (unsigned int i = 0; i<m_previous_sign.size(); i++)
     {
-        core::vector2df p = m_previous_position[i].toIrrVector2d();
-        m_previous_sign[i] = m_line.getPointOrientation(p) >= 0;
+        m_previous_sign[i] = m_previous_position[i].sideofPlane(
+            m_check_plane[0].pointA,
+            m_check_plane[0].pointB, m_check_plane[0].pointC) >= 0;
     }
 }   // reset
 
 // ----------------------------------------------------------------------------
+void CheckLine::resetAfterKartMove(unsigned int kart_index)
+{
+    if (m_previous_position.empty()) return;
+    AbstractKart *kart = World::getWorld()->getKart(kart_index);
+    m_previous_position[kart_index] = kart->getXYZ();
+}   // resetAfterKartMove
+
+// ----------------------------------------------------------------------------
 void CheckLine::changeDebugColor(bool is_active)
 {
-    assert(m_debug_node);
-
-    scene::IMesh *mesh         = m_debug_node->getMesh();
-    scene::IMeshBuffer *buffer = mesh->getMeshBuffer(0);
-    irr::video::S3DVertex* vertices
-                               = (video::S3DVertex*)buffer->getVertices();
+    if (!m_debug_dy_dc)
+        return;
     video::SColor color = is_active ? video::SColor(192, 255, 0, 0)
                                     : video::SColor(192, 128, 128, 128);
-    for(unsigned int i=0; i<4; i++)
+    for(unsigned int i = 0; i < 4; i++)
     {
-        vertices[i].Color = color;
+        m_debug_dy_dc->getVerticesVector()[i].m_color = color;
     }
-    buffer->getMaterial().setTexture(0, getUnicolorTexture(color));
-
+    m_debug_dy_dc->setUpdateOffset(0);
 }   // changeDebugColor
 
 // ----------------------------------------------------------------------------
 /** True if going from old_pos to new_pos crosses this checkline. This function
  *  is called from update (of the checkline structure).
- *  \param old_pos  Position in previous frame.
- *  \param new_pos  Position in current frame.
- *  \param indx     Index of the kart, can be used to store kart specific
- *                  additional data.
+ *  \param old_pos   Position in previous frame.
+ *  \param new_pos   Position in current frame.
+ *  \param kart_indx Index of the kart, can be used to store kart specific
+ *                   additional data. If set to a negative number it will
+ *                   be ignored (used for e.g. soccer ball, and basket ball).
  */
 bool CheckLine::isTriggered(const Vec3 &old_pos, const Vec3 &new_pos,
-    unsigned int kart_index)
+                            int kart_index)
 {
     World* w = World::getWorld();
-    core::vector2df p=new_pos.toIrrVector2d();
-    bool sign = m_line.getPointOrientation(p)>=0;
-    bool result;
+    // Battle mode does not use checklines, and spare tire karts
+    // would trigger an OOB issue (see #5536 and #5689)
+    if (RaceManager::get()->isBattleMode() && getType() != CT_CANNON)
+        return false;
 
-    bool previous_sign;
+    // TODO: Once compatibility doesn't matter, the sign variable
+    // can be fully removed, see comment below.
+    // Sign here is for old client (<= 1.2) in networking, it's not used
+    // anymore now
+    bool sign = new_pos.sideofPlane(m_check_plane[0].pointA,
+        m_check_plane[0].pointB, m_check_plane[0].pointC) >= 0;
+    bool result = false;
 
-    if (kart_index == -1)
+    bool ignore_height = m_ignore_height;
+    bool check_line_debug = false;
+start:
+    irr::core::triangle3df* check_plane =
+        ignore_height ? &m_check_plane[2] : &m_check_plane[0];
+    core::line3df test(old_pos.toIrrVector(), new_pos.toIrrVector());
+    core::vector3df intersect;
+    if (check_plane[0].getIntersectionWithLimitedLine(test, intersect) ||
+        check_plane[1].getIntersectionWithLimitedLine(test, intersect))
     {
-        core::vector2df p = old_pos.toIrrVector2d();
-        previous_sign = (m_line.getPointOrientation(p) >= 0);
-    }
-    else
-    {
-        previous_sign = m_previous_sign[kart_index];
-    }
-
-    // If the sign has changed, i.e. the infinite line was crossed somewhere,
-    // check if the finite line was actually crossed:
-    if (sign != previous_sign &&
-        m_line.intersectWith(core::line2df(old_pos.toIrrVector2d(),
-                                           new_pos.toIrrVector2d()),
-                             m_cross_point) )
-    {
-        // Now check the minimum height: the kart position must be within a
-        // reasonable distance in the Z axis - 'reasonable' for now to be
-        // between -1 and 4 units (negative numbers are unlikely, but help
-        // in case that the kart is 'somewhat' inside of the track, or the
-        // checklines are a bit off in Z direction.
-        result = new_pos.getY()-m_min_height<m_over_min_height   &&
-                 new_pos.getY()-m_min_height>-m_under_min_height;
-        if(UserConfigParams::m_check_debug && !result)
+        if (UserConfigParams::m_check_debug && check_line_debug)
         {
-            if(World::getWorld()->getNumKarts()>0)
-                Log::info("CheckLine", "Kart %s crosses line, but wrong height "
-                          "(%f vs %f).",
-                          World::getWorld()->getKart(kart_index)->getIdent().c_str(),
-                          new_pos.getY(), m_min_height);
+            if (kart_index >= 0)
+            {
+                Log::info("CheckLine", "Kart %s crosses line, but wrong height.",
+                    World::getWorld()->getKart(kart_index)->getIdent().c_str());
+            }
             else
-                Log::info("CheckLine", "Kart %d crosses line, but wrong height "
-                          "(%f vs %f).",
-                          kart_index, new_pos.getY(), m_min_height);
-
+            {
+                Log::info("CheckLine", "Object crosses line, but wrong height.");
+            }
         }
+        else
+            result = true;
     }
-    else
-        result = false;
-
-    if (kart_index != -1)
-        m_previous_sign[kart_index] = sign;
-
-    if (result && kart_index != -1)
+    else if (UserConfigParams::m_check_debug && !ignore_height &&
+        !check_line_debug)
     {
-        LinearWorld* lw = dynamic_cast<LinearWorld*>(w);
-        if (lw != NULL)
-            lw->setLastTriggeredCheckline(kart_index, m_index);
+        check_line_debug = true;
+        ignore_height = true;
+        goto start;
+    }
+
+    if (kart_index >= 0)
+    {
+        assert(kart_index < (int)m_previous_sign.size());
+        m_previous_sign[kart_index] = sign;
+        if (result)
+        {
+            LinearWorld* lw = dynamic_cast<LinearWorld*>(w);
+            if (triggeringCheckline() && lw != NULL)
+                lw->setLastTriggeredCheckline(kart_index, m_index);
+        }
     }
     return result;
 }   // isTriggered
+
+// ----------------------------------------------------------------------------
+void CheckLine::saveCompleteState(BareNetworkString* bns)
+{
+    CheckStructure::saveCompleteState(bns);
+    World* world = World::getWorld();
+    for (unsigned int i = 0; i < world->getNumKarts(); i++)
+        bns->addUInt8(m_previous_sign[i] ? 1 : 0);
+}   // saveCompleteState
+
+// ----------------------------------------------------------------------------
+void CheckLine::restoreCompleteState(const BareNetworkString& b)
+{
+    CheckStructure::restoreCompleteState(b);
+    m_previous_sign.clear();
+    World* world = World::getWorld();
+    for (unsigned int i = 0; i < world->getNumKarts(); i++)
+    {
+        bool previous_sign = b.getUInt8() == 1;
+        m_previous_sign.push_back(previous_sign);
+    }
+}   // restoreCompleteState

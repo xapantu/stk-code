@@ -42,15 +42,18 @@ class DeviceConfig : public NoCopy
 {
 
 private:
-    /** If set to false, this device will be ignored. 
+    /** If set to false, this device will be ignored.
      *  Currently for gamepads only. */
     bool m_enabled;
 
     /** How many devices connected to the system which uses this config? */
-    int m_plugged; 
+    int m_plugged;
 
-    /** Name of this configuratiom. */
+    /** Internal name of this configuration. */
     std::string m_name;
+
+    /** Name of this configuration (given by the user). */
+    irr::core::stringw m_config_name;
 
 protected:
 
@@ -86,8 +89,7 @@ public:
                     const Input::InputType type,
                     const int              id,
                     Input::AxisDirection   direction = Input::AD_NEUTRAL,
-                    Input::AxisRange       range     = Input::AR_HALF,
-                    wchar_t                character=0);
+                    Input::AxisRange       range     = Input::AR_HALF);
     bool getMenuAction(Input::InputType       type,
                        const int              id,
                        int*                   value,
@@ -103,7 +105,7 @@ public:
     // ------------------------------------------------------------------------
     /** Returns true if this device has analog axis, so that steering values
      *  will not be affected by time-full-steer delays. */
-    virtual bool isAnalog() const { return false;}
+    virtual bool isAnalog(Input::InputType type, int id) const { return false;}
     // ------------------------------------------------------------------------
     /** Returns true if this device should desensitize its input at values
      *  close to 0 (to avoid 'oversteering'). */
@@ -125,11 +127,11 @@ public:
     }   // getNumberOfAxes
 
     // ------------------------------------------------------------------------
-    /** Sets the name of this device. */
+    /** Sets the internal name of this device. */
     void setName(const std::string &name) { m_name = name; }
 
     // ------------------------------------------------------------------------
-    /** Returns the name for this device configuration. */
+    /** Returns the internal name for this device configuration. */
     const std::string& getName() const { return m_name; };
 
     // ------------------------------------------------------------------------
@@ -141,6 +143,14 @@ public:
     bool isPlugged() const { return m_plugged > 0; }
 
     // ------------------------------------------------------------------------
+    /** Decrease ref counter. */
+    void unPlugged()
+    {
+        m_plugged--;
+        assert(m_plugged >= 0);
+    }
+
+    // ------------------------------------------------------------------------
     /** Returns the number of devices using this configuration. */
     int getNumberOfDevices() const { return m_plugged;     }
 
@@ -149,12 +159,19 @@ public:
     const Binding& getBinding(int i) const {return m_bindings[i];}
 
     // ------------------------------------------------------------------------
-    /** At this time only relevant for gamepads, keyboards are always enabled */
     bool isEnabled() const { return m_enabled; }
 
     // ------------------------------------------------------------------------
     /** Sets this config to be enabled or disabled. */
     void setEnabled(bool new_value) { m_enabled = new_value; }
+
+    // ------------------------------------------------------------------------
+    /** Sets the name of this device configuration */
+    irr::core::stringw getConfigName() const { return m_config_name;  }
+
+    // ------------------------------------------------------------------------
+    /** Returns the name of this device configuration */
+    void setConfigName( irr::core::stringw config_name ) { m_config_name = config_name; }
 };   // class DeviceConfig
 
 #endif

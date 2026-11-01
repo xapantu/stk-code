@@ -23,7 +23,9 @@
 #include "utils/ptr_vector.hpp"
 #include <map>
 #include <memory>
+#include <set>
 
+#include "config/favorite_status.hpp"
 #include "network/remote_kart_info.hpp"
 #include "utils/no_copy.hpp"
 
@@ -49,17 +51,29 @@ private:
     /** List of all kart groups. */
     std::vector<std::string>                 m_all_groups;
 
+    /** Current favorite karts */
+    FavoriteStatus*                          m_current_favorite_status;
+
+    /** List of all kart types. */
+    std::vector<std::string>                 m_kart_types;
+
     /** Mapping of group names to list of kart indices in each group. */
     std::map<std::string, std::vector<int> > m_groups_2_indices;
+
+    /** Mapping of group names to list of kart indices in each group without customized ones. */
+    std::map<std::string, std::vector<int> > m_groups_2_indices_no_custom;
 
     /** Vector containing kart numbers that have been selected in multiplayer
      * games.  This it used to ensure the same kart can not be selected more
      * than once. */
     std::vector<int>         m_selected_karts;
 
-    /** Contains a flag for each kart indicating wether it is available on
+    /** Contains a flag for each kart indicating whether it is available on
      *  all clients or not. */
     std::vector<bool>        m_kart_available;
+
+    /** Contains the name of the seasonal hat, if any */
+    std::string m_hat_name;
 
     std::unique_ptr<AbstractCharacteristic>                         m_base_characteristic;
     std::map<std::string, std::unique_ptr<AbstractCharacteristic> > m_difficulty_characteristics;
@@ -75,6 +89,7 @@ protected:
 public:
                              KartPropertiesManager();
                             ~KartPropertiesManager();
+    static void              removeKartSearchDirs();
     static void              addKartSearchDir       (const std::string &s);
     const KartProperties*    getKartById            (int i) const;
     const KartProperties*    getKart(const std::string &ident) const;
@@ -88,15 +103,20 @@ public:
     void                     unloadAllKarts         ();
     void                     removeKart(const std::string &id);
     const std::vector<int>   getKartsInGroup        (const std::string& g);
+    /** Adds a track to the special group of favorite tracks.
+    * We need to treat it specially, because the list of tracks in this group
+    * depends on the player-profile, not on the track data. */
+    void                     setFavoriteKartStatus(FavoriteStatus *status);
     bool                     kartAvailable(int kartid);
     std::vector<std::string> getAllAvailableKarts() const;
     void                     setUnavailableKarts(std::vector<std::string>);
     void                     selectKartName(const std::string &kart_name);
     bool                     testAndSetKart(int kartid);
     void                     getRandomKartList(int count,
-                                           RemoteKartInfoList& existing_karts,
+                                           RemoteKartInfoList* existing_karts,
                                            std::vector<std::string> *ai_list);
     void                     setHatMeshName(const std::string &hat_name);
+    void                     setHatMeshName();
     // ------------------------------------------------------------------------
     /** Get the characteristic that holds the base values. */
     const AbstractCharacteristic* getBaseCharacteristic() const { return m_base_characteristic.get(); }
@@ -105,13 +125,23 @@ public:
     const AbstractCharacteristic* getDifficultyCharacteristic(const std::string &type) const;
     // ------------------------------------------------------------------------
     /** Get a characteristic that holds the values for a kart type. */
-    const AbstractCharacteristic* getKartTypeCharacteristic(const std::string &type) const;
+    const AbstractCharacteristic* getKartTypeCharacteristic(const std::string &type, const std::string &name) const;
+    // ------------------------------------------------------------------------
+    const std::vector<std::string>& getAllKartTypes() const { return m_kart_types; }
+    // ------------------------------------------------------------------------
+    const std::string& getDefaultKartType() const           { return m_kart_types[0]; }
+    // ------------------------------------------------------------------------
+    bool hasKartTypeCharacteristic(const std::string& type) const
+    {
+        return m_kart_type_characteristics.find(type) !=
+            m_kart_type_characteristics.end();
+    }
     // ------------------------------------------------------------------------
     /** Get a characteristic that holds the values for a player difficulty. */
     const AbstractCharacteristic* getPlayerCharacteristic(const std::string &type) const;
     // ------------------------------------------------------------------------
     /** Returns a list of all groups. */
-    const std::vector<std::string>& getAllGroups() const {return m_all_groups;}
+    const std::vector<std::string>& getAllGroups() const { return m_all_groups; }
     // ------------------------------------------------------------------------
     /** Clears all selected karts (used in networking only). */
     void clearAllSelectedKarts() { m_selected_karts.clear(); }
@@ -133,6 +163,9 @@ public:
     const unsigned int getNumberOfKarts() const {
         return (unsigned int)m_karts_properties.size();
     }   // getNumberOfKarts
+    // ------------------------------------------------------------------------
+    void onDemandLoadKartTextures(const std::set<std::string>& kart_list,
+                                  bool unload_unused = true);
 };
 
 extern KartPropertiesManager *kart_properties_manager;

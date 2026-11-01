@@ -27,7 +27,10 @@ namespace Debug
 {
     bool onEvent(const irr::SEvent &event);
     bool isOpen();
-    bool handleStaticAction(int key);
+    void closeDebugMenu();
+    void handleStaticAction(int key, int value,
+                            bool control_pressed, bool shift_pressed);
+    void setDebugCamera(int kart_num);
 }
 
 

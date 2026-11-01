@@ -15,17 +15,50 @@
 //  along with this program; if not, write to the Free Software
 //  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
+#include <cctype>
 #include <string.h>
 #include <iostream>
 #include <fstream>
 
 #include "graphics/irr_driver.hpp"
 #include "io/file_manager.hpp"
+#include "utils/log.hpp"
 #include "utils/string_utils.hpp"
 
+#include <IrrlichtDevice.h>
+#include <IFileSystem.h>
+#include <IReadFile.h>
 #include <IWriteFile.h>
 using namespace irr;
 using namespace io;
+
+// ----------------------------------------------------------------------------
+/** Returns whether a ZIP file name can be extracted below a destination
+ * directory. ZIP paths are normalised to use '/' by Irrlicht.
+ */
+static bool isSafeArchivePath(const std::string& path)
+{
+    if (path.empty() || path[0] == '/' || path[0] == '\\' ||
+        (path.size() > 1 && std::isalpha((unsigned char)path[0]) &&
+         path[1] == ':'))
+    {
+        return false;
+    }
+
+    std::string::size_type start = 0;
+    while (start < path.size())
+    {
+        std::string::size_type end = path.find('/', start);
+        std::string component = path.substr(start, end - start);
+        if (component.empty() || component == "." || component == "..")
+            return false;
+        if (end == std::string::npos)
+            break;
+        start = end + 1;
+    }
+    return true;
+}   // isSafeArchivePath
+
 s32 IFileSystem_copyFileToFile(IWriteFile* dst, IReadFile* src)
 {
   char buf[1024];
@@ -54,13 +87,13 @@ s32 IFileSystem_copyFileToFile(IWriteFile* dst, IReadFile* src)
  *  \param to The destination directory.
  *  \return True if successful.
  */
-bool extract_zip(const std::string &from, const std::string &to)
+bool extract_zip(const std::string &from, const std::string &to, bool recursive)
 {
     //Add the zip to the file system
     IFileSystem *file_system = irr_driver->getDevice()->getFileSystem();
     if(!file_system->addFileArchive(from.c_str(),
                                     /*ignoreCase*/false,
-                                   /*ignorePath*/true, io::EFAT_ZIP))
+                                   /*ignorePath*/!recursive, io::EFAT_ZIP))
     {
         return false;
     }
@@ -74,27 +107,41 @@ bool extract_zip(const std::string &from, const std::string &to)
     bool error = false;
     for(unsigned int i=0; i<zip_file_list->getFileCount(); i++)
     {
-        const std::string current_file=zip_file_list->getFileName(i).c_str();
-        Log::info("addons", "Unzipping file '%s'.", current_file.c_str());
         if(zip_file_list->isDirectory(i)) continue;
-        if(current_file[0]=='.') continue;
-        const std::string base = StringUtils::getBasename(current_file);
-
-        IReadFile* src_file =
-            zip_archive->createAndOpenFile(current_file.c_str());
-        if(!src_file)
+        if(zip_file_list->getFileName(i)[0]=='.') continue;
+        std::string base = zip_file_list->getFullFileName(i).c_str();
+        if (!recursive)
+            base = StringUtils::getBasename(base);
+        else if (!isSafeArchivePath(base))
         {
-            Log::warn("addons", "Can't read file '%s'. This is ignored, but the addon might not work", current_file.c_str());
+            Log::warn("addons", "Ignoring unsafe file '%s' in archive '%s'.",
+                      base.c_str(), from.c_str());
             error = true;
             continue;
         }
 
+        Log::debug("addons", "Unzipping file '%s'.", base.c_str());
+
+        IReadFile* src_file =
+            zip_archive->createAndOpenFile(base.c_str());
+        if(!src_file)
+        {
+            Log::warn("addons", "Can't read file '%s'. This is ignored, but the addon might not work", base.c_str());
+            error = true;
+            continue;
+        }
+
+        std::string file_location = to + "/" + base;
+        if (recursive)
+        {
+            const std::string& dir = StringUtils::getPath(file_location);
+            file_manager->checkAndCreateDirectoryP(dir);
+        }
         IWriteFile* dst_file =
-            file_system->createAndWriteFile((to+"/"+base).c_str());
+            file_system->createAndWriteFile(file_location.c_str());
         if(dst_file == NULL)
         {
-            Log::warn("addons", "Couldn't create the file '%s'. The directory might not exist. This is ignored, but the addon might not work.",
-                      (to+"/"+current_file).c_str());
+            Log::warn("addons", "Couldn't create the file '%s'. The directory might not exist. This is ignored, but the addon might not work.", file_location.c_str());
             error = true;
             continue;
         }
@@ -102,7 +149,7 @@ bool extract_zip(const std::string &from, const std::string &to)
         if (IFileSystem_copyFileToFile(dst_file, src_file) < 0)
         {
             Log::warn("addons", "Could not copy '%s' from archive '%s'. This is ignored, but the addon might not work.",
-                      current_file.c_str(), from.c_str());
+                      base.c_str(), from.c_str());
             error = true;
         }
         dst_file->drop();

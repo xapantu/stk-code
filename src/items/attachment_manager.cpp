@@ -19,8 +19,14 @@
 #include "items/attachment_manager.hpp"
 
 #include "graphics/irr_driver.hpp"
+#include "graphics/material.hpp"
 #include "graphics/material_manager.hpp"
+#include "graphics/sp/sp_base.hpp"
+#include "guiengine/engine.hpp"
+#include "guiengine/skin.hpp"
 #include "io/file_manager.hpp"
+
+#include <IAnimatedMesh.h>
 
 AttachmentManager *attachment_manager = 0;
 
@@ -47,14 +53,14 @@ struct  initAttachmentType {Attachment::AttachmentType attachment;
 
 static const initAttachmentType iat[]=
 {
-    {Attachment::ATTACH_PARACHUTE,        "parachute.b3d",        "parachute-attach-icon.png"    },
-    {Attachment::ATTACH_BOMB,             "bomb.b3d",             "bomb-attach-icon.png"         },
-    {Attachment::ATTACH_ANVIL,            "anchor.b3d",           "anchor-attach-icon.png"       },
-    {Attachment::ATTACH_SWATTER,          "swatter.b3d",          "swatter-icon.png"             },
-    {Attachment::ATTACH_NOLOKS_SWATTER,   "swatter_nolok.b3d",    "swatter-icon.png"             },
-    {Attachment::ATTACH_TINYTUX,          "reset-button.b3d",     "reset-attach-icon.png"        },
-    {Attachment::ATTACH_BUBBLEGUM_SHIELD, "bubblegum_shield.b3d", "shield-icon.png"              },
-    {Attachment::ATTACH_NOLOK_BUBBLEGUM_SHIELD, "bubblegum_shield_nolok.b3d", "shield-icon.png"              },
+    {Attachment::ATTACH_PARACHUTE,        "parachute.spm",        "parachute-attach-icon.png"    },
+    {Attachment::ATTACH_BOMB,             "bomb.spm",             "bomb-attach-icon.png"         },
+    {Attachment::ATTACH_ANVIL,            "anchor.spm",           "anchor-attach-icon.png"       },
+    {Attachment::ATTACH_SWATTER,          "swatter.spm",          "swatter-icon.png"             },
+    {Attachment::ATTACH_NOLOKS_SWATTER,   "swatter_nolok.spm",    "swatter-icon.png"             },
+    {Attachment::ATTACH_SWATTER_ANIM,     "swatter_anim.spm",     "swatter-icon.png"             },
+    {Attachment::ATTACH_BUBBLEGUM_SHIELD, "bubblegum_shield.spm", "shield-icon.png"              },
+    {Attachment::ATTACH_NOLOK_BUBBLEGUM_SHIELD, "bubblegum_shield_nolok.spm", "shield-icon.png"              },
     {Attachment::ATTACH_MAX,              "",                     ""                             },
 };
 
@@ -76,32 +82,31 @@ AttachmentManager::~AttachmentManager()
 }   // ~AttachmentManager
 
 //-----------------------------------------------------------------------------
-void AttachmentManager::removeTextures()
-{
-    for(int i=0; iat[i].attachment!=Attachment::ATTACH_MAX; i++)
-    {
-        // FIXME: free attachment textures
-    }   // for
-}   // removeTextures
-
-//-----------------------------------------------------------------------------
 void AttachmentManager::loadModels()
 {
     for(int i=0; iat[i].attachment!=Attachment::ATTACH_MAX; i++)
     {
         std::string full_path = file_manager->getAsset(FileManager::MODEL,iat[i].file);
-        m_attachments[iat[i].attachment]=irr_driver->getAnimatedMesh(full_path);
-        m_attachments[iat[i].attachment]->grab();
+        scene::IAnimatedMesh* mesh = irr_driver->getAnimatedMesh(full_path);
+        mesh->grab();
+#ifndef SERVER_ONLY
+        SP::uploadSPM(mesh);
+#endif
+        m_attachments[iat[i].attachment] = mesh;
         if(iat[i].icon_file)
         {
             std::string full_icon_path     =
-                file_manager->getAsset(FileManager::MODEL, iat[i].icon_file);
+                GUIEngine::getSkin()->getThemedIcon(std::string("gui/icons/")
+                                                    + iat[i].icon_file);
             m_all_icons[iat[i].attachment] =
                 material_manager->getMaterial(full_icon_path,
-                                              /* full_path */     true,
-                                              /*make_permanent */ true);
+                                              /*full_path*/             true,
+                                              /*make_permanent*/        true,
+                                              /*complain_if_not_found*/ true,
+                                              /*strip_path*/            false);
         }
-
+        if (GUIEngine::isNoGraphics())
+            mesh->freeMeshVertexBuffer();
     }   // for
 }   // reInit
 

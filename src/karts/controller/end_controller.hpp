@@ -25,7 +25,6 @@
 
 class Camera;
 class LinearWorld;
-class QuadGraph;
 class Track;
 class Vec3;
 
@@ -85,9 +84,10 @@ public:
                  EndController(AbstractKart *kart,
                                Controller *prev_controller);
                 ~EndController();
-    virtual void update      (float delta) ;
+    virtual void update      (int ticks) ;
     virtual void reset       ();
-    virtual void action      (PlayerAction action, int value);
+    virtual bool action      (PlayerAction action, int value,
+                              bool dry_run = false);
     virtual void newLap      (int lap);
     // ------------------------------------------------------------------------
     virtual bool canGetAchievements() const
@@ -113,7 +113,8 @@ public:
     // ------------------------------------------------------------------------
     /** Returns the name of the previous controller (which has the right
      *  player name associated). */
-    core::stringw getName() const { return m_previous_controller->getName(); }
+    core::stringw getName(bool include_handicap_string = true) const
+            { return m_previous_controller->getName(include_handicap_string); }
 
 };   // EndKart
 
